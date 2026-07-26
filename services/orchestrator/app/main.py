@@ -156,6 +156,42 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
 
 
+def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
+    initial_by_level = result.get("initial_by_level")
+    final_by_level = result.get("final_by_level")
+    history = result.get("history")
+    promotions = result.get("promotions")
+    return {
+        "schema_version": 1,
+        "branch_width": result.get("branch_width"),
+        "complexity_strategy": result.get("complexity_strategy"),
+        "maximum_level": result.get("maximum_complexity_level"),
+        "reached_level": result.get("reached_complexity_level"),
+        "updates_completed": result.get("updates_completed"),
+        "initial_exact_rate": result.get("initial_reward"),
+        "final_exact_rate": result.get("final_reward"),
+        "exact_gain": result.get("reward_gain"),
+        "stop_reason": result.get("stop_reason"),
+        "checkpoints": (
+            [item for item in history if isinstance(item, dict)]
+            if isinstance(history, list)
+            else []
+        ),
+        "promotions": (
+            [item for item in promotions if isinstance(item, dict)]
+            if isinstance(promotions, list)
+            else []
+        ),
+        "initial_by_level": initial_by_level if isinstance(initial_by_level, dict) else {},
+        "final_by_level": final_by_level if isinstance(final_by_level, dict) else {},
+        "policy_update_count": result.get("policy_update_count"),
+        "teacher_update_count": result.get("teacher_update_count"),
+        "informative_group_rate": result.get("informative_group_rate"),
+        "teacher_fallback_rate": result.get("teacher_fallback_rate"),
+        "total_sampled_completions": result.get("total_sampled_completions"),
+    }
+
+
 def _wait_for_dependencies() -> None:
     last_error: Exception | None = None
     for _ in range(40):
@@ -1570,6 +1606,33 @@ def get_research_compute_execution(execution_id: str) -> dict[str, Any]:
             detail={"code": "RESEARCH_EXECUTION_NOT_FOUND"},
         )
     return item
+
+
+@app.get("/v1/research-compute-executions/{execution_id}/trajectory")
+def get_research_compute_trajectory(execution_id: str) -> dict[str, Any]:
+    with connection() as conn:
+        item = conn.execute(
+            """
+            SELECT e.*, p.result AS proof_result
+            FROM research_compute_executions e
+            LEFT JOIN research_compute_proofs p ON p.proof_id = e.proof_id
+            WHERE e.execution_id = %s
+            """,
+            (execution_id,),
+        ).fetchone()
+    if not item:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "RESEARCH_EXECUTION_NOT_FOUND"},
+        )
+    execution = dict(item)
+    proof_result = execution.pop("proof_result")
+    return {
+        "execution": execution,
+        "trajectory": (
+            research_trajectory(proof_result) if isinstance(proof_result, dict) else None
+        ),
+    }
 
 
 @app.put("/internal/research-compute-executions/{execution_id}")

@@ -1043,6 +1043,353 @@ h3 {
   align-items: start;
 }
 
+.research-trajectory-page {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px 32px;
+}
+
+.research-trajectory-toolbar {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.trajectory-result {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+}
+
+.trajectory-result span {
+  padding-right: 14px;
+}
+
+.trajectory-result span + span {
+  border-left: 1px solid var(--rule);
+  padding-left: 14px;
+}
+
+.trajectory-result span:first-child {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.research-trajectory-workspace {
+  display: grid;
+  min-height: 690px;
+  grid-template-columns: minmax(0, 1fr) 352px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.research-trajectory-canvas {
+  min-width: 0;
+  border-right: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.research-trajectory-canvas .react-flow {
+  min-height: 690px;
+  background: var(--surface);
+}
+
+.research-checkpoint-node {
+  display: grid;
+  width: 208px;
+  min-height: 94px;
+  align-content: center;
+  gap: 2px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  padding: 11px 13px;
+  color: var(--ink);
+  text-align: left;
+  transition:
+    border-color var(--transition),
+    background-color var(--transition);
+}
+
+.research-checkpoint-node:hover {
+  border-color: var(--accent);
+}
+
+.research-checkpoint-node.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.research-checkpoint-node.baseline,
+.research-checkpoint-node.final {
+  border-color: color-mix(in srgb, var(--success) 52%, var(--rule));
+}
+
+.research-checkpoint-node > span {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.research-checkpoint-node > strong {
+  font-size: 1.08rem;
+  font-weight: 680;
+  line-height: 1.2;
+}
+
+.research-checkpoint-node > small {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.research-checkpoint-node > em {
+  margin-top: 5px;
+  color: var(--success);
+  font-size: 0.6875rem;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.research-checkpoint-node .react-flow__handle {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+}
+
+.research-lane-node {
+  display: flex;
+  width: 208px;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--rule);
+  padding: 4px 2px 8px;
+}
+
+.research-lane-node strong {
+  font-size: 0.75rem;
+}
+
+.research-lane-node span {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.research-trajectory-canvas .promotion-edge path {
+  stroke: var(--success);
+}
+
+.research-trajectory-inspector {
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--surface-raised);
+}
+
+.research-trajectory-inspector > header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--rule);
+  padding: 10px 16px;
+}
+
+.research-trajectory-inspector > header > span {
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.trajectory-selected-step {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 3px 16px;
+  padding: 18px 16px;
+}
+
+.trajectory-selected-step h2 {
+  align-self: start;
+  margin-bottom: 0;
+  font-size: 1.15rem;
+}
+
+.trajectory-selected-step strong {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--accent-strong);
+  font-size: 1.4rem;
+  font-weight: 680;
+}
+
+.trajectory-selected-step span {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.trajectory-step-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-block: 1px solid var(--rule);
+}
+
+.trajectory-step-facts > div {
+  min-width: 0;
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding: 9px 16px;
+}
+
+.trajectory-step-facts > div:nth-child(2n) {
+  border-right: 0;
+}
+
+.trajectory-step-facts > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.trajectory-step-facts dt {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.trajectory-step-facts dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.trajectory-step-facts.final {
+  border-top: 0;
+}
+
+.trajectory-domain-results,
+.trajectory-level-results {
+  display: grid;
+  padding: 8px 16px;
+}
+
+.trajectory-domain-results > div,
+.trajectory-level-results > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1px 12px;
+  border-bottom: 1px solid var(--rule);
+  padding: 9px 0;
+}
+
+.trajectory-domain-results > div:last-child,
+.trajectory-level-results > div:last-child {
+  border-bottom: 0;
+}
+
+.trajectory-domain-results span,
+.trajectory-level-results span {
+  font-size: 0.75rem;
+}
+
+.trajectory-domain-results strong,
+.trajectory-level-results strong {
+  font-size: 0.8125rem;
+}
+
+.trajectory-domain-results small {
+  grid-column: 1 / -1;
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.trajectory-promotion {
+  display: grid;
+  gap: 2px;
+  border-block: 1px solid color-mix(in srgb, var(--success) 40%, var(--rule));
+  background: var(--success-soft);
+  padding: 12px 16px;
+}
+
+.trajectory-promotion > span,
+.trajectory-promotion > small {
+  color: var(--success);
+  font-size: 0.6875rem;
+}
+
+.trajectory-promotion > strong {
+  font-size: 0.875rem;
+}
+
+.research-trajectory-outline {
+  min-height: 690px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.research-trajectory-outline table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.research-trajectory-outline caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.research-trajectory-outline th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--surface-step);
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  text-align: left;
+}
+
+.research-trajectory-outline th,
+.research-trajectory-outline td {
+  border-bottom: 1px solid var(--rule);
+  padding: 10px;
+  vertical-align: top;
+}
+
+.research-trajectory-outline tr.selected {
+  background: var(--accent-soft);
+}
+
+.research-trajectory-outline td button {
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.empty-state {
+  border-block: 1px solid var(--rule);
+  padding-block: 24px;
+}
+
+.empty-state p {
+  max-width: 65ch;
+  margin: 6px 0 0;
+  color: var(--ink-muted);
+}
+
 .launch-workspace {
   grid-template-columns: minmax(0, 1fr) 320px;
   align-items: start;
@@ -1263,17 +1610,22 @@ h3 {
   padding-inline: 32px;
 }
 
-.run-tabs button {
+.run-tabs button,
+.run-tabs a {
+  display: flex;
   min-height: 46px;
+  align-items: center;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--ink-muted);
   padding: 0;
+  text-decoration: none;
   cursor: pointer;
 }
 
-.run-tabs button[aria-selected="true"] {
+.run-tabs button[aria-selected="true"],
+.run-tabs a[aria-current="page"] {
   border-bottom-color: var(--accent);
   color: var(--ink);
   font-weight: 650;
@@ -2469,14 +2821,31 @@ h3 {
   }
 
   .trajectory-workspace,
+  .research-trajectory-workspace,
   .verification-workspace {
     grid-template-columns: 1fr;
   }
 
   .graph-region,
+  .research-trajectory-canvas,
   .verification-canvas {
     border-right: 0;
     border-bottom: 1px solid var(--rule);
+  }
+
+  .research-trajectory-inspector {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .research-trajectory-inspector > header,
+  .research-trajectory-inspector > .step-navigation,
+  .research-trajectory-inspector > .trajectory-promotion {
+    grid-column: 1 / -1;
+  }
+
+  .research-trajectory-inspector > .trajectory-selected-step {
+    border-right: 1px solid var(--rule);
   }
 
   .trace-inspector {
@@ -2559,6 +2928,7 @@ h3 {
   .page-header,
   .run-tabs,
   .content,
+  .research-trajectory-page,
   .trajectory-page,
   .verification-page {
     padding-inline: 14px;
@@ -2756,6 +3126,32 @@ h3 {
 
   .trajectory-controls {
     align-items: stretch;
+  }
+
+  .research-trajectory-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .research-trajectory-toolbar .segmented {
+    align-self: flex-start;
+  }
+
+  .trajectory-result span {
+    border-left: 0 !important;
+    padding: 0 14px 0 0 !important;
+  }
+
+  .research-trajectory-inspector {
+    display: block;
+  }
+
+  .research-trajectory-inspector > .trajectory-selected-step {
+    border-right: 0;
+  }
+
+  .research-trajectory-canvas .react-flow {
+    min-width: 960px;
   }
 
   .trajectory-controls label {

@@ -20,6 +20,7 @@ import {
   StatusBadge,
 } from "../components";
 import { Link, useNavigate, useParams, useSearchParams } from "../router";
+import { ResearchRunTabs } from "./research-trajectory";
 import type {
   ComplexityConfig,
   ComplexityResponse,
@@ -175,6 +176,7 @@ export function ResearchRunPage() {
         }
         actions={run ? <StatusBadge status={run.status} /> : undefined}
       />
+      <ResearchRunTabs executionId={executionId} active="overview" />
       <div className="content workspace-content">
         <AsyncState loading={execution.loading} error={execution.error}>
           {run ? (

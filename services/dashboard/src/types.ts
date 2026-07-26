@@ -104,6 +104,72 @@ export interface ResearchComputeExecution {
   teardown_confirmed: boolean;
 }
 
+export interface ResearchLevelObservation {
+  level: number;
+  examples: number;
+  exact_rate: number;
+  format_rate: number;
+  mean_reward: number;
+  per_domain: Record<
+    string,
+    {
+      exact_rate: number;
+      mean_reward: number;
+    }
+  >;
+}
+
+export interface ResearchTrajectoryCheckpoint extends ResearchLevelObservation {
+  update: number;
+  training_branch_pass_rate?: number;
+  loss?: number;
+  policy_loss?: number;
+  teacher_loss?: number;
+  gradient_norm?: number;
+  informative_group_rate?: number;
+  teacher_fallback_rate?: number;
+  policy_update_count?: number;
+  teacher_update_count?: number;
+  mastery_streak?: number;
+  elapsed_seconds?: number;
+}
+
+export interface ResearchTrajectoryPromotion {
+  update: number;
+  from_level: number;
+  to_level: number;
+  exact_rate: number;
+  minimum_domain_exact_rate: number;
+  mastery_windows: number;
+}
+
+export interface ResearchTrajectory {
+  schema_version: 1;
+  branch_width: 4;
+  complexity_strategy: "adaptive";
+  maximum_level: number;
+  reached_level: number;
+  updates_completed: number;
+  initial_exact_rate: number;
+  final_exact_rate: number;
+  exact_gain: number;
+  stop_reason: string;
+  checkpoints: ResearchTrajectoryCheckpoint[];
+  promotions: ResearchTrajectoryPromotion[];
+  initial_by_level: Record<string, ResearchLevelObservation>;
+  final_by_level: Record<string, ResearchLevelObservation>;
+  policy_update_count: number;
+  teacher_update_count: number;
+  informative_group_rate: number;
+  teacher_fallback_rate: number;
+  total_sampled_completions: number;
+}
+
+export interface ResearchTrajectoryResponse {
+  execution: ResearchComputeExecution;
+  trajectory: ResearchTrajectory | null;
+}
+
 export interface ComplexityConfig {
   strategy: "adaptive";
   minimum_level: number;

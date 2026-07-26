@@ -7,6 +7,7 @@
  */
 import { AppShell } from "./components";
 import { EnvironmentsPage } from "./pages/environments";
+import { ResearchTrajectoryPage } from "./pages/research-trajectory";
 import { ResearchRunPage, RunsPage } from "./pages/workspace";
 import { ResourcesPage } from "./pages/resources";
 import { Navigate, Route, Routes } from "./router";
@@ -20,6 +21,10 @@ export function App() {
         <Route
           path="/runs/research/:executionId"
           element={<ResearchRunPage />}
+        />
+        <Route
+          path="/runs/research/:executionId/trajectory"
+          element={<ResearchTrajectoryPage />}
         />
         <Route path="/environments" element={<EnvironmentsPage />} />
         <Route path="/resources" element={<ResourcesPage />} />

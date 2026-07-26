@@ -88,6 +88,7 @@ function statusTone(status: string): string {
       "READY",
       "CONTINUED",
       "VERIFIED",
+      "PROMOTED",
     ].includes(status)
   )
     return "positive";

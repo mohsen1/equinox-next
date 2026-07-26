@@ -7,6 +7,7 @@ from services.orchestrator.app.main import (
     ResearchComputeExecutionRequest,
     ResearchComputeProofRequest,
     research_result_progress,
+    research_trajectory,
 )
 from services.orchestrator.app.providers import (
     JUDGE_PROVIDER_NAMES,
@@ -100,3 +101,36 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
     assert progress["post_training_completed"] is True
     assert progress["informative_group_rate"] == 0.2
     assert progress["teacher_fallback_rate"] == 0.7
+
+
+def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
+    trajectory = research_trajectory(
+        {
+            "branch_width": 4,
+            "complexity_strategy": "adaptive",
+            "maximum_complexity_level": 3,
+            "reached_complexity_level": 2,
+            "updates_completed": 80,
+            "initial_reward": 0.4,
+            "final_reward": 0.9,
+            "reward_gain": 0.5,
+            "history": [
+                {"update": 20, "level": 0, "exact_rate": 0.8},
+                "invalid",
+                {"update": 40, "level": 1, "exact_rate": 0.9},
+            ],
+            "promotions": [{"update": 40, "from_level": 0, "to_level": 1}],
+            "initial_by_level": {"0": {"exact_rate": 0.4}},
+            "final_by_level": {"0": {"exact_rate": 0.9}},
+            "policy_update_count": 7,
+            "teacher_update_count": 3,
+        }
+    )
+
+    assert trajectory["branch_width"] == 4
+    assert trajectory["checkpoints"] == [
+        {"update": 20, "level": 0, "exact_rate": 0.8},
+        {"update": 40, "level": 1, "exact_rate": 0.9},
+    ]
+    assert trajectory["promotions"][0]["to_level"] == 1
+    assert trajectory["policy_update_count"] == 7
