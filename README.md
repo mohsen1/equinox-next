@@ -2,7 +2,8 @@
 
 Equinox Next is a local contract proof for branchable CAD reinforcement learning. It runs
 entirely in Docker Compose, uses deterministic CAD fixtures, and resolves only
-`MockRunPodProvider` and `MockJudgeProvider`. It never contacts RunPod or a real judge.
+`MockRunPodProvider` and `MockJudgeProvider`. The Compose profile never contacts RunPod
+or a real judge.
 
 ## Start here
 
@@ -20,11 +21,47 @@ Ports default to `3100` for the dashboard, `8180` for the API, and `9001` for th
 console. Override the first two with `EQUINOX_DASHBOARD_PORT` and `EQUINOX_API_PORT`.
 No cloud credentials are accepted or required.
 
+## Run the bounded RunPod research proof
+
+`scripts/runpod-rl-proof` is an explicit operator command outside the local provider
+registry. By default it creates one RTX 3090 community worker from RunPod's current
+official PyTorch 2.8 image, rejects an hourly rate above
+$0.50, sets a provider-side 15-minute termination deadline, and deletes the worker after
+the workload finishes. The command refuses to start when the account already has a pod
+or active hourly spend.
+
+```bash
+./scripts/runpod-rl-proof
+```
+
+The remote workload runs a seeded PyTorch REINFORCE ladder for a synthetic, deterministically
+verifiable repair plan. Every update samples static K=4 sibling trajectories. Evaluation
+windows promote the horizon only after the current level reaches the configured mastery
+threshold. One worker runs small, medium, and large cases with maximum horizons of 8, 24,
+and 64 actions. A passing proof requires CUDA execution, increasing horizons, curriculum
+promotion in every case, at least 50 million sampled action decisions, a reward gain of
+at least 0.20 per case, and final step reward of at least 0.85 per case. After RunPod no
+longer lists the worker, the command writes a sanitized receipt under
+`var/research-proofs/` and records it on the System page.
+
+This proves authenticated scheduling, bounded GPU execution, multi-turn policy
+optimization at increasing action horizons, adaptive curriculum metrics, receipt
+ingestion, and teardown. The repair plan is synthetic and its per-action verifier signal
+is deliberately simple; it does not prove long-horizon credit assignment by a
+large-model policy, CAD reconstruction quality, RunPool sandbox execution, or a
+production RunPod provider adapter.
+
+The dashboard also exposes typed contracts for SQLite data repair, filesystem and CLI
+debugging, and micro-repository code repair. Those environments include adaptive
+difficulty configuration but remain launch-gated until a RunPool sandbox adapter is
+connected. Branch-aware runs keep a static width of four.
+
 ## Inspect the proof
 
-From `/runs`, open **Local branch-aware CAD proof**, then its committed iteration and
-rollout tree. The explorer shows one shared three-action prefix, one logical snapshot and
-decision checkpoint, and four isolated sibling cursors. The fixtures include:
+From `/runs`, open **Local branch-aware CAD proof**, then select **Trace** and open its
+trajectory. The explorer shows one shared three-action prefix, one logical snapshot and
+decision checkpoint, and four isolated sibling cursors. Selecting any action updates the
+adjacent outcome, state, verification, and provenance inspector. The fixtures include:
 
 - a recovered render/inference retry;
 - a valid negative geometry outcome caused by an oversized bore;

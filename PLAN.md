@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Phase 5 — local hardening and future-contract proof.
+Phase 6 — environment-ready dashboard and adaptive curriculum contract.
 
 Acceptance statement: a clean checkout builds the complete Compose stack, completes both
 CAD algorithms, preserves evidence through restarts, and passes contract, boundary,
@@ -31,11 +31,27 @@ integration, browser, and accessibility checks without a cloud credential.
   one iteration.
 - The Operate dashboard exposes the real run, iteration, trajectory, verification,
   evidence, judge, reward, failure, provenance, and resource APIs.
+- The dashboard is organized around a short experiment queue, an environment catalog,
+  environment-first launch, and progressively disclosed evidence and operations.
+- Completed runs expose a first-class Trace tab. The trajectory explorer makes the
+  shared prefix, snapshot checkpoint, static sibling fan-out, selected action, typed
+  outcome, verification, and operation/cursor provenance causally navigable.
+- SQLite repair, CLI debugging, and micro-repository repair have typed environment,
+  verifier, snapshot, and complexity declarations. Launch remains gated on a RunPool
+  sandbox adapter.
+- New runs persist a static branch width and an adaptive-complexity state. Idempotent
+  observations promote mastered levels and reject stale curriculum updates.
+- An opt-in RunPod research command executes a bounded CUDA policy-gradient proof with
+  static K=4, adaptive curriculum promotions, increasingly large 8-, 24-, and 64-action
+  cases, a sanitized receipt, and confirmed pod teardown. It remains outside the
+  credential-free local provider registry.
 
 ## Next slice
 
-Run the final clean-volume acceptance, browser evidence capture, Impeccable detector and
-finish review, then the required staged Claude Code review.
+Implement the RunPool policy-compute and sandbox adapter for SQLite repair. Use the
+RunPod proof only as compute-connectivity evidence; keep environment execution, snapshot
+fidelity, task generation, hidden verifier inputs, and provider credentials behind the
+declared boundaries.
 
 ## Blockers and decision deadlines
 
@@ -50,3 +66,6 @@ No current blocker.
 - CAD environment owner — replace the deterministic geometry fixture with a pinned CAD
   kernel and task bundle before measuring reconstruction quality. The current fixture
   proves lineage and failure semantics, not geometric generalization.
+- Platform owner — select the first RunPool image and resource profile for SQLite repair.
+  Until that image, task generator, action protocol, snapshot probe, and verifier pass
+  conformance, the catalog entry remains non-launchable.

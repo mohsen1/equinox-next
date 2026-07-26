@@ -1,0 +1,584 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+experiment="${EQUINOX_RUNPOD_EXPERIMENT:-sequence-ladder}"
+case "$experiment" in
+  sequence-ladder)
+    workload_file="branching_sequence_ladder.py"
+    workload_id="branching-sequence-policy-gradient-ladder"
+    execution_name="Branching sequence ladder"
+    model_id=""
+    default_gpu_id="NVIDIA GeForce RTX 3090"
+    default_target_runtime_seconds="420"
+    default_maximum_lifetime_minutes="15"
+    ;;
+  model-repair)
+    workload_file="model_repair_grpo.py"
+    workload_id="model-repair-group-policy-optimization"
+    execution_name="Verified repair policy learning"
+    model_id="Qwen/Qwen2.5-Coder-0.5B-Instruct"
+    default_gpu_id="NVIDIA GeForce RTX 4090"
+    default_target_runtime_seconds="3300"
+    default_maximum_lifetime_minutes="75"
+    ;;
+  *)
+    echo "EQUINOX_RUNPOD_EXPERIMENT must be sequence-ladder or model-repair." >&2
+    exit 1
+    ;;
+esac
+workload_path="$repository_root/research/runpod/$workload_file"
+remote_runner_path="$repository_root/research/runpod/remote_runner.sh"
+receipt_directory="$repository_root/var/research-proofs"
+api_root="${EQUINOX_API_ROOT:-http://127.0.0.1:8180}"
+dashboard_root="${EQUINOX_DASHBOARD_ROOT:-http://127.0.0.1:3100}"
+gpu_id="${EQUINOX_RUNPOD_GPU:-$default_gpu_id}"
+template_id="${EQUINOX_RUNPOD_TEMPLATE:-runpod-torch-v280}"
+cloud_type="${EQUINOX_RUNPOD_CLOUD_TYPE:-COMMUNITY}"
+maximum_hourly_cost="${EQUINOX_RUNPOD_MAX_HOURLY_COST:-0.50}"
+maximum_lifetime_minutes="${EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES:-$default_maximum_lifetime_minutes}"
+boot_timeout_seconds="${EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS:-360}"
+target_runtime_seconds="${EQUINOX_RL_TARGET_SECONDS:-$default_target_runtime_seconds}"
+container_disk_in_gb="${EQUINOX_RUNPOD_CONTAINER_DISK_GB:-30}"
+
+command -v runpodctl >/dev/null
+command -v jq >/dev/null
+command -v curl >/dev/null
+command -v timeout >/dev/null
+command -v base64 >/dev/null
+command -v python3 >/dev/null
+test -f "$workload_path"
+test -f "$remote_runner_path"
+template_response="$(runpodctl template get "$template_id")"
+image="$(jq -r '.imageName // empty' <<<"$template_response")"
+if [[ -z "$image" ]]; then
+  echo "RunPod template $template_id did not resolve to a container image." >&2
+  exit 1
+fi
+if [[ "$cloud_type" != "COMMUNITY" && "$cloud_type" != "SECURE" ]]; then
+  echo "EQUINOX_RUNPOD_CLOUD_TYPE must be COMMUNITY or SECURE." >&2
+  exit 1
+fi
+if [[ ! "$boot_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 1
+fi
+if [[ ! "$target_runtime_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EQUINOX_RL_TARGET_SECONDS must be a positive integer." >&2
+  exit 1
+fi
+if [[ ! "$container_disk_in_gb" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EQUINOX_RUNPOD_CONTAINER_DISK_GB must be a positive integer." >&2
+  exit 1
+fi
+if [[ ! "$maximum_lifetime_minutes" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES must be a positive integer." >&2
+  exit 1
+fi
+if ((target_runtime_seconds + boot_timeout_seconds + 120 > maximum_lifetime_minutes * 60)); then
+  echo "The provider lifetime must cover boot + target runtime + a 2-minute cleanup reserve." >&2
+  exit 1
+fi
+workload_source_b64="$(base64 <"$workload_path" | tr -d '\n')"
+remote_runner_source_b64="$(base64 <"$remote_runner_path" | tr -d '\n')"
+docker_args="bash -lc \"echo $workload_source_b64 | base64 -d > /tmp/$workload_file; echo $remote_runner_source_b64 | base64 -d > /tmp/remote_runner.sh; EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds bash /tmp/remote_runner.sh\""
+
+mkdir -p "$receipt_directory"
+proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')"
+pod_name="equinox-${proof_id}"
+started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+started_epoch="$(date +%s)"
+terminate_after="$(
+  python3 - "$maximum_lifetime_minutes" <<'PY'
+from datetime import datetime, timedelta, timezone
+import sys
+
+print(
+    (
+        datetime.now(timezone.utc) + timedelta(minutes=int(sys.argv[1]))
+    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+)
+PY
+)"
+pod_id=""
+provider_handle=""
+hourly_cost=""
+execution_registered=false
+terminal_published=false
+failure_message="The operator harness exited before the proof was persisted."
+last_progress="$(
+  jq -cn '{
+    phase: "requesting_capacity",
+    message: "Requesting one bounded RunPod worker.",
+    maximum_level: 3,
+    maximum_updates: 1200
+  }'
+)"
+resource_profile="$(
+  jq -cn \
+    --arg gpu_id "$gpu_id" \
+    --arg image "$image" \
+    --arg cloud_type "$cloud_type" \
+    --argjson maximum_hourly_cost "$maximum_hourly_cost" \
+    '{
+      gpu_id: $gpu_id,
+      gpu_count: 1,
+      image: $image,
+      cloud_type: $cloud_type,
+      maximum_hourly_cost_usd: $maximum_hourly_cost
+    }'
+)"
+
+publish_execution() {
+  local status="$1"
+  local progress="$2"
+  local completed_at="${3:-}"
+  local teardown_confirmed="${4:-false}"
+  jq -cn \
+    --arg name "$execution_name" \
+    --arg workload_id "$workload_id" \
+    --arg model_id "$model_id" \
+    --arg status "$status" \
+    --arg provider_handle "$provider_handle" \
+    --argjson resource_profile "$resource_profile" \
+    --argjson progress "$progress" \
+    --arg started_at "$started_at" \
+    --arg completed_at "$completed_at" \
+    --argjson teardown_confirmed "$teardown_confirmed" \
+    '{
+      name: $name,
+      workload_id: $workload_id,
+      model_id: (if $model_id == "" then null else $model_id end),
+      branch_width: 4,
+      complexity_strategy: "adaptive",
+      status: $status,
+      provider_name: "RunPod",
+      provider_handle: (
+        if $provider_handle == "" then null else $provider_handle end
+      ),
+      resource_profile: $resource_profile,
+      progress: $progress,
+      started_at: $started_at,
+      completed_at: (if $completed_at == "" then null else $completed_at end),
+      teardown_confirmed: $teardown_confirmed
+    }' |
+    curl --fail --silent --show-error --max-time 15 \
+      -X PUT "$api_root/internal/research-compute-executions/$proof_id" \
+      -H 'Content-Type: application/json' \
+      --data-binary @- >/dev/null
+}
+
+pod_is_present() {
+  runpodctl pod list --all |
+    jq -e --arg id "$pod_id" '.[] | select(.id == $id)' >/dev/null
+}
+
+cleanup() {
+  local exit_code="$?"
+  local teardown_confirmed=false
+  local completed_at
+  local failed_progress
+  trap - EXIT
+  set +e
+
+  if [[ -n "$pod_id" ]]; then
+    timeout 30 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
+    for _ in {1..12}; do
+      if ! pod_is_present; then
+        teardown_confirmed=true
+        break
+      fi
+      sleep 5
+    done
+  else
+    teardown_confirmed=true
+  fi
+
+  if [[ "$execution_registered" == true && "$terminal_published" != true ]]; then
+    completed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    failed_progress="$(
+      jq -c \
+        --arg message "Run stopped before proof ingestion." \
+        --arg error "$failure_message" \
+        '. + {message: $message, error: $error}' \
+        <<<"$last_progress"
+    )"
+    publish_execution \
+      "FAILED" \
+      "$failed_progress" \
+      "$completed_at" \
+      "$teardown_confirmed" || true
+  fi
+  exit "$exit_code"
+}
+trap cleanup EXIT
+trap 'failure_message="The operator interrupted the RunPod harness."; exit 130' INT TERM
+
+if [[ "$(runpodctl user | jq -r '.currentSpendPerHr')" != "0" ]]; then
+  echo "Refusing to start: the RunPod account already has active hourly spend." >&2
+  exit 1
+fi
+
+if [[ "$(runpodctl pod list --all | jq 'length')" != "0" ]]; then
+  echo "Refusing to start: the RunPod account already contains a pod." >&2
+  exit 1
+fi
+
+curl --fail --silent --show-error --max-time 10 "$api_root/healthz" >/dev/null
+curl --fail --silent --show-error --max-time 10 "$dashboard_root/runs" >/dev/null
+research_executions="$(
+  curl --fail --silent --show-error --max-time 10 \
+    "$api_root/v1/research-compute-executions"
+)"
+while IFS= read -r stale_execution; do
+  stale_id="$(jq -r '.execution_id' <<<"$stale_execution")"
+  reconciled_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  jq -c \
+    --arg completed_at "$reconciled_at" \
+    '{
+      name,
+      workload_id,
+      model_id,
+      branch_width,
+      complexity_strategy,
+      status: "FAILED",
+      provider_name,
+      provider_handle,
+      resource_profile,
+      progress: (
+        .progress + {
+          message: "Reconciled after the operator process stopped.",
+          error: "No RunPod pod or active hourly spend remained."
+        }
+      ),
+      started_at,
+      completed_at: $completed_at,
+      teardown_confirmed: true
+    }' <<<"$stale_execution" |
+    curl --fail --silent --show-error --max-time 15 \
+      -X PUT "$api_root/internal/research-compute-executions/$stale_id" \
+      -H 'Content-Type: application/json' \
+      --data-binary @- >/dev/null
+  echo "Reconciled stale observer record $stale_id; no RunPod worker remained." >&2
+done < <(
+  jq -c \
+    '.items[] | select(
+      .status == "PROVISIONING"
+      or .status == "RUNNING"
+      or .status == "FINALIZING"
+    )' \
+    <<<"$research_executions"
+)
+
+failure_message="The observer API did not accept the provisioning record."
+publish_execution "PROVISIONING" "$last_progress"
+execution_registered=true
+
+echo "Creating one bounded RunPod worker; provider deadline: $terminate_after" >&2
+failure_message="RunPod pod creation failed before a provider handle was returned."
+create_response="$(
+  runpodctl pod create \
+    --name "$pod_name" \
+    --template-id "$template_id" \
+    --gpu-id "$gpu_id" \
+    --gpu-count 1 \
+    --cloud-type "$cloud_type" \
+    --container-disk-in-gb "$container_disk_in_gb" \
+    --volume-in-gb 0 \
+    --ports "8000/http" \
+    --ssh=false \
+    --docker-args "$docker_args" \
+    --terminate-after "$terminate_after"
+)"
+pod_id="$(jq -r '.id // .pod.id // empty' <<<"$create_response")"
+if [[ ! "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  echo "RunPod did not return a valid pod id." >&2
+  exit 1
+fi
+provider_handle="runpod://pods/$pod_id"
+
+failure_message="RunPod did not report a bounded hourly rate."
+pod_response="$(runpodctl pod get "$pod_id")"
+hourly_cost="$(
+  jq -r '.adjustedCostPerHr // .costPerHr // .costPerHour // empty' <<<"$pod_response"
+)"
+if [[ -z "$hourly_cost" ]]; then
+  echo "RunPod did not report an hourly cost; terminating rather than running unbounded." >&2
+  exit 1
+fi
+if ! jq -en \
+  --argjson observed "$hourly_cost" \
+  --argjson maximum "$maximum_hourly_cost" \
+  '$observed <= $maximum' >/dev/null; then
+  echo "Hourly cost \$$hourly_cost exceeds the \$$maximum_hourly_cost ceiling." >&2
+  exit 1
+fi
+resource_profile="$(
+  jq -cn \
+    --arg gpu_id "$gpu_id" \
+    --arg image "$image" \
+    --arg cloud_type "$cloud_type" \
+    --argjson hourly_cost "$hourly_cost" \
+    --argjson maximum_hourly_cost "$maximum_hourly_cost" \
+    '{
+      gpu_id: $gpu_id,
+      gpu_count: 1,
+      image: $image,
+      cloud_type: $cloud_type,
+      hourly_cost_usd: $hourly_cost,
+      maximum_hourly_cost_usd: $maximum_hourly_cost
+    }'
+)"
+last_progress="$(
+  jq -cn '{
+    phase: "waiting_for_capacity",
+    message: "Pod created; waiting for a live container endpoint.",
+    maximum_level: 3,
+    maximum_updates: 1200
+  }'
+)"
+publish_execution "PROVISIONING" "$last_progress"
+
+echo "Worker $pod_id allocated at \$$hourly_cost/hour; waiting for container readiness." >&2
+proxy_root="https://${pod_id}-8000.proxy.runpod.net"
+progress_url="$proxy_root/progress.json"
+exit_code=""
+readiness_attempts=$(( (boot_timeout_seconds + 4) / 5 ))
+container_ready=false
+failure_message="The RunPod worker never exposed a live container endpoint."
+for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
+  remote_progress="$(
+    curl --fail --silent --show-error --max-time 10 "$progress_url" 2>/dev/null || true
+  )"
+  if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
+    last_progress="$(
+      jq -cn \
+        --argjson previous "$last_progress" \
+        --argjson current "$remote_progress" \
+        '$previous + $current'
+    )"
+    publish_execution "RUNNING" "$last_progress"
+    container_ready=true
+    break
+  fi
+  if ((attempt == 1 || attempt % 3 == 0)); then
+    elapsed_wait=$((attempt * 5))
+    last_progress="$(
+      jq -cn \
+        --arg message "Pod created; waiting for a live container endpoint." \
+        --argjson elapsed_seconds "$elapsed_wait" \
+        '{
+          phase: "waiting_for_capacity",
+          message: $message,
+          elapsed_seconds: $elapsed_seconds,
+          maximum_level: 3,
+          maximum_updates: 1200
+        }'
+    )"
+    publish_execution "PROVISIONING" "$last_progress"
+  fi
+  sleep 5
+done
+if [[ "$container_ready" != true ]]; then
+  echo "The RunPod worker did not expose a live container endpoint before timeout." >&2
+  exit 1
+fi
+
+echo "Container is live; streaming structured progress to Equinox." >&2
+result_deadline_epoch=$((started_epoch + maximum_lifetime_minutes * 60 - 60))
+failure_message="The remote workload did not finish before the provider cleanup reserve."
+while (( $(date +%s) < result_deadline_epoch )); do
+  exit_code="$(
+    curl --fail --silent --show-error --max-time 10 \
+      "$proxy_root/exit_code" 2>/dev/null || true
+  )"
+  if [[ -n "$exit_code" ]]; then
+    break
+  fi
+  remote_progress="$(
+    curl --fail --silent --show-error --max-time 10 "$progress_url" 2>/dev/null || true
+  )"
+  if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
+    last_progress="$(
+      jq -cn \
+        --argjson previous "$last_progress" \
+        --argjson current "$remote_progress" \
+        '$previous + $current'
+    )"
+    publish_execution "RUNNING" "$last_progress"
+  fi
+  sleep 5
+done
+if [[ -z "$exit_code" ]]; then
+  echo "The remote workload did not finish before the cleanup reserve." >&2
+  exit 1
+fi
+if [[ "$exit_code" != "0" ]]; then
+  failure_message="The remote workload failed with exit code $exit_code."
+  echo "The remote workload failed with exit code $exit_code." >&2
+  curl --fail --silent --show-error "$proxy_root/error.log" 2>/dev/null |
+    tail -40 >&2 || true
+  exit 1
+fi
+metrics="$(curl --fail --silent --show-error "$proxy_root/result.json")"
+if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
+  failure_message="The remote workload result was missing or invalid."
+  echo "The remote workload did not return a valid metrics object." >&2
+  exit 1
+fi
+result_path="$receipt_directory/$proof_id.result.json"
+jq . <<<"$metrics" >"$result_path"
+if [[ "$experiment" == "model-repair" ]]; then
+  adapter_path="$receipt_directory/$proof_id.adapter.tgz"
+  adapter_pending_path="$adapter_path.pending"
+  curl --fail --silent --show-error --max-time 120 \
+    "$proxy_root/adapter.tgz" >"$adapter_pending_path"
+  if [[ ! -s "$adapter_pending_path" ]]; then
+    failure_message="The trained LoRA adapter could not be persisted before teardown."
+    echo "The remote adapter artifact was empty; refusing to terminate as a successful run." >&2
+    exit 1
+  fi
+  mv "$adapter_pending_path" "$adapter_path"
+fi
+if [[ "$experiment" == "sequence-ladder" ]]; then
+  proof_assertion='
+    .device == "cuda"
+    and .workload == "branching-sequence-policy-gradient-ladder"
+    and .branch_width == 4
+    and .complexity_strategy == "adaptive"
+    and .test_case_count == 3
+    and (.test_cases | length) == 3
+    and ([.test_cases[].branch_width] | all(. == 4))
+    and ([.test_cases[].promotion_count] | all(. >= 1))
+    and ([.test_cases[].reward_gain] | all(. >= 0.20))
+    and ([.test_cases[].final_reward] | all(. >= 0.85))
+    and .test_cases[0].maximum_horizon < .test_cases[1].maximum_horizon
+    and .test_cases[1].maximum_horizon < .test_cases[2].maximum_horizon
+    and .maximum_horizon >= 64
+    and .total_action_decisions >= 50000000
+    and .promotion_count >= 5
+    and .reward_gain >= 0.20
+  '
+else
+  proof_assertion='
+    .device == "cuda"
+    and .experiment_completed == true
+    and .workload == "model-repair-group-policy-optimization"
+    and .branch_width == 4
+    and .complexity_strategy == "adaptive"
+    and .model_id == "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+    and (.task_domains | sort) == ([
+      "filesystem_cli",
+      "micro_repository",
+      "sqlite_repair"
+    ] | sort)
+    and .updates_completed >= 1
+    and .total_sampled_completions >= 4
+    and (.hypothesis_passed | type) == "boolean"
+  '
+fi
+if ! jq -e "$proof_assertion" >/dev/null <<<"$metrics"; then
+  failure_message="The remote result did not satisfy the declared proof contract."
+  echo "The remote workload completed but did not meet the proof assertions." >&2
+  jq . <<<"$metrics" >&2
+  exit 1
+fi
+
+last_progress="$(
+  jq -c \
+    --argjson result "$metrics" \
+    '
+      ($result.reached_complexity_level // .current_level // 0) as $level
+      | . + {
+          phase: "finalizing",
+          message: "Result persisted; confirming RunPod teardown.",
+          update: ($result.updates_completed // .update // 0),
+          current_level: $level,
+          promotion_count: ($result.promotion_count // .promotion_count // 0),
+          sampled_completions: (
+            $result.total_sampled_completions // .sampled_completions // 0
+          ),
+          exact_rate: (
+            $result.final_by_level[($level | tostring)].exact_rate
+            // $result.final_reward
+            // .exact_rate
+          ),
+          elapsed_seconds: ($result.elapsed_seconds // .elapsed_seconds),
+          stop_reason: ($result.stop_reason // .stop_reason),
+          hypothesis_passed: (
+            $result.hypothesis_passed // .hypothesis_passed
+          )
+        }
+    ' <<<"$last_progress"
+)"
+publish_execution "FINALIZING" "$last_progress"
+
+echo "Remote loop passed; terminating worker $pod_id." >&2
+failure_message="RunPod teardown could not be confirmed."
+runpodctl pod delete "$pod_id" >/dev/null
+for _ in {1..12}; do
+  if ! pod_is_present; then
+    break
+  fi
+  sleep 5
+done
+if pod_is_present; then
+  echo "RunPod still reports worker $pod_id; refusing to record confirmed teardown." >&2
+  exit 1
+fi
+completed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+pod_id=""
+
+receipt_path="$receipt_directory/$proof_id.json"
+jq -n \
+  --arg provider_name "RunPod" \
+  --arg provider_handle "$provider_handle" \
+  --arg provider_cli_version "$(runpodctl version | awk '{print $2}')" \
+  --arg gpu_id "$gpu_id" \
+  --arg image "$image" \
+  --arg cloud_type "$cloud_type" \
+  --argjson hourly_cost "$hourly_cost" \
+  --arg started_at "$started_at" \
+  --arg completed_at "$completed_at" \
+  --argjson result "$metrics" \
+  '{
+    provider_name: $provider_name,
+    provider_handle: $provider_handle,
+    provider_cli_version: $provider_cli_version,
+    resource_profile: {
+      gpu_id: $gpu_id,
+      gpu_count: 1,
+      image: $image,
+      hourly_cost_usd: $hourly_cost,
+      cloud_type: $cloud_type
+    },
+    workload: {
+      id: $result.workload,
+      revision: $result.workload_revision,
+      algorithm: $result.algorithm,
+      static_branch_width: $result.branch_width,
+      complexity_strategy: $result.complexity_strategy,
+      scale_case_count: ($result.test_case_count // null),
+      maximum_horizon: ($result.maximum_horizon // null),
+      total_action_decisions: ($result.total_action_decisions // null),
+      model_id: ($result.model_id // null),
+      model_revision: ($result.model_revision // null),
+      task_domains: ($result.task_domains // null),
+      maximum_complexity_level: ($result.maximum_complexity_level // null),
+      reached_complexity_level: ($result.reached_complexity_level // null),
+      total_sampled_completions: ($result.total_sampled_completions // null)
+    },
+    result: $result,
+    started_at: $started_at,
+    completed_at: $completed_at,
+    teardown_confirmed: true
+  }' >"$receipt_path"
+
+failure_message="The sanitized proof receipt could not be ingested after teardown."
+curl --fail --silent --show-error \
+  -X POST "$api_root/internal/research-compute-proofs" \
+  -H 'Content-Type: application/json' \
+  --data-binary "@$receipt_path" |
+  jq .
+terminal_published=true
+echo "Sanitized receipt: $receipt_path" >&2

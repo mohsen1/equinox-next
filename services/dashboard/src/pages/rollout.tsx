@@ -11,7 +11,9 @@ import { Link, useParams, useSearchParams } from "../router";
 import { api, useApi } from "../api";
 import {
   AsyncState,
+  displayRunName,
   EvidenceRender,
+  formatDate,
   KeyValue,
   MachineId,
   Notice,
@@ -67,7 +69,12 @@ export function RolloutTreePage() {
   );
   const [rejudging, setRejudging] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const view = params.get("view") ?? "graph";
+  const defaultView =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(max-width: 760px)").matches
+      ? "outline"
+      : "graph";
+  const view = params.get("view") ?? defaultView;
   const outcomeFilter = params.get("filter") ?? "all";
   const filteredGraph = useMemo(
     () =>
@@ -103,25 +110,60 @@ export function RolloutTreePage() {
         String(filteredGraph.branch_groups[0].branch_group_id),
       );
     }
-    if (!params.get("view")) next.set("view", "graph");
+    if (!params.get("view")) next.set("view", defaultView);
     setParams(next, { replace: true });
-  }, [filteredGraph, params, setParams]);
+  }, [defaultView, filteredGraph, params, setParams]);
 
   const selectedState = params.get("state");
   const selectedStep = params.get("step");
+  const selectedEdge = filteredGraph?.edges.find(
+    (edge) => edge.target === selectedState,
+  );
+  const selectedStateRecord = filteredGraph?.nodes.find(
+    (state) => state.id === selectedState,
+  );
+  const selectedMember = filteredGraph?.branch_members.find(
+    (member) => member.branch_member_id === selectedEdge?.branch_member_id,
+  );
+  const causalEdges = filteredGraph
+    ? causalEdgeSequence(filteredGraph, selectedEdge?.branch_member_id ?? null)
+    : [];
+  const selectedEdgeIndex = selectedEdge
+    ? causalEdges.findIndex((edge) => edge.id === selectedEdge.id)
+    : -1;
+  function selectEdge(edge: GraphEdge) {
+    const next = new URLSearchParams(params);
+    next.set("state", edge.target);
+    next.set("verification", edge.verification_run_id);
+    if (edge.branch_member_id) next.set("member", edge.branch_member_id);
+    else next.delete("member");
+    setParams(next);
+  }
   const flow = useMemo(
     () =>
       filteredGraph
-        ? buildFlow(filteredGraph, selectedState, (stateId, edge) => {
-            const next = new URLSearchParams(params);
-            next.set("state", stateId);
-            if (edge) next.set("verification", edge.verification_run_id);
-            if (edge?.branch_member_id)
-              next.set("member", edge.branch_member_id);
-            setParams(next);
-          })
+        ? buildFlow(
+            filteredGraph,
+            selectedState,
+            selectedEdge?.branch_member_id ?? null,
+            (stateId, edge) => {
+              const next = new URLSearchParams(params);
+              next.set("state", stateId);
+              if (edge) next.set("verification", edge.verification_run_id);
+              if (edge?.branch_member_id)
+                next.set("member", edge.branch_member_id);
+              else next.delete("member");
+              setParams(next);
+            },
+          )
         : { nodes: [], edges: [] },
-    [filteredGraph, params, selectedState, setParams],
+    [
+      filteredGraph,
+      params,
+      selectedEdge?.branch_member_id,
+      selectedState,
+      setParams,
+    ],
   );
 
   const proof = verification.data?.proof_bundle?.manifest;
@@ -159,11 +201,30 @@ export function RolloutTreePage() {
       <PageHeader
         eyebrow={
           <>
-            <Link to="/runs">Runs</Link> / rollout tree
+            {graph.data?.tree.run_id ? (
+              <Link to={`/runs/${String(graph.data.tree.run_id)}?view=trace`}>
+                Run trace
+              </Link>
+            ) : (
+              <Link to="/runs">Runs</Link>
+            )}{" "}
+            / trajectory
           </>
         }
-        title="Shared-prefix CAD trajectory"
-        description={<MachineId value={treeId} />}
+        title="Trajectory explorer"
+        description={
+          graph.data ? (
+            <>
+              {displayRunName(String(graph.data.tree.run_name ?? "Run"))} ·{" "}
+              {graph.data.edges.length} actions ·{" "}
+              {graph.data.branch_members.length
+                ? `static K=${graph.data.branch_members.length}`
+                : "independent"}
+            </>
+          ) : (
+            <MachineId value={treeId} />
+          )
+        }
         actions={
           <>
             <div className="segmented" aria-label="Trajectory representation">
@@ -207,9 +268,57 @@ export function RolloutTreePage() {
                 {actionError}
               </Notice>
             ) : null}
+            <section className="trajectory-summary">
+              <div className="trace-reading">
+                <span>Start</span>
+                <i aria-hidden="true" />
+                <span>
+                  Shared prefix
+                  <small>
+                    {
+                      filteredGraph.edges.filter(
+                        (edge) => !edge.branch_member_id,
+                      ).length
+                    }{" "}
+                    actions
+                  </small>
+                </span>
+                <i aria-hidden="true" />
+                <strong>Checkpoint</strong>
+                <i className="fan" aria-hidden="true" />
+                <span>
+                  K={staticBranchWidth(filteredGraph)}
+                  <small>
+                    {filteredGraph.branch_members.length} visible sibling
+                    {filteredGraph.branch_members.length === 1 ? "" : "s"}
+                  </small>
+                </span>
+              </div>
+              <dl>
+                <div>
+                  <dt>States</dt>
+                  <dd>{filteredGraph.nodes.length}</dd>
+                </div>
+                <div>
+                  <dt>Actions</dt>
+                  <dd>{filteredGraph.edges.length}</dd>
+                </div>
+                <div>
+                  <dt>Exceptions</dt>
+                  <dd>
+                    {
+                      filteredGraph.branch_members.filter(
+                        (member) =>
+                          member.failure_mode || member.status !== "SUCCEEDED",
+                      ).length
+                    }
+                  </dd>
+                </div>
+              </dl>
+            </section>
             <div className="trajectory-controls">
               <label>
-                Outcome filter
+                Show
                 <select
                   value={params.get("filter") ?? "all"}
                   onChange={(event) =>
@@ -225,9 +334,8 @@ export function RolloutTreePage() {
               </label>
               <span>
                 {filteredGraph.nodes.length} of {graph.data.nodes.length} states
-                · {filteredGraph.edges.length} transitions ·{" "}
-                {filteredGraph.branch_members.length} of{" "}
-                {graph.data.branch_members.length} siblings
+                · {filteredGraph.branch_members.length} of{" "}
+                {graph.data.branch_members.length} sibling paths
               </span>
               {graph.data.environment_snapshots[0] ? (
                 <span>
@@ -272,93 +380,71 @@ export function RolloutTreePage() {
                   />
                 )}
               </section>
-              <aside className="branch-outline">
-                <div className="inspector-heading">
-                  <span>Branch group</span>
-                  {graph.data.branch_groups[0] ? (
-                    <StatusBadge
-                      status={String(graph.data.branch_groups[0].status)}
-                    />
-                  ) : (
-                    <StatusBadge status="INDEPENDENT" />
-                  )}
-                </div>
-                {graph.data.decision_checkpoints[0] ? (
-                  <KeyValue
-                    items={[
-                      {
-                        label: "Checkpoint",
-                        value: (
-                          <MachineId
-                            value={String(
-                              graph.data.decision_checkpoints[0].checkpoint_id,
-                            )}
-                            copy={false}
-                          />
-                        ),
-                      },
-                      {
-                        label: "Snapshot",
-                        value: (
-                          <MachineId
-                            value={String(
-                              graph.data.environment_snapshots[0]?.snapshot_id,
-                            )}
-                            copy={false}
-                          />
-                        ),
-                      },
-                      {
-                        label: "Fidelity",
-                        value: <code>logical_restore</code>,
-                      },
-                      {
-                        label: "Width",
-                        value: graph.data.branch_members.length,
-                      },
-                    ]}
-                  />
-                ) : (
-                  <p className="muted">
-                    Independent rollout: no shared decision checkpoint.
-                  </p>
-                )}
-                <div className="member-list">
-                  {filteredGraph.branch_members.map((member) => (
-                    <button
-                      type="button"
-                      key={member.branch_member_id}
-                      className={
-                        params.get("member") === member.branch_member_id
-                          ? "member selected"
-                          : "member"
-                      }
-                      onClick={() => {
-                        const edge = [...graph.data!.edges]
-                          .reverse()
-                          .find(
-                            (item) =>
-                              item.branch_member_id === member.branch_member_id,
-                          );
-                        if (!edge) return;
-                        const next = new URLSearchParams(params);
-                        next.set("member", member.branch_member_id);
-                        next.set("state", edge.target);
-                        next.set("verification", edge.verification_run_id);
-                        setParams(next);
-                      }}
-                    >
-                      <span>Sibling {member.sibling_index + 1}</span>
-                      <StatusBadge status={member.status} />
-                      {member.failure_mode ? (
-                        <small>
-                          {member.failure_mode.replaceAll("_", " ")}
-                        </small>
+              <TraceInspector
+                graph={filteredGraph}
+                state={selectedStateRecord}
+                edge={selectedEdge}
+                member={selectedMember}
+                previous={
+                  selectedEdgeIndex > 0
+                    ? causalEdges[selectedEdgeIndex - 1]
+                    : undefined
+                }
+                next={
+                  selectedEdgeIndex >= 0
+                    ? causalEdges[selectedEdgeIndex + 1]
+                    : undefined
+                }
+                select={selectEdge}
+              />
+            </div>
+            <div className="branch-lane-strip" aria-label="Sibling paths">
+              <span className="branch-lane-label">Sibling paths</span>
+              {filteredGraph.branch_members.map((member) => {
+                const memberEdges = graph.data!.edges.filter(
+                  (edge) => edge.branch_member_id === member.branch_member_id,
+                );
+                const terminalEdge = memberEdges.at(-1);
+                return (
+                  <button
+                    type="button"
+                    key={member.branch_member_id}
+                    aria-pressed={
+                      selectedMember?.branch_member_id ===
+                      member.branch_member_id
+                    }
+                    onClick={() => terminalEdge && selectEdge(terminalEdge)}
+                  >
+                    <span>
+                      <strong>Sibling {member.sibling_index + 1}</strong>
+                      <small>{memberEdges.length} actions</small>
+                    </span>
+                    <span className="lane-outcomes">
+                      <small>
+                        Exec{" "}
+                        {(member.terminal_outcome ?? "complete")
+                          .toLowerCase()
+                          .replaceAll("_", " ")}
+                      </small>
+                      <small>
+                        Verify{" "}
+                        {(member.verification_status ?? "unknown")
+                          .toLowerCase()
+                          .replaceAll("_", " ")}
+                        {member.failure_mode
+                          ? ` · ${member.failure_mode.toLowerCase().replaceAll("_", " ")}`
+                          : ""}
+                      </small>
+                      {Number(member.retry_count ?? 0) > 0 ? (
+                        <small>{member.retry_count} recovered retries</small>
                       ) : null}
-                    </button>
-                  ))}
-                </div>
-              </aside>
+                      <StatusBadge
+                        status={member.eligibility_status ?? member.status}
+                      />
+                    </span>
+                  </button>
+                );
+              })}
             </div>
             <EvidenceComparator
               proof={proof}
@@ -397,11 +483,252 @@ export function RolloutTreePage() {
   );
 }
 
+function TraceInspector({
+  graph,
+  state,
+  edge,
+  member,
+  previous,
+  next,
+  select,
+}: {
+  graph: RolloutGraph;
+  state: RolloutGraph["nodes"][number] | undefined;
+  edge: GraphEdge | undefined;
+  member: RolloutGraph["branch_members"][number] | undefined;
+  previous: GraphEdge | undefined;
+  next: GraphEdge | undefined;
+  select: (edge: GraphEdge) => void;
+}) {
+  const checkpoint = graph.decision_checkpoints[0];
+  const snapshot = graph.environment_snapshots[0];
+  const actionArguments = edge
+    ? Object.fromEntries(
+        Object.entries(edge.action).filter(([key]) => key !== "kind"),
+      )
+    : {};
+  return (
+    <aside className="trace-inspector" aria-label="Selected action">
+      <header className="inspector-heading">
+        <span>Selected action</span>
+        <StatusBadge
+          status={edge?.outcome ?? state?.semantic_status ?? "READY"}
+        />
+      </header>
+      {state ? (
+        <>
+          <div className="selected-action">
+            <span>S{state.sequence}</span>
+            <h2>
+              {edge ? edge.action.kind.replaceAll("_", " ") : "Initial state"}
+            </h2>
+            <p>
+              {member
+                ? `Sibling ${member.sibling_index + 1}`
+                : edge
+                  ? "Shared prefix"
+                  : "Trajectory start"}
+            </p>
+          </div>
+          <dl className="action-facts">
+            <div>
+              <dt>Result</dt>
+              <dd>{edge?.outcome.replaceAll("_", " ") ?? "Ready"}</dd>
+            </div>
+            <div>
+              <dt>State</dt>
+              <dd>{state.semantic_status.replaceAll("_", " ")}</dd>
+            </div>
+            {member ? (
+              <div>
+                <dt>Verification</dt>
+                <dd>
+                  {(member.verification_status ?? "unknown").replaceAll(
+                    "_",
+                    " ",
+                  )}
+                  {member.failure_mode
+                    ? ` · ${member.failure_mode.replaceAll("_", " ")}`
+                    : ""}
+                </dd>
+              </div>
+            ) : null}
+            {member ? (
+              <div>
+                <dt>Training</dt>
+                <dd>
+                  {(member.eligibility_status ?? member.status).replaceAll(
+                    "_",
+                    " ",
+                  )}
+                </dd>
+              </div>
+            ) : null}
+            {edge?.created_at ? (
+              <div>
+                <dt>Recorded</dt>
+                <dd>{formatDate(edge.created_at)}</dd>
+              </div>
+            ) : null}
+          </dl>
+          <div className="step-navigation" aria-label="Step navigation">
+            <button
+              type="button"
+              disabled={!previous}
+              onClick={() => previous && select(previous)}
+            >
+              ← Previous
+            </button>
+            <button
+              type="button"
+              disabled={!next}
+              onClick={() => next && select(next)}
+            >
+              Next →
+            </button>
+          </div>
+          {edge && !member && !next && checkpoint ? (
+            <p className="checkpoint-prompt">
+              Shared prefix complete. Choose a sibling path below to continue
+              past the checkpoint.
+            </p>
+          ) : null}
+          {edge?.verification_run_id ? (
+            <Link
+              className="button secondary inspector-action"
+              to={`/verification-runs/${edge.verification_run_id}`}
+            >
+              Inspect verification
+            </Link>
+          ) : null}
+          {Object.keys(actionArguments).length ? (
+            <details className="trace-provenance">
+              <summary>Action input</summary>
+              <pre>{JSON.stringify(actionArguments, null, 2)}</pre>
+            </details>
+          ) : null}
+          <details className="trace-provenance">
+            <summary>Action provenance</summary>
+            <dl>
+              <div>
+                <dt>Transition</dt>
+                <dd>
+                  {edge ? (
+                    <MachineId value={edge.id} copy={false} />
+                  ) : (
+                    "Initial state"
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>State</dt>
+                <dd>
+                  <MachineId value={state.id} copy={false} />
+                </dd>
+              </div>
+              {edge?.proof_bundle_id ? (
+                <div>
+                  <dt>Proof</dt>
+                  <dd>
+                    <MachineId value={edge.proof_bundle_id} copy={false} />
+                  </dd>
+                </div>
+              ) : null}
+              {edge?.operation_id ? (
+                <div>
+                  <dt>Operation</dt>
+                  <dd>
+                    <MachineId value={edge.operation_id} copy={false} />
+                  </dd>
+                </div>
+              ) : null}
+              {edge?.action_artifact_id ? (
+                <div>
+                  <dt>Action artifact</dt>
+                  <dd>
+                    <MachineId value={edge.action_artifact_id} copy={false} />
+                  </dd>
+                </div>
+              ) : null}
+              {edge?.runtime_cursor_id ? (
+                <div>
+                  <dt>Runtime cursor</dt>
+                  <dd>
+                    <MachineId value={edge.runtime_cursor_id} copy={false} /> v
+                    {edge.cursor_version}
+                  </dd>
+                </div>
+              ) : null}
+              {state.payload.observation?.digest ? (
+                <div>
+                  <dt>Observation</dt>
+                  <dd>
+                    <MachineId
+                      value={state.payload.observation.digest}
+                      copy={false}
+                    />
+                  </dd>
+                </div>
+              ) : null}
+              {state.payload.logical_state?.digest ? (
+                <div>
+                  <dt>Logical state</dt>
+                  <dd>
+                    <MachineId
+                      value={state.payload.logical_state.digest}
+                      copy={false}
+                    />
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+          </details>
+        </>
+      ) : (
+        <p className="muted-block">Select an action in the graph.</p>
+      )}
+      <section className="checkpoint-context">
+        <div className="inspector-heading">
+          <span>{checkpoint ? "Branch checkpoint" : "Trajectory context"}</span>
+          <span>K={staticBranchWidth(graph)}</span>
+        </div>
+        {checkpoint ? (
+          <dl>
+            <div>
+              <dt>Snapshot</dt>
+              <dd>
+                <MachineId
+                  value={String(snapshot?.snapshot_id ?? "not recorded")}
+                  copy={false}
+                />
+              </dd>
+            </div>
+            <div>
+              <dt>Fidelity</dt>
+              <dd>
+                {String(
+                  snapshot?.obtained_fidelity ?? "logical_restore",
+                ).replaceAll("_", " ")}
+              </dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="muted-block">
+            Independent rollout with no shared checkpoint.
+          </p>
+        )}
+      </section>
+    </aside>
+  );
+}
+
 function filterGraph(graph: RolloutGraph, filter: string): RolloutGraph {
   if (filter === "all") return graph;
   const includedMembers = graph.branch_members.filter((member) => {
     const exceptional =
-      Boolean(member.failure_mode) || member.status !== "SUCCEEDED";
+      Boolean(member.failure_mode) ||
+      member.status !== "SUCCEEDED" ||
+      Number(member.retry_count ?? 0) > 0;
     return filter === "exceptions" ? exceptional : !exceptional;
   });
   const includedIds = new Set(
@@ -422,35 +749,79 @@ function filterGraph(graph: RolloutGraph, filter: string): RolloutGraph {
   };
 }
 
-function buildFlow(
+export function causalEdgeSequence(
+  graph: RolloutGraph,
+  selectedMemberId: string | null,
+): GraphEdge[] {
+  return graph.edges.filter(
+    (edge) =>
+      !edge.branch_member_id ||
+      (selectedMemberId && edge.branch_member_id === selectedMemberId),
+  );
+}
+
+function staticBranchWidth(graph: RolloutGraph): number {
+  return Number(
+    graph.branch_groups[0]?.width ?? (graph.branch_members.length || 1),
+  );
+}
+
+export function buildFlow(
   graph: RolloutGraph,
   selectedState: string | null,
+  selectedMemberId: string | null,
   select: (stateId: string, edge: GraphEdge | undefined) => void,
 ): { nodes: Node[]; edges: Edge[] } {
   const incoming = new Map(graph.edges.map((edge) => [edge.target, edge]));
   const memberIndex = new Map(
-    graph.branch_members.map((member) => [
+    graph.branch_members.map((member, visibleIndex) => [
       member.branch_member_id,
-      member.sibling_index,
+      visibleIndex,
     ]),
   );
   const prefixStates = graph.nodes.filter(
     (state) => !incoming.get(state.id)?.branch_member_id,
   );
-  const branchPointX = Math.max(160, (prefixStates.length - 1) * 160);
+  const laneGap = 164;
+  const laneStartX = 24;
+  const centerX =
+    laneStartX + (Math.max(1, graph.branch_members.length) - 1) * (laneGap / 2);
+  const stepGap = 96;
+  const checkpointY = Math.max(
+    stepGap,
+    (prefixStates.length - 1) * stepGap + stepGap,
+  );
+  const firstBranchEdge = graph.edges.find((edge) => edge.branch_member_id);
+  const branchSourceId = firstBranchEdge?.source;
+  const checkpointId = graph.decision_checkpoints[0]
+    ? `checkpoint-${String(graph.decision_checkpoints[0].checkpoint_id)}`
+    : null;
   const perMemberIndex = new Map<string, number>();
   const nodes: Node[] = graph.nodes.map((state) => {
     const edge = incoming.get(state.id);
     const memberId = edge?.branch_member_id;
-    let x = prefixStates.findIndex((item) => item.id === state.id) * 160;
-    let y = 70;
+    let x = centerX;
+    let y =
+      prefixStates.findIndex((item) => item.id === state.id) * stepGap + 16;
     if (memberId) {
       const count = perMemberIndex.get(memberId) ?? 0;
       perMemberIndex.set(memberId, count + 1);
-      x = branchPointX + (count + 1) * 160;
-      y = 190 + (memberIndex.get(memberId) ?? 0) * 105;
+      x = laneStartX + (memberIndex.get(memberId) ?? 0) * laneGap;
+      y = checkpointY + 112 + count * stepGap;
     }
-    const label = edge ? edge.action.kind.replaceAll("_", " ") : "reset";
+    const label = edge
+      ? edge.action.kind.replaceAll("_", " ")
+      : "Initial state";
+    const onSelectedPath =
+      !memberId || (selectedMemberId && memberId === selectedMemberId);
+    const classes = [
+      "flow-node",
+      state.id === selectedState ? "selected" : "",
+      onSelectedPath ? "on-path" : "",
+      state.semantic_status === "TERMINATED" ? "terminal" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
     return {
       id: state.id,
       position: { x, y },
@@ -462,29 +833,80 @@ function buildFlow(
             onClick={() => select(state.id, edge)}
             aria-label={`${label}, state ${state.sequence}, ${state.semantic_status}`}
           >
-            <span>{label}</span>
-            <code>S{state.sequence}</code>
+            <span className="flow-node-title">{label}</span>
+            <span className="flow-node-meta">
+              <code>S{state.sequence}</code>
+              <small>
+                {memberId
+                  ? `Sibling ${(memberIndex.get(memberId) ?? 0) + 1}`
+                  : edge
+                    ? "Shared"
+                    : "Start"}
+              </small>
+            </span>
           </button>
         ),
       },
-      className:
-        state.id === selectedState ? "flow-node selected" : "flow-node",
+      className: classes,
       draggable: false,
       selectable: true,
       ariaLabel: `${label}, state ${state.sequence}, ${state.semantic_status}`,
     };
   });
-  const edges: Edge[] = graph.edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    type: "smoothstep",
-    animated: edge.target === selectedState,
-    markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
-    className:
-      edge.target === selectedState ? "flow-edge selected" : "flow-edge",
-    ariaLabel: `${edge.action.kind.replaceAll("_", " ")} transition, ${edge.outcome}`,
-  }));
+  if (checkpointId) {
+    nodes.push({
+      id: checkpointId,
+      position: { x: centerX + 8, y: checkpointY + 8 },
+      data: {
+        label: (
+          <div className="checkpoint-node-label">
+            <span aria-hidden="true">◆</span>
+            <strong>Checkpoint</strong>
+            <small>fan out K={staticBranchWidth(graph)}</small>
+          </div>
+        ),
+      },
+      className: "flow-checkpoint",
+      draggable: false,
+      selectable: false,
+      ariaLabel: `Branch checkpoint, static width ${staticBranchWidth(graph)}`,
+    });
+  }
+  const edges: Edge[] = graph.edges.map((edge) => {
+    const onSelectedPath =
+      !edge.branch_member_id || edge.branch_member_id === selectedMemberId;
+    const exactSelection = edge.target === selectedState;
+    return {
+      id: edge.id,
+      source:
+        checkpointId && edge.branch_member_id && edge.source === branchSourceId
+          ? checkpointId
+          : edge.source,
+      target: edge.target,
+      type: "smoothstep",
+      animated: exactSelection,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
+      className: [
+        "flow-edge",
+        onSelectedPath ? "on-path" : "",
+        exactSelection ? "selected" : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      ariaLabel: `${edge.action.kind.replaceAll("_", " ")} transition, ${edge.outcome}`,
+    };
+  });
+  if (checkpointId && branchSourceId) {
+    edges.push({
+      id: `${checkpointId}-entry`,
+      source: branchSourceId,
+      target: checkpointId,
+      type: "smoothstep",
+      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
+      className: "flow-edge on-path checkpoint-edge",
+      ariaLabel: `Checkpoint created after shared prefix`,
+    });
+  }
   return { nodes, edges };
 }
 
@@ -586,12 +1008,17 @@ function EvidenceComparator({
       .filter(
         (member) =>
           member.proof_bundle &&
-          visibleMemberIds.includes(String(member.branch_member_id)),
+          visibleMemberIds.includes(String(member.branch_member_id)) &&
+          !(
+            member.branch_member_id === selectedMember &&
+            member.proof_bundle.candidate_render.digest ===
+              proof.candidate_render.digest
+          ),
       )
       .map((member) => ({
-        label: `Sibling ${Number(member.sibling_index) + 1}`,
+        label: `Sibling ${Number(member.sibling_index) + 1} terminal`,
         artifact: member.proof_bundle!.candidate_render,
-        selected: member.branch_member_id === selectedMember,
+        selected: false,
         status: String(member.status),
       })) ?? [];
   const renders = [
@@ -602,13 +1029,13 @@ function EvidenceComparator({
       status: "REFERENCE",
     },
     {
-      label: "Source",
+      label: "Action source",
       artifact: proof.source_render,
       selected: false,
       status: "ACCEPTED",
     },
     {
-      label: "Candidate",
+      label: "Selected action result",
       artifact: proof.candidate_render,
       selected: true,
       status: "SELECTED",

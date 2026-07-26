@@ -18,7 +18,12 @@ export interface RunSummary {
   status: RunStatus;
   desired_state: string;
   manifest: {
-    environment?: { snapshot_fidelity?: string };
+    environment?: {
+      id?: string;
+      snapshot_fidelity?: string;
+      status?: string;
+    };
+    complexity?: ComplexityConfig;
     [key: string]: unknown;
   };
   manifest_digest: string;
@@ -37,6 +42,133 @@ export interface RunSummary {
     execution: string;
   };
   cost: { execution_credits: number; judge_credits: number };
+}
+
+export type ResearchComputeStatus =
+  | "PROVISIONING"
+  | "RUNNING"
+  | "FINALIZING"
+  | "SUCCEEDED"
+  | "FAILED";
+
+export interface ResearchComputeExecution {
+  execution_id: string;
+  name: string;
+  workload_id: string;
+  model_id: string | null;
+  branch_width: 4;
+  complexity_strategy: "adaptive";
+  status: ResearchComputeStatus;
+  provider_name: "RunPod";
+  provider_handle: string | null;
+  resource_profile: {
+    gpu_id?: string;
+    cloud_type?: string;
+    image?: string;
+    hourly_cost_usd?: number;
+    maximum_hourly_cost_usd?: number;
+    [key: string]: unknown;
+  };
+  progress: {
+    phase?: string;
+    message?: string;
+    update?: number;
+    maximum_updates?: number;
+    exact_rate?: number;
+    format_rate?: number;
+    mean_reward?: number;
+    current_level?: number;
+    maximum_level?: number;
+    promotion_count?: number;
+    sampled_completions?: number;
+    elapsed_seconds?: number;
+    stop_reason?: string;
+    initial_exact_rate?: number;
+    final_exact_rate?: number;
+    reward_gain?: number;
+    hypothesis_passed?: boolean;
+    adapter_persisted?: boolean;
+    error?: string;
+    [key: string]: unknown;
+  };
+  proof_id: string | null;
+  receipt_digest: string | null;
+  started_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  teardown_confirmed: boolean;
+}
+
+export interface ComplexityConfig {
+  strategy: "adaptive";
+  minimum_level: number;
+  initial_level: number;
+  maximum_level: number;
+  sampling_band: number;
+  mastery_threshold: number;
+  evaluation_window: number;
+  promotion_step: number;
+}
+
+export interface ComplexityState {
+  available?: true;
+  run_id: string;
+  environment_id: string;
+  strategy: "adaptive";
+  minimum_level: number;
+  current_level: number;
+  maximum_level: number;
+  sampling_band: number;
+  mastery_threshold: number;
+  evaluation_window: number;
+  promotion_step: number;
+  window_attempts: number;
+  window_successes: number;
+  promotion_count: number;
+  last_accuracy: number | null;
+  active_range: [number, number];
+  window_progress: {
+    attempts: number;
+    required: number;
+    successes: number;
+  };
+}
+
+export interface UnavailableComplexityState {
+  available: false;
+  run_id: string;
+  environment_id: string;
+  reason: "legacy_run";
+}
+
+export type ComplexityResponse = ComplexityState | UnavailableComplexityState;
+
+export interface EnvironmentSpec {
+  environment_id: string;
+  name: string;
+  short_name: string;
+  summary: string;
+  status: "LOCAL_FIXTURE" | "CONFIGURATION_DRAFT";
+  launch_enabled: boolean;
+  action_space: string;
+  verifier: string;
+  snapshot_strategy: string;
+  task_revision: string;
+  complexity: {
+    dimensions: string[];
+    default_initial_level: number;
+    default_max_level: number;
+  };
+}
+
+export interface EnvironmentsResponse {
+  items: EnvironmentSpec[];
+  complexity_schema: Record<string, unknown>;
+  branching: {
+    mode: "static";
+    branch_width: number;
+    note: string;
+  };
 }
 
 export interface ArtifactRef {
@@ -66,7 +198,13 @@ export interface GraphState {
   type: "state";
   sequence: number;
   semantic_status: string;
-  payload: { state_id: string };
+  payload: {
+    state_id: string;
+    observation?: ArtifactRef;
+    logical_state?: ArtifactRef;
+    [key: string]: unknown;
+  };
+  created_at?: string;
 }
 
 export interface GraphEdge {
@@ -75,13 +213,43 @@ export interface GraphEdge {
   target: string;
   branch_member_id: string | null;
   outcome: string;
-  action: { kind: string };
+  action: { kind: string; [key: string]: unknown };
   verification_run_id: string;
   proof_bundle_id: string;
+  operation_id?: string;
+  action_artifact_id?: string;
+  runtime_cursor_id?: string;
+  cursor_version?: number;
+  created_at?: string;
+}
+
+export interface RunRolloutTree {
+  rollout_tree_id: string;
+  collection_batch_id: string;
+  task_revision: string;
+  root_state_id: string;
+  status: string;
+  digest: string;
+  created_at: string;
+  collection_status: string;
+  collection_created_at: string;
+  state_count: number;
+  transition_count: number;
+  sibling_count: number;
+  excluded_count: number;
+  exception_count: number;
 }
 
 export interface RolloutGraph {
-  tree: Record<string, unknown>;
+  tree: {
+    rollout_tree_id?: string;
+    collection_batch_id?: string;
+    run_id?: string;
+    run_name?: string;
+    algorithm?: RunSummary["algorithm"];
+    status?: string;
+    [key: string]: unknown;
+  };
   nodes: GraphState[];
   edges: GraphEdge[];
   branch_groups: Array<Record<string, unknown>>;
@@ -91,6 +259,11 @@ export interface RolloutGraph {
     sibling_index: number;
     status: string;
     failure_mode: string | null;
+    eligibility_status?: string | null;
+    eligibility_reason?: string | null;
+    terminal_outcome?: string | null;
+    verification_status?: string | null;
+    retry_count?: number;
   }>;
   decision_checkpoints: Array<Record<string, unknown>>;
   environment_snapshots: Array<Record<string, unknown>>;

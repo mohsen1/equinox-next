@@ -74,6 +74,17 @@ def test_branch_shape_retry_negative_and_abstention(
     tree = api(f"/v1/iterations/{iteration['training_iteration_id']}/rollout-trees")["items"][0]
     graph = api(f"/v1/rollout-trees/{tree['rollout_tree_id']}/graph")
     assert (len(graph["nodes"]), len(graph["edges"])) == (16, 15)
+    assert all(
+        edge[field]
+        for edge in graph["edges"]
+        for field in (
+            "operation_id",
+            "action_artifact_id",
+            "runtime_cursor_id",
+            "created_at",
+        )
+    )
+    assert all(isinstance(edge["cursor_version"], int) for edge in graph["edges"])
     assert len(graph["decision_checkpoints"]) == 1
     assert len(graph["environment_snapshots"]) == 1
     assert len({member["runtime_cursor_id"] for member in graph["branch_members"]}) == 4
@@ -81,6 +92,11 @@ def test_branch_shape_retry_negative_and_abstention(
         member["failure_mode"] == "VALID_CANDIDATE_FAILURE" for member in graph["branch_members"]
     )
     assert any(member["failure_mode"] == "JUDGE_ABSTENTION" for member in graph["branch_members"])
+    assert {member["eligibility_status"] for member in graph["branch_members"]} == {
+        "ADMITTED",
+        "EXCLUDED",
+    }
+    assert any(member["retry_count"] > 0 for member in graph["branch_members"])
     assert run["retry_count"] >= 2
     assert run["abstention_count"] == 1
 

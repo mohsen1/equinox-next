@@ -2,7 +2,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TrajectoryOutline } from "./pages/rollout";
+import {
+  buildFlow,
+  causalEdgeSequence,
+  TrajectoryOutline,
+} from "./pages/rollout";
 import "./styles.css";
 import type { RolloutGraph } from "./types";
 
@@ -88,6 +92,51 @@ describe("rollout accessibility contracts", () => {
     expect(document.activeElement).toBe(buttons[1]);
     buttons[1].click();
     expect(select).toHaveBeenCalledWith("state_child", graph.edges[0]);
+  });
+
+  it("makes the branch checkpoint explicit in the flow model", () => {
+    const branchGraph: RolloutGraph = {
+      ...graph,
+      decision_checkpoints: [{ checkpoint_id: "checkpoint_1" }],
+    };
+    const flow = buildFlow(branchGraph, "state_child", "member_1", vi.fn());
+
+    expect(flow.nodes.map((node) => node.id)).toContain(
+      "checkpoint-checkpoint_1",
+    );
+    expect(flow.edges.find((edge) => edge.id === "transition_1")?.source).toBe(
+      "checkpoint-checkpoint_1",
+    );
+    expect(
+      flow.edges.find((edge) => edge.id === "checkpoint-checkpoint_1-entry"),
+    ).toMatchObject({
+      source: "state_root",
+      target: "checkpoint-checkpoint_1",
+    });
+  });
+
+  it("keeps previous and next navigation on one causal sibling path", () => {
+    const sharedEdge = {
+      ...graph.edges[0],
+      id: "transition_shared",
+      branch_member_id: null,
+    };
+    const siblingTwoEdge = {
+      ...graph.edges[0],
+      id: "transition_sibling_2",
+      branch_member_id: "member_2",
+    };
+    const branchGraph = {
+      ...graph,
+      edges: [sharedEdge, graph.edges[0], siblingTwoEdge],
+    };
+
+    expect(
+      causalEdgeSequence(branchGraph, "member_1").map((edge) => edge.id),
+    ).toEqual(["transition_shared", "transition_1"]);
+    expect(
+      causalEdgeSequence(branchGraph, null).map((edge) => edge.id),
+    ).toEqual(["transition_shared"]);
   });
 
   it("defines native dark mode and visible keyboard focus", () => {

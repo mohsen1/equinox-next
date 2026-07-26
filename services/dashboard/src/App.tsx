@@ -6,15 +6,9 @@
  * FORM: Operate surface; shared-prefix/four-lane composition selected from study B, with A's inspector.
  */
 import { AppShell } from "./components";
-import {
-  IterationPage,
-  NewRunPage,
-  RunDetailPage,
-  RunsPage,
-} from "./pages/runs";
+import { EnvironmentsPage } from "./pages/environments";
+import { ResearchRunPage, RunsPage } from "./pages/workspace";
 import { ResourcesPage } from "./pages/resources";
-import { RolloutTreePage } from "./pages/rollout";
-import { VerificationPage } from "./pages/verification";
 import { Navigate, Route, Routes } from "./router";
 
 export function App() {
@@ -23,17 +17,11 @@ export function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/runs" replace />} />
         <Route path="/runs" element={<RunsPage />} />
-        <Route path="/runs/new" element={<NewRunPage />} />
-        <Route path="/runs/:runId" element={<RunDetailPage />} />
         <Route
-          path="/runs/:runId/iterations/:iterationId"
-          element={<IterationPage />}
+          path="/runs/research/:executionId"
+          element={<ResearchRunPage />}
         />
-        <Route path="/rollout-trees/:treeId" element={<RolloutTreePage />} />
-        <Route
-          path="/verification-runs/:verificationRunId"
-          element={<VerificationPage />}
-        />
+        <Route path="/environments" element={<EnvironmentsPage />} />
         <Route path="/resources" element={<ResourcesPage />} />
         <Route path="*" element={<Navigate to="/runs" replace />} />
       </Routes>

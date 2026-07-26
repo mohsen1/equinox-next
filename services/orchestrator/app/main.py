@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Literal
 
 from equinox_core import canonical_digest, make_id, utc_now
@@ -13,6 +14,12 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
 from .database import connection, migrate
+from .environments import (
+    active_complexity_range,
+    advance_complexity,
+    environment_catalog,
+    environment_spec,
+)
 from .providers import POLICY_COMPUTE_PROVIDERS, assert_local_registry
 from .science import artifact_store, emit_event
 from .workflow import execute_run_attempt, rejudge_transition, release_run_resources
@@ -23,9 +30,21 @@ class StrictModel(BaseModel):
 
 
 class BranchConfig(StrictModel):
+    mode: Literal["static"] = "static"
     width: Literal[1, 4]
     decision_after_actions: int = Field(default=3, ge=1, le=8)
     rng_mode: Literal["split_stream"] = "split_stream"
+
+
+class ComplexityConfig(StrictModel):
+    strategy: Literal["adaptive"] = "adaptive"
+    minimum_level: int = Field(default=0, ge=0, le=100)
+    initial_level: int = Field(default=1, ge=0, le=100)
+    maximum_level: int = Field(default=8, ge=0, le=100)
+    sampling_band: int = Field(default=4, ge=1, le=20)
+    mastery_threshold: float = Field(default=0.9, gt=0, le=1)
+    evaluation_window: int = Field(default=32, ge=8, le=1024)
+    promotion_step: int = Field(default=1, ge=1, le=10)
 
 
 class BudgetConfig(StrictModel):
@@ -38,10 +57,14 @@ class BudgetConfig(StrictModel):
 class LaunchRunRequest(StrictModel):
     name: str = Field(min_length=3, max_length=80)
     algorithm: Literal["independent_rollout_baseline", "bpo_local_metric"]
+    environment_id: str = Field(default="cad.reconstruction", min_length=3, max_length=80)
     policy_compute_provider: Literal["MockRunPodProvider"] = "MockRunPodProvider"
     judge_provider: Literal["MockJudgeProvider"] = "MockJudgeProvider"
-    task_revision: Literal["mounting-plate@sha256:fixture-v1"] = "mounting-plate@sha256:fixture-v1"
+    task_revision: str = Field(
+        default="mounting-plate@sha256:fixture-v1", min_length=3, max_length=160
+    )
     branch: BranchConfig
+    complexity: ComplexityConfig = ComplexityConfig()
     budgets: BudgetConfig = BudgetConfig()
     seed: int = Field(default=17, ge=0, le=2**31 - 1)
     retention_class: Literal["local-research"] = "local-research"
@@ -57,6 +80,75 @@ class RejudgeApiRequest(StrictModel):
     fixture_scenario: Literal[
         "valid", "low", "tie", "abstain", "malformed", "retry", "disagreement", "integrity"
     ] = "valid"
+
+
+class ComplexityObservationRequest(StrictModel):
+    operation_id: str = Field(min_length=3, max_length=160)
+    level: int = Field(ge=0, le=100)
+    successes: int = Field(ge=0)
+    attempts: int = Field(gt=0)
+
+
+class ResearchComputeProofRequest(StrictModel):
+    provider_name: Literal["RunPod"]
+    provider_handle: str = Field(pattern=r"^runpod://pods/[a-zA-Z0-9_-]+$")
+    provider_cli_version: str = Field(min_length=1, max_length=80)
+    resource_profile: dict[str, Any]
+    workload: dict[str, Any]
+    result: dict[str, Any]
+    started_at: datetime
+    completed_at: datetime
+    teardown_confirmed: Literal[True]
+
+
+class ResearchComputeExecutionRequest(StrictModel):
+    name: str = Field(min_length=3, max_length=120)
+    workload_id: str = Field(min_length=3, max_length=160)
+    model_id: str | None = Field(default=None, max_length=200)
+    branch_width: Literal[4] = 4
+    complexity_strategy: Literal["adaptive"] = "adaptive"
+    status: Literal["PROVISIONING", "RUNNING", "FINALIZING", "SUCCEEDED", "FAILED"]
+    provider_name: Literal["RunPod"] = "RunPod"
+    provider_handle: str | None = Field(
+        default=None,
+        pattern=r"^runpod://pods/[a-zA-Z0-9_-]+$",
+    )
+    resource_profile: dict[str, Any] = Field(default_factory=dict)
+    progress: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime
+    completed_at: datetime | None = None
+    teardown_confirmed: bool = False
+
+
+def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
+    level = result.get("reached_complexity_level")
+    final_by_level = result.get("final_by_level")
+    level_result: dict[str, Any] = {}
+    if isinstance(final_by_level, dict) and level is not None:
+        candidate = final_by_level.get(str(level))
+        if isinstance(candidate, dict):
+            level_result = candidate
+
+    values = {
+        "phase": "complete",
+        "message": (
+            "Training and final evaluation completed; artifacts persisted "
+            "and provider teardown confirmed."
+        ),
+        "update": result.get("updates_completed"),
+        "current_level": level,
+        "promotion_count": result.get("promotion_count"),
+        "sampled_completions": result.get("total_sampled_completions"),
+        "exact_rate": level_result.get("exact_rate", result.get("final_reward")),
+        "initial_exact_rate": result.get("initial_reward"),
+        "final_exact_rate": result.get("final_reward"),
+        "reward_gain": result.get("reward_gain"),
+        "elapsed_seconds": result.get("elapsed_seconds"),
+        "stop_reason": result.get("stop_reason"),
+        "hypothesis_passed": result.get("hypothesis_passed"),
+        "adapter_persisted": result.get("adapter_persisted"),
+    }
+    return {key: value for key, value in values.items() if value is not None}
 
 
 def _wait_for_dependencies() -> None:
@@ -114,6 +206,38 @@ app = FastAPI(title="Equinox Next orchestrator", version="0.1.0", lifespan=lifes
 
 
 def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> dict[str, Any]:
+    environment = environment_spec(request.environment_id)
+    if environment is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "UNKNOWN_ENVIRONMENT",
+                "message": f"Unknown environment {request.environment_id}.",
+            },
+        )
+    if not environment["launch_enabled"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RUNPOOL_ADAPTER_REQUIRED",
+                "message": (
+                    f"{environment['name']} has a configuration draft. "
+                    "Connect the RunPool execution adapter before launching it."
+                ),
+            },
+        )
+    if not (
+        request.complexity.minimum_level
+        <= request.complexity.initial_level
+        <= request.complexity.maximum_level
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_COMPLEXITY_RANGE",
+                "message": "Difficulty must satisfy minimum ≤ initial ≤ maximum.",
+            },
+        )
     if request.algorithm == "bpo_local_metric" and request.branch.width != 4:
         raise HTTPException(
             status_code=422,
@@ -131,8 +255,9 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
         "schema_version": 1,
         "profile": "local-contract-proof",
         "environment": {
-            "id": "cad.reconstruction",
+            "id": request.environment_id,
             "version": "1.0.0",
+            "status": environment["status"],
             "execution_provider": "ComposeExecutionProvider",
             "snapshot_fidelity": "logical_restore",
         },
@@ -150,6 +275,7 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
             "calibration_status": "MOCK_CONTRACT_ONLY",
         },
         "branch": request.branch.model_dump(),
+        "complexity": request.complexity.model_dump(),
         "budgets": request.budgets.model_dump(),
         "seed": request.seed,
         "retention_class": request.retention_class,
@@ -197,6 +323,27 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
                 attempt_id,
                 allocation.resource_profile,
                 allocation.provider_handle,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO complexity_states(
+              run_id, environment_id, strategy, minimum_level, current_level,
+              maximum_level, sampling_band, mastery_threshold, evaluation_window,
+              promotion_step
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                run_id,
+                request.environment_id,
+                request.complexity.strategy,
+                request.complexity.minimum_level,
+                request.complexity.initial_level,
+                request.complexity.maximum_level,
+                request.complexity.sampling_band,
+                request.complexity.mastery_threshold,
+                request.complexity.evaluation_window,
+                request.complexity.promotion_step,
             ),
         )
         policy_manifest = {
@@ -284,7 +431,21 @@ def run_templates() -> dict[str, Any]:
                 },
             },
         ],
+        "environments": environment_catalog(),
         "schema": LaunchRunRequest.model_json_schema(),
+    }
+
+
+@app.get("/v1/environments")
+def environments() -> dict[str, Any]:
+    return {
+        "items": environment_catalog(),
+        "complexity_schema": ComplexityConfig.model_json_schema(),
+        "branching": {
+            "mode": "static",
+            "branch_width": 4,
+            "note": "Branch width is fixed for each run and recorded in its manifest.",
+        },
     }
 
 
@@ -353,6 +514,16 @@ def list_runs() -> dict[str, Any]:
                 """
             )
         )
+        research_items = list(
+            conn.execute(
+                """
+                SELECT *
+                FROM research_compute_executions
+                ORDER BY started_at DESC
+                LIMIT 20
+                """
+            )
+        )
     for run in data:
         run["providers"] = {
             "policy_compute": "MockRunPodProvider",
@@ -363,7 +534,11 @@ def list_runs() -> dict[str, Any]:
             "execution_credits": round(float(run["verification_run_count"]) * 0.0142, 4),
             "judge_credits": 0,
         }
-    return {"items": data, "next_cursor": None}
+    return {
+        "items": data,
+        "research_items": research_items,
+        "next_cursor": None,
+    }
 
 
 @app.get("/v1/runs/{run_id}")
@@ -473,17 +648,162 @@ def reproduce_run(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail={"code": "RUN_NOT_FOUND"})
     manifest = source["manifest"]
     request = LaunchRunRequest(
-        name=f"Reproduction of {source['name']}"[:80],
+        name=_reproduction_name(source["name"]),
         algorithm=manifest["algorithm"]["id"],
+        environment_id=manifest["environment"]["id"],
         policy_compute_provider="MockRunPodProvider",
         judge_provider="MockJudgeProvider",
         task_revision=manifest["task_revision"],
         branch=BranchConfig(**manifest["branch"]),
+        complexity=ComplexityConfig(**manifest.get("complexity", {})),
         budgets=BudgetConfig(**manifest["budgets"]),
         seed=manifest["seed"],
         retention_class="local-research",
     )
     return _launch(request, source_run_id=run_id)
+
+
+def _reproduction_name(source_name: str) -> str:
+    prefix = "Reproduction of "
+    base_name = source_name
+    while base_name.startswith(prefix):
+        base_name = base_name.removeprefix(prefix)
+    return f"{prefix}{base_name}"[:80]
+
+
+def _complexity_payload(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "available": True,
+        **state,
+        "active_range": active_complexity_range(
+            minimum=state["minimum_level"],
+            current=state["current_level"],
+            sampling_band=state["sampling_band"],
+        ),
+        "window_progress": {
+            "attempts": state["window_attempts"],
+            "required": state["evaluation_window"],
+            "successes": state["window_successes"],
+        },
+    }
+
+
+@app.get("/v1/runs/{run_id}/complexity")
+def run_complexity(run_id: str) -> dict[str, Any]:
+    with connection() as conn:
+        state = conn.execute(
+            "SELECT * FROM complexity_states WHERE run_id = %s", (run_id,)
+        ).fetchone()
+        run = conn.execute(
+            "SELECT run_id, manifest FROM runs WHERE run_id = %s", (run_id,)
+        ).fetchone()
+    if not run:
+        raise HTTPException(status_code=404, detail={"code": "RUN_NOT_FOUND"})
+    if not state:
+        return {
+            "available": False,
+            "run_id": run_id,
+            "environment_id": run["manifest"]
+            .get("environment", {})
+            .get("id", "cad.reconstruction"),
+            "reason": "legacy_run",
+        }
+    return _complexity_payload(state)
+
+
+@app.post("/internal/runs/{run_id}/complexity-observations")
+def observe_complexity(run_id: str, request: ComplexityObservationRequest) -> dict[str, Any]:
+    if request.successes > request.attempts:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_COMPLEXITY_OBSERVATION",
+                "message": "Successes cannot exceed attempts.",
+            },
+        )
+    request_digest = canonical_digest(request.model_dump())
+    with connection() as conn:
+        existing = conn.execute(
+            "SELECT request_digest FROM complexity_observations WHERE operation_id = %s",
+            (request.operation_id,),
+        ).fetchone()
+        if existing:
+            if existing["request_digest"] != request_digest:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "IDEMPOTENCY_CONFLICT"},
+                )
+            state = conn.execute(
+                "SELECT * FROM complexity_states WHERE run_id = %s", (run_id,)
+            ).fetchone()
+            return _complexity_payload(state)
+
+        state = conn.execute(
+            "SELECT * FROM complexity_states WHERE run_id = %s FOR UPDATE", (run_id,)
+        ).fetchone()
+        if not state:
+            raise HTTPException(status_code=404, detail={"code": "COMPLEXITY_STATE_NOT_FOUND"})
+        if request.level != state["current_level"]:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "STALE_COMPLEXITY_LEVEL",
+                    "message": (
+                        f"Observation level {request.level} does not match "
+                        f"current level {state['current_level']}."
+                    ),
+                },
+            )
+        update = advance_complexity(
+            current_level=state["current_level"],
+            maximum_level=state["maximum_level"],
+            window_attempts=state["window_attempts"],
+            window_successes=state["window_successes"],
+            new_attempts=request.attempts,
+            new_successes=request.successes,
+            evaluation_window=state["evaluation_window"],
+            mastery_threshold=state["mastery_threshold"],
+            promotion_step=state["promotion_step"],
+        )
+        conn.execute(
+            """
+            INSERT INTO complexity_observations(
+              operation_id, run_id, request_digest, level, successes, attempts, promoted
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                request.operation_id,
+                run_id,
+                request_digest,
+                request.level,
+                request.successes,
+                request.attempts,
+                update["promoted"],
+            ),
+        )
+        state = conn.execute(
+            """
+            UPDATE complexity_states SET
+              current_level = %s,
+              window_attempts = %s,
+              window_successes = %s,
+              promotion_count = promotion_count + %s,
+              last_accuracy = CASE WHEN %s THEN %s ELSE last_accuracy END,
+              updated_at = now()
+            WHERE run_id = %s
+            RETURNING *
+            """,
+            (
+                update["current_level"],
+                update["window_attempts"],
+                update["window_successes"],
+                1 if update["promoted"] else 0,
+                update["evaluated"],
+                update["last_accuracy"],
+                run_id,
+            ),
+        ).fetchone()
+    return _complexity_payload(state)
 
 
 @app.post("/v1/runs/{run_id}/rejudge", status_code=202)
@@ -593,6 +913,43 @@ def iterations(run_id: str) -> dict[str, Any]:
     return {"items": items}
 
 
+@app.get("/v1/runs/{run_id}/rollout-trees")
+def run_rollout_trees(run_id: str) -> dict[str, Any]:
+    with connection() as conn:
+        items = list(
+            conn.execute(
+                """
+                SELECT rt.*,
+                  cb.status AS collection_status,
+                  cb.created_at AS collection_created_at,
+                  (SELECT count(*) FROM states s
+                   WHERE s.rollout_tree_id = rt.rollout_tree_id) AS state_count,
+                  (SELECT count(*) FROM transitions t
+                   WHERE t.rollout_tree_id = rt.rollout_tree_id) AS transition_count,
+                  (SELECT count(*) FROM branch_members bm
+                   JOIN branch_groups bg ON bg.branch_group_id = bm.branch_group_id
+                   WHERE bg.rollout_tree_id = rt.rollout_tree_id) AS sibling_count,
+                  (SELECT count(*) FROM eligibility_decisions ed
+                   WHERE ed.rollout_tree_id = rt.rollout_tree_id
+                     AND ed.status = 'EXCLUDED') AS excluded_count,
+                  (SELECT count(*) FROM branch_members bm
+                   JOIN branch_groups bg ON bg.branch_group_id = bm.branch_group_id
+                   WHERE bg.rollout_tree_id = rt.rollout_tree_id
+                     AND (bm.failure_mode IS NOT NULL OR bm.status <> 'SUCCEEDED'))
+                    AS exception_count
+                FROM rollout_trees rt
+                JOIN collection_batches cb
+                  ON cb.collection_batch_id = rt.collection_batch_id
+                JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+                WHERE ra.run_id = %s
+                ORDER BY rt.created_at
+                """,
+                (run_id,),
+            )
+        )
+    return {"items": items}
+
+
 @app.get("/v1/iterations/{iteration_id}")
 def iteration_detail(iteration_id: str) -> dict[str, Any]:
     with connection() as conn:
@@ -664,7 +1021,16 @@ def rollout_tree(tree_id: str) -> dict[str, Any]:
 def rollout_tree_graph(tree_id: str) -> dict[str, Any]:
     with connection() as conn:
         tree = conn.execute(
-            "SELECT * FROM rollout_trees WHERE rollout_tree_id = %s", (tree_id,)
+            """
+            SELECT rt.*, ra.run_id, r.name AS run_name, r.algorithm
+            FROM rollout_trees rt
+            JOIN collection_batches cb
+              ON cb.collection_batch_id = rt.collection_batch_id
+            JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+            JOIN runs r ON r.run_id = ra.run_id
+            WHERE rt.rollout_tree_id = %s
+            """,
+            (tree_id,),
         ).fetchone()
         if not tree:
             raise HTTPException(status_code=404, detail={"code": "TREE_NOT_FOUND"})
@@ -699,8 +1065,33 @@ def rollout_tree_graph(tree_id: str) -> dict[str, Any]:
         branch_members = list(
             conn.execute(
                 """
-                SELECT bm.* FROM branch_members bm JOIN branch_groups bg
-                  ON bg.branch_group_id = bm.branch_group_id
+                SELECT bm.*,
+                  eligibility.status AS eligibility_status,
+                  eligibility.reason_code AS eligibility_reason,
+                  (SELECT t.outcome FROM transitions t
+                   WHERE t.branch_member_id = bm.branch_member_id
+                   ORDER BY t.created_at DESC LIMIT 1) AS terminal_outcome,
+                  (SELECT vr.status FROM transitions t
+                   JOIN verification_runs vr ON vr.subject_id = t.transition_id
+                     AND vr.rejudges_verification_run_id IS NULL
+                   WHERE t.branch_member_id = bm.branch_member_id
+                   ORDER BY t.created_at DESC, vr.created_at LIMIT 1)
+                    AS verification_status,
+                  (SELECT count(*) FROM transitions t
+                   JOIN verification_runs vr ON vr.subject_id = t.transition_id
+                     AND vr.rejudges_verification_run_id IS NULL
+                   JOIN verifier_step_runs vsr
+                     ON vsr.verification_run_id = vr.verification_run_id
+                   WHERE t.branch_member_id = bm.branch_member_id
+                     AND vsr.attempt_count > 1) AS retry_count
+                FROM branch_members bm
+                JOIN branch_groups bg ON bg.branch_group_id = bm.branch_group_id
+                LEFT JOIN LATERAL (
+                  SELECT ed.status, ed.reason_code
+                  FROM eligibility_decisions ed
+                  WHERE ed.branch_member_id = bm.branch_member_id
+                  ORDER BY ed.created_at DESC LIMIT 1
+                ) eligibility ON true
                 WHERE bg.rollout_tree_id = %s ORDER BY bm.sibling_index
                 """,
                 (tree_id,),
@@ -731,6 +1122,7 @@ def rollout_tree_graph(tree_id: str) -> dict[str, Any]:
                 "sequence": state["sequence"],
                 "semantic_status": state["semantic_status"],
                 "payload": state["payload"],
+                "created_at": state["created_at"],
             }
             for state in states
         ],
@@ -744,6 +1136,11 @@ def rollout_tree_graph(tree_id: str) -> dict[str, Any]:
                 "action": transition["payload"]["action"],
                 "verification_run_id": transition["verification_run_id"],
                 "proof_bundle_id": transition["proof_bundle_id"],
+                "operation_id": transition["operation_id"],
+                "action_artifact_id": transition["action_artifact_id"],
+                "runtime_cursor_id": transition["runtime_cursor_id"],
+                "cursor_version": transition["cursor_version"],
+                "created_at": transition["created_at"],
             }
             for transition in transitions
         ],
@@ -1135,6 +1532,159 @@ async def event_stream(run_id: str, after: int = Query(default=0, ge=0)) -> Stre
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+@app.get("/v1/research-compute-executions")
+def list_research_compute_executions() -> dict[str, Any]:
+    with connection() as conn:
+        items = list(
+            conn.execute(
+                """
+                SELECT *
+                FROM research_compute_executions
+                ORDER BY started_at DESC
+                LIMIT 100
+                """
+            )
+        )
+    return {"items": items}
+
+
+@app.get("/v1/research-compute-executions/{execution_id}")
+def get_research_compute_execution(execution_id: str) -> dict[str, Any]:
+    with connection() as conn:
+        item = conn.execute(
+            """
+            SELECT *
+            FROM research_compute_executions
+            WHERE execution_id = %s
+            """,
+            (execution_id,),
+        ).fetchone()
+    if not item:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "RESEARCH_EXECUTION_NOT_FOUND"},
+        )
+    return item
+
+
+@app.put("/internal/research-compute-executions/{execution_id}")
+def update_research_compute_execution(
+    execution_id: str,
+    request: ResearchComputeExecutionRequest,
+) -> dict[str, Any]:
+    if not execution_id.startswith("runpod-proof-"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_RESEARCH_EXECUTION_ID"},
+        )
+    terminal = request.status in {"SUCCEEDED", "FAILED"}
+    if terminal != (request.completed_at is not None):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_RESEARCH_EXECUTION_TERMINAL_STATE"},
+        )
+    if request.status == "SUCCEEDED" and not request.teardown_confirmed:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RESEARCH_EXECUTION_TEARDOWN_UNCONFIRMED"},
+        )
+    if request.status in {"RUNNING", "FINALIZING", "SUCCEEDED"} and not request.provider_handle:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RESEARCH_EXECUTION_PROVIDER_HANDLE_REQUIRED"},
+        )
+
+    status_order = {
+        "PROVISIONING": 0,
+        "RUNNING": 1,
+        "FINALIZING": 2,
+        "SUCCEEDED": 3,
+        "FAILED": 3,
+    }
+    with connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM research_compute_executions
+            WHERE execution_id = %s
+            """,
+            (execution_id,),
+        ).fetchone()
+        if existing:
+            immutable_conflict = (
+                existing["name"] != request.name
+                or existing["workload_id"] != request.workload_id
+                or existing["model_id"] != request.model_id
+                or existing["started_at"] != request.started_at
+            )
+            if immutable_conflict:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_CONFLICT"},
+                )
+            if existing["status"] in {"SUCCEEDED", "FAILED"} and (
+                existing["status"] != request.status
+                or existing["teardown_confirmed"] != request.teardown_confirmed
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_TERMINAL"},
+                )
+            if status_order[request.status] < status_order[existing["status"]]:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_STATUS_REGRESSION"},
+                )
+
+        row = conn.execute(
+            """
+            INSERT INTO research_compute_executions(
+              execution_id, name, workload_id, model_id, branch_width,
+              complexity_strategy, status, provider_name, provider_handle,
+              resource_profile, progress, started_at, completed_at,
+              teardown_confirmed
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (execution_id) DO UPDATE SET
+              status = EXCLUDED.status,
+              provider_handle = COALESCE(
+                EXCLUDED.provider_handle,
+                research_compute_executions.provider_handle
+              ),
+              resource_profile = (
+                research_compute_executions.resource_profile
+                || EXCLUDED.resource_profile
+              ),
+              progress = (
+                research_compute_executions.progress
+                || EXCLUDED.progress
+              ),
+              completed_at = EXCLUDED.completed_at,
+              teardown_confirmed = EXCLUDED.teardown_confirmed,
+              updated_at = now()
+            RETURNING *
+            """,
+            (
+                execution_id,
+                request.name,
+                request.workload_id,
+                request.model_id,
+                request.branch_width,
+                request.complexity_strategy,
+                request.status,
+                request.provider_name,
+                request.provider_handle,
+                Jsonb(request.resource_profile),
+                Jsonb(request.progress),
+                request.started_at,
+                request.completed_at,
+                request.teardown_confirmed,
+            ),
+        ).fetchone()
+    return row
+
+
 @app.get("/v1/resources")
 def resources() -> dict[str, Any]:
     with connection() as conn:
@@ -1150,13 +1700,134 @@ def resources() -> dict[str, Any]:
               (SELECT count(*) FROM operations WHERE status = 'AUTHORIZED') AS pending_operations
             """
         ).fetchone()
+        research_compute_proofs = list(
+            conn.execute(
+                """
+                SELECT * FROM research_compute_proofs
+                ORDER BY completed_at DESC
+                LIMIT 20
+                """
+            )
+        )
+        research_compute_executions = list(
+            conn.execute(
+                """
+                SELECT *
+                FROM research_compute_executions
+                ORDER BY started_at DESC
+                LIMIT 20
+                """
+            )
+        )
     return {
         "allocations": allocations,
         "counts": counts,
+        "research_compute_proofs": research_compute_proofs,
+        "research_compute_executions": research_compute_executions,
         "provider_boundaries": {
             "policy_compute": ["MockRunPodProvider"],
             "judge": ["MockJudgeProvider"],
             "execution": ["ComposeExecutionProvider"],
         },
         "external_capacity": 0,
+    }
+
+
+@app.post("/internal/research-compute-proofs", status_code=201)
+def ingest_research_compute_proof(
+    request: ResearchComputeProofRequest,
+) -> dict[str, Any]:
+    receipt = request.model_dump(mode="json")
+    receipt_digest = canonical_digest(receipt)
+    result_progress = research_result_progress(request.result)
+    with connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT proof_id, receipt_digest
+            FROM research_compute_proofs
+            WHERE provider_handle = %s
+            """,
+            (request.provider_handle,),
+        ).fetchone()
+        if existing:
+            if existing["receipt_digest"] != receipt_digest:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_PROOF_CONFLICT"},
+                )
+            conn.execute(
+                """
+                UPDATE research_compute_executions SET
+                  status = 'SUCCEEDED',
+                  progress = progress || %s,
+                  proof_id = %s,
+                  receipt_digest = %s,
+                  completed_at = %s,
+                  teardown_confirmed = true,
+                  updated_at = now()
+                WHERE provider_handle = %s
+                  AND status != 'FAILED'
+                """,
+                (
+                    Jsonb(result_progress),
+                    existing["proof_id"],
+                    receipt_digest,
+                    request.completed_at,
+                    request.provider_handle,
+                ),
+            )
+            return {
+                "proof_id": existing["proof_id"],
+                "receipt_digest": receipt_digest,
+                "already_recorded": True,
+            }
+
+        proof_id = make_id("research_proof")
+        conn.execute(
+            """
+            INSERT INTO research_compute_proofs(
+              proof_id, provider_name, provider_handle, provider_cli_version,
+              resource_profile, workload, result, receipt_digest, started_at,
+              completed_at, teardown_confirmed
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                proof_id,
+                request.provider_name,
+                request.provider_handle,
+                request.provider_cli_version,
+                Jsonb(request.resource_profile),
+                Jsonb(request.workload),
+                Jsonb(request.result),
+                receipt_digest,
+                request.started_at,
+                request.completed_at,
+                request.teardown_confirmed,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE research_compute_executions SET
+              status = 'SUCCEEDED',
+              progress = progress || %s,
+              proof_id = %s,
+              receipt_digest = %s,
+              completed_at = %s,
+              teardown_confirmed = true,
+              updated_at = now()
+            WHERE provider_handle = %s
+              AND status != 'FAILED'
+            """,
+            (
+                Jsonb(result_progress),
+                proof_id,
+                receipt_digest,
+                request.completed_at,
+                request.provider_handle,
+            ),
+        )
+    return {
+        "proof_id": proof_id,
+        "receipt_digest": receipt_digest,
+        "already_recorded": False,
     }

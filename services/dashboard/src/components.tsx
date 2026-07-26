@@ -4,9 +4,9 @@ import { Link, NavLink, useLocation } from "./router";
 import type { ArtifactRef } from "./types";
 
 const NAV_ITEMS = [
-  { to: "/runs", label: "Runs", glyph: "⌁" },
-  { to: "/runs/new", label: "Launch", glyph: "+" },
-  { to: "/resources", label: "Resources", glyph: "◇" },
+  { to: "/runs", label: "Runs" },
+  { to: "/environments", label: "Environments" },
+  { to: "/resources", label: "Proofs" },
 ];
 
 export function AppShell({ children }: PropsWithChildren) {
@@ -19,20 +19,18 @@ export function AppShell({ children }: PropsWithChildren) {
       <aside className="rail" aria-label="Primary navigation">
         <NavLink className="brand" to="/runs" aria-label="Equinox Next runs">
           <span className="brand-mark" aria-hidden="true">
-            E
+            EQ
           </span>
-          <span>
-            Equinox <strong>Next</strong>
-          </span>
+          <span>Equinox</span>
         </NavLink>
         <nav>
           {NAV_ITEMS.map((item) => {
             const isActive =
               item.to === "/runs"
-                ? location.pathname === "/runs" ||
-                  (location.pathname.startsWith("/runs/") &&
-                    location.pathname !== "/runs/new")
-                : location.pathname === item.to;
+                ? location.pathname.startsWith("/runs") ||
+                  location.pathname.startsWith("/rollout-trees") ||
+                  location.pathname.startsWith("/verification-runs")
+                : location.pathname.startsWith(item.to);
             return (
               <Link
                 key={item.to}
@@ -40,17 +38,11 @@ export function AppShell({ children }: PropsWithChildren) {
                 aria-current={isActive ? "page" : undefined}
                 className={isActive ? "nav-item active" : "nav-item"}
               >
-                <span aria-hidden="true">{item.glyph}</span>
                 {item.label}
               </Link>
             );
           })}
         </nav>
-        <div className="rail-note">
-          <span className="provider-dot" />
-          Local contract proof
-          <small>Mocks only · no cloud credentials</small>
-        </div>
       </aside>
       <main id="main" className="main" data-route={location.pathname}>
         {children}
@@ -89,7 +81,14 @@ export function StatusBadge({ status }: { status: string }) {
 
 function statusTone(status: string): string {
   if (
-    ["SUCCEEDED", "ACCEPTED", "ADMITTED", "READY", "CONTINUED"].includes(status)
+    [
+      "SUCCEEDED",
+      "ACCEPTED",
+      "ADMITTED",
+      "READY",
+      "CONTINUED",
+      "VERIFIED",
+    ].includes(status)
   )
     return "positive";
   if (
@@ -117,6 +116,15 @@ export function friendlyStatus(value: string): string {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+export function displayRunName(name: string): string {
+  const reproductionPrefix = "Reproduction of ";
+  if (!name.startsWith(reproductionPrefix)) return name;
+  return `${reproductionPrefix}${name.replace(
+    new RegExp(`^(?:${reproductionPrefix})+`),
+    "",
+  )}`;
 }
 
 export function MachineId({

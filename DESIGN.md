@@ -70,10 +70,11 @@ ordered, and dense with useful evidence. Alignment rules, coordinate-like labels
 panes, and synchronized views make lineage legible without dressing the product as a
 generic developer console.
 
-The interface is calm but not sparse. Operators should see enough state to decide whether
-work is valid, stalled, expensive, or inadmissible. The visual system never promotes a
-model assessment above deterministic evidence and never turns a failure class into a
-decorative status color.
+The interface is calm and selectively dense. Entry routes reveal only enough state to
+choose the next action; exact evidence appears after the researcher selects a run,
+iteration, tree, or verifier step. The visual system never promotes a model assessment
+above deterministic evidence and never turns a failure class into a decorative status
+color.
 
 **Key characteristics:**
 
@@ -134,10 +135,11 @@ sentence explaining why it matters is not.
 
 ## Layout
 
-The desktop shell uses a 224px navigation rail and a fluid work area. Wide proof routes
-use a three-region composition: graph or outline, synchronized visual evidence, and
-verification detail. The run list and iteration views use native tables with sticky
-headers rather than grids of cards.
+The desktop shell uses a 192px navigation rail and a fluid work area. Completed runs expose
+a first-class Trace tab before evidence and operations. Wide proof routes use a three-region
+composition: graph or outline, a selected-action inspector, and synchronized evidence.
+The run index uses broad ruled rows with progressive disclosure; iteration and evidence
+views use native tables with sticky headers.
 
 The spacing unit is 4px, with 8/16/24/32px steps. Related controls stay within 8px;
 panels use 16px internal padding; separate decisions receive at least 24px. At 1100px,
@@ -214,6 +216,18 @@ adjacent and visible; hidden evidence has a designed locked state rather than di
 Canvas nodes expose step type, outcome, attempts, and cache state. Selection synchronizes
 with the inspector and URL. A table outline with dependencies, status, and evidence roles
 is always adjacent or one tab away.
+
+### Trajectory explorer
+
+Time flows downward from the initial state through shared-prefix actions. A named checkpoint
+then fans out across static sibling lanes. Selecting an action emphasizes its causal path
+and updates the adjacent inspector with execution outcome, resulting state, verification,
+operation and cursor provenance, snapshot context, and previous/next controls. Execution
+status, verifier result, and training eligibility remain separate labels.
+
+The Run Trace tab is the direct entry point; researchers never need to route through an
+iteration table merely to find a trajectory. At mobile widths, Outline is the default and
+Graph remains an intentional pan/zoom view.
 
 ## Do's and Don'ts
 
