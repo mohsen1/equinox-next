@@ -19,45 +19,88 @@ def record_artifact(
     ordinal: int = 0,
 ) -> str:
     artifact_id = artifact["artifact_id"]
-    conn.execute(
+    existing = conn.execute(
         """
-        INSERT INTO artifacts(artifact_id, digest, object_key, media_type, size_bytes)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (digest) DO NOTHING
+        SELECT artifact_id, digest, object_key, media_type, size_bytes
+        FROM artifacts
+        WHERE artifact_id = %s OR digest = %s
+        FOR UPDATE
         """,
-        (
-            artifact_id,
-            artifact["digest"],
-            artifact["object_key"],
-            artifact["media_type"],
-            artifact["size_bytes"],
-        ),
-    )
-    canonical = conn.execute(
-        "SELECT artifact_id FROM artifacts WHERE digest = %s",
-        (artifact["digest"],),
+        (artifact_id, artifact["digest"]),
     ).fetchone()
-    actual_id = canonical["artifact_id"]
-    conn.execute(
+    expected = {
+        "digest": artifact["digest"],
+        "object_key": artifact["object_key"],
+        "media_type": artifact["media_type"],
+        "size_bytes": artifact["size_bytes"],
+    }
+    if existing:
+        actual = {key: existing[key] for key in expected}
+        if actual != expected:
+            raise ValueError("immutable artifact replay conflicts with stored metadata")
+        if existing["artifact_id"] == artifact_id or existing["digest"] == artifact["digest"]:
+            actual_id = existing["artifact_id"]
+        else:
+            raise ValueError("artifact ID collision does not identify the requested content")
+    else:
+        conn.execute(
+            """
+            INSERT INTO artifacts(artifact_id, digest, object_key, media_type, size_bytes)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                artifact_id,
+                artifact["digest"],
+                artifact["object_key"],
+                artifact["media_type"],
+                artifact["size_bytes"],
+            ),
+        )
+        actual_id = artifact_id
+    ref = conn.execute(
         """
-        INSERT INTO artifact_refs(
-          artifact_ref_id, artifact_id, entity_type, entity_id, role, ordinal,
-          viewer_hint, visibility, trust_class
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (entity_type, entity_id, role, ordinal) DO NOTHING
+        SELECT artifact_id, viewer_hint, visibility, trust_class
+        FROM artifact_refs
+        WHERE entity_type = %s AND entity_id = %s AND role = %s AND ordinal = %s
+        FOR UPDATE
         """,
         (
-            make_id("artifact_ref"),
-            actual_id,
             entity_type,
             entity_id,
             role or artifact["role"],
             ordinal,
-            artifact.get("viewer_hint"),
-            artifact["visibility"],
-            artifact["trust_class"],
         ),
-    )
+    ).fetchone()
+    expected_ref = {
+        "artifact_id": actual_id,
+        "viewer_hint": artifact.get("viewer_hint"),
+        "visibility": artifact["visibility"],
+        "trust_class": artifact["trust_class"],
+    }
+    if ref:
+        actual_ref = {key: ref[key] for key in expected_ref}
+        if actual_ref != expected_ref:
+            raise ValueError("immutable artifact reference replay conflicts with stored metadata")
+    else:
+        conn.execute(
+            """
+            INSERT INTO artifact_refs(
+              artifact_ref_id, artifact_id, entity_type, entity_id, role, ordinal,
+              viewer_hint, visibility, trust_class
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                make_id("artifact_ref"),
+                actual_id,
+                entity_type,
+                entity_id,
+                role or artifact["role"],
+                ordinal,
+                artifact.get("viewer_hint"),
+                artifact["visibility"],
+                artifact["trust_class"],
+            ),
+        )
     return actual_id
 
 
@@ -69,7 +112,7 @@ def store_json_artifact(
     entity_type: str,
     entity_id: str,
     visibility: str = "OPERATOR",
-    trust_class: str = "TRUSTED",
+    trust_class: str,
     viewer_hint: str | None = "structured-json",
     ordinal: int = 0,
 ) -> tuple[str, dict[str, Any]]:
@@ -81,7 +124,7 @@ def store_json_artifact(
         viewer_hint=viewer_hint,
     )
     payload = {
-        **stored.ref(),
+        **stored.ref(ordinal=ordinal),
         "object_key": stored.object_key,
         "size_bytes": stored.size_bytes,
     }
@@ -93,6 +136,45 @@ def store_json_artifact(
         role=role,
         ordinal=ordinal,
     )
+    payload["artifact_id"] = artifact_id
+    return artifact_id, payload
+
+
+def store_bytes_artifact(
+    conn: Connection[dict[str, Any]],
+    value: bytes,
+    *,
+    role: str,
+    media_type: str,
+    entity_type: str,
+    entity_id: str,
+    visibility: str = "OPERATOR",
+    trust_class: str,
+    viewer_hint: str | None = None,
+    ordinal: int = 0,
+) -> tuple[str, dict[str, Any]]:
+    stored = artifact_store.put_bytes(
+        value,
+        role=role,
+        media_type=media_type,
+        visibility=visibility,
+        trust_class=trust_class,
+        viewer_hint=viewer_hint,
+    )
+    payload = {
+        **stored.ref(ordinal=ordinal),
+        "object_key": stored.object_key,
+        "size_bytes": stored.size_bytes,
+    }
+    artifact_id = record_artifact(
+        conn,
+        payload,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        role=role,
+        ordinal=ordinal,
+    )
+    payload["artifact_id"] = artifact_id
     return artifact_id, payload
 
 

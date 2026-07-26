@@ -11,8 +11,10 @@ import psycopg
 from equinox_core import (
     ArtifactStore,
     canonical_digest,
+    content_digest,
     make_id,
     validate_contract,
+    validate_judge_result,
 )
 from fastapi import FastAPI, HTTPException
 from psycopg.types.json import Jsonb
@@ -21,11 +23,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import cad
 from .database import connection, migrate
 from .judge import (
-    MockJudgeProvider,
+    DeterministicJudgeFixture,
     RetryableJudgeError,
     blinded_order,
     group_spec,
     pointwise_spec,
+    prompt_registry,
 )
 
 
@@ -50,15 +53,20 @@ class CreateSessionRequest(OperationEnvelope):
 
 class ApplyActionRequest(OperationEnvelope):
     cursor_id: str
+    lease_owner: str
     expected_state_id: str
     expected_fencing_token: int = Field(ge=1)
     destination_scientific_state_id: str
+    policy_decision_id: str
     action: dict[str, Any]
 
 
 class CaptureSnapshotRequest(OperationEnvelope):
     cursor_id: str
+    lease_owner: str
     source_state_id: str
+    expected_cursor_version: int = Field(ge=0)
+    expected_fencing_token: int = Field(ge=1)
     requested_fidelity: str
     ephemeral: bool = False
 
@@ -88,9 +96,7 @@ class VerifyTransitionRequest(OperationEnvelope):
 
 class RejudgeRequest(OperationEnvelope):
     verification_run_id: str
-    subject_id: str
-    proof_bundle: dict[str, Any]
-    deterministic_progress: float = Field(ge=0, le=1)
+    proof_bundle_digest: str
     fixture_scenario: str = "valid"
     judge_spec_version: int = Field(default=2, ge=1, le=2)
 
@@ -106,7 +112,7 @@ class CursorActionRequest(OperationEnvelope):
 
 
 artifact_store = ArtifactStore()
-judge_provider = MockJudgeProvider()
+judge_provider = DeterministicJudgeFixture()
 
 WORKLOAD_PROFILES = {
     "cad.session@1": {"trust_class": "PUBLIC_CANDIDATE", "network": "disabled"},
@@ -117,7 +123,7 @@ WORKLOAD_PROFILES = {
     "judge.multimodal-rubric@1": {"trust_class": "ISOLATED_JUDGE", "network": "disabled"},
     "judge.branch-group@1": {"trust_class": "ISOLATED_JUDGE", "network": "disabled"},
 }
-JUDGE_PROVIDERS = {"MockJudgeProvider": judge_provider}
+JUDGE_PROVIDERS = {"DeterministicJudgeFixture": judge_provider}
 
 
 def _wait_for_dependencies() -> None:
@@ -473,7 +479,7 @@ def _run_operation(
 
 def _stored_payload(stored: Any) -> dict[str, Any]:
     return {
-        **stored.ref(),
+        **stored.ref(ordinal=0),
         "object_key": stored.object_key,
         "size_bytes": stored.size_bytes,
     }
@@ -548,6 +554,7 @@ def create_session(request: CreateSessionRequest) -> dict[str, Any]:
             "current_state_id": request.scientific_state_id,
             "version": 0,
             "fencing_token": 1,
+            "lease_owner": request.lease_owner,
             "obtained_fidelity": "logical_restore",
             "logical_state": logical_state,
         }
@@ -560,24 +567,36 @@ def apply_session_action(request: ApplyActionRequest) -> dict[str, Any]:
     def worker(conn: Any) -> dict[str, Any]:
         cursor = conn.execute(
             """
-            SELECT c.*, s.logical_state, s.session_id
-            FROM runtime_cursors c JOIN sessions s ON s.session_id = c.session_id
-            WHERE c.cursor_id = %s FOR UPDATE
+            UPDATE runtime_cursors
+            SET observed_status = 'BUSY', updated_at = now()
+            WHERE cursor_id = %s
+              AND current_scientific_state_id = %s
+              AND version = %s
+              AND fencing_token = %s
+              AND lease_owner = %s
+              AND lease_expires_at > now()
+              AND observed_status = 'READY'
+            RETURNING *
             """,
-            (request.cursor_id,),
+            (
+                request.cursor_id,
+                request.expected_state_id,
+                request.expected_version,
+                request.expected_fencing_token,
+                request.lease_owner,
+            ),
         ).fetchone()
         if not cursor:
-            raise HTTPException(status_code=404, detail={"code": "CURSOR_NOT_FOUND"})
-        if cursor["current_scientific_state_id"] != request.expected_state_id:
-            raise HTTPException(status_code=409, detail={"code": "EXPECTED_STATE_CONFLICT"})
-        if cursor["version"] != request.expected_version:
-            raise HTTPException(status_code=409, detail={"code": "EXPECTED_VERSION_CONFLICT"})
-        if cursor["fencing_token"] != request.expected_fencing_token:
-            raise HTTPException(status_code=409, detail={"code": "STALE_FENCING_TOKEN"})
-        if cursor["observed_status"] != "READY":
-            raise HTTPException(status_code=409, detail={"code": "CURSOR_NOT_READY"})
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "CURSOR_PRECONDITION_CONFLICT"},
+            )
 
-        source = cursor["logical_state"]
+        session = conn.execute(
+            "SELECT logical_state FROM sessions WHERE session_id = %s FOR UPDATE",
+            (cursor["session_id"],),
+        ).fetchone()
+        source = session["logical_state"]
         try:
             candidate = cad.apply_action(source, request.action)
         except ValueError as exc:
@@ -599,14 +618,18 @@ def apply_session_action(request: ApplyActionRequest) -> dict[str, Any]:
             """
             UPDATE runtime_cursors
             SET current_scientific_state_id = %s, version = %s, fencing_token = %s,
-              lease_expires_at = now() + interval '5 minutes', updated_at = now()
-            WHERE cursor_id = %s
+              lease_expires_at = now() + interval '5 minutes', observed_status = 'READY',
+              updated_at = now()
+            WHERE cursor_id = %s AND lease_owner = %s
+              AND fencing_token = %s AND observed_status = 'BUSY'
             """,
             (
                 request.destination_scientific_state_id,
                 next_version,
                 next_fence,
                 request.cursor_id,
+                request.lease_owner,
+                request.expected_fencing_token,
             ),
         )
         return {
@@ -615,6 +638,7 @@ def apply_session_action(request: ApplyActionRequest) -> dict[str, Any]:
             "candidate_state": candidate,
             "candidate_state_digest": candidate_digest,
             "destination_scientific_state_id": request.destination_scientific_state_id,
+            "policy_decision_id": request.policy_decision_id,
             "version": next_version,
             "fencing_token": next_fence,
             "semantic_outcome": "TERMINATED" if candidate["submitted"] else "CONTINUED",
@@ -635,24 +659,70 @@ def capture_snapshot(request: CaptureSnapshotRequest) -> dict[str, Any]:
             """
             SELECT c.*, s.logical_state, s.rng_state
             FROM runtime_cursors c JOIN sessions s ON s.session_id = c.session_id
-            WHERE c.cursor_id = %s
+            WHERE c.cursor_id = %s FOR UPDATE
             """,
             (request.cursor_id,),
         ).fetchone()
         if not cursor:
             raise HTTPException(status_code=404, detail={"code": "CURSOR_NOT_FOUND"})
-        if cursor["current_scientific_state_id"] != request.source_state_id:
-            raise HTTPException(status_code=409, detail={"code": "EXPECTED_STATE_CONFLICT"})
+        if (
+            cursor["current_scientific_state_id"] != request.source_state_id
+            or cursor["version"] != request.expected_cursor_version
+            or cursor["fencing_token"] != request.expected_fencing_token
+            or cursor["lease_owner"] != request.lease_owner
+            or cursor["lease_expires_at"] <= conn.execute("SELECT now() AS now").fetchone()["now"]
+            or cursor["observed_status"] != "READY"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "SNAPSHOT_SOURCE_PRECONDITION_CONFLICT"},
+            )
         logical_state = cursor["logical_state"]
         digest = canonical_digest(logical_state)
+        restored_a = json.loads(json.dumps(logical_state))
+        restored_b = json.loads(json.dumps(logical_state))
+        probe_action = {"kind": "add_hole_pattern"}
+        source_probe = cad.apply_action(logical_state, probe_action)
+        restored_a_probe = cad.apply_action(restored_a, probe_action)
+        restored_b_probe = cad.apply_action(restored_b, probe_action)
+        probe_receipt = {
+            "schema_version": 1,
+            "recipe": "cad-logical-restore-probe@1",
+            "source_digest": digest,
+            "restored_digests": [
+                canonical_digest(restored_a),
+                canonical_digest(restored_b),
+            ],
+            "probe_action": probe_action,
+            "probe_result_digests": [
+                canonical_digest(source_probe),
+                canonical_digest(restored_a_probe),
+                canonical_digest(restored_b_probe),
+            ],
+            "render_digests": [
+                content_digest(cad.render_svg(restored_a, label="probe")),
+                content_digest(cad.render_svg(restored_b, label="probe")),
+            ],
+        }
+        fidelity_probe_passed = (
+            probe_receipt["restored_digests"] == [digest, digest]
+            and len(set(probe_receipt["probe_result_digests"])) == 1
+            and len(set(probe_receipt["render_digests"])) == 1
+        )
+        if not fidelity_probe_passed:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "SNAPSHOT_FIDELITY_PROBE_FAILED"},
+            )
         operational_snapshot_id = make_id("opsnap")
         conn.execute(
             """
             INSERT INTO snapshots(
               operational_snapshot_id, source_session_id, source_scientific_state_id,
               logical_state, logical_state_digest, requested_fidelity, obtained_fidelity,
-              fidelity_probe_passed, rng_state, ephemeral
-            ) VALUES (%s, %s, %s, %s, %s, %s, 'logical_restore', true, %s, %s)
+              fidelity_probe_passed, rng_state, ephemeral, captured_cursor_version,
+              captured_fencing_token, fidelity_probe_receipt
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'logical_restore', %s, %s, %s, %s, %s, %s)
             """,
             (
                 operational_snapshot_id,
@@ -661,8 +731,12 @@ def capture_snapshot(request: CaptureSnapshotRequest) -> dict[str, Any]:
                 Jsonb(logical_state),
                 digest,
                 request.requested_fidelity,
+                fidelity_probe_passed,
                 cursor["rng_state"],
                 request.ephemeral,
+                cursor["version"],
+                cursor["fencing_token"],
+                Jsonb(probe_receipt),
             ),
         )
         return {
@@ -672,7 +746,10 @@ def capture_snapshot(request: CaptureSnapshotRequest) -> dict[str, Any]:
             "logical_state_digest": digest,
             "requested_fidelity": request.requested_fidelity,
             "obtained_fidelity": "logical_restore",
-            "fidelity_probe_passed": True,
+            "fidelity_probe_passed": fidelity_probe_passed,
+            "fidelity_probe_receipt": probe_receipt,
+            "captured_cursor_version": cursor["version"],
+            "captured_fencing_token": cursor["fencing_token"],
             "rng_state": cursor["rng_state"],
             "runtime_snapshot_handle": None,
         }
@@ -759,23 +836,29 @@ def _invoke_judge(
     verification_run_id: str,
     subject_id: str,
     fixture_scenario: str,
-    deterministic_progress: float,
     judge_spec_version: int,
 ) -> tuple[dict[str, Any], dict[str, Any], int]:
     spec = pointwise_spec(version=judge_spec_version)
     validate_contract("JudgeSpec", spec)
+    evidence = [
+        proof_bundle[role.replace("-", "_")]
+        for role in spec["allowed_evidence_roles"]
+        if role.replace("-", "_") in proof_bundle
+    ]
+    evidence_manifest = {
+        "proof_bundle_digest": proof_bundle["digest"],
+        "evidence": evidence,
+    }
+    template = prompt_registry()[spec["prompt_template_id"]]
+    rendered_prompt = template.render(evidence_manifest)
     request = {
         "judge_spec": spec,
         "proof_bundle_digest": proof_bundle["digest"],
-        "evidence": [
-            proof_bundle[role.replace("-", "_")]
-            for role in spec["allowed_evidence_roles"]
-            if role.replace("-", "_") in proof_bundle
-        ],
+        "evidence": evidence,
+        "rendered_prompt": rendered_prompt,
         "fixture_scenario": fixture_scenario,
-        "deterministic_progress": deterministic_progress,
         "tools": [],
-        "network": "disabled",
+        "model_tool_access": "disabled",
         "writable_systems": [],
         "subject_blind_label": canonical_digest(subject_id)[:20],
     }
@@ -790,12 +873,19 @@ def _invoke_judge(
                 raise
     assert provider_response is not None
 
+    request_artifact = artifact_store.put_bytes(
+        rendered_prompt.encode("utf-8"),
+        role="judge-rendered-request",
+        media_type="text/plain",
+        visibility="OPERATOR",
+        trust_class="PLATFORM_DERIVED",
+    )
     raw_artifact = artifact_store.put_bytes(
         provider_response.raw.encode(),
         role="judge-raw-output",
         media_type="application/json",
         visibility="OPERATOR",
-        trust_class="TRUSTED",
+        trust_class="MODEL_OUTPUT_UNVALIDATED",
     )
     try:
         parsed = json.loads(provider_response.raw)
@@ -810,7 +900,7 @@ def _invoke_judge(
             "disagreement": False,
             "integrity_flags": [],
             "tie": False,
-            "explanation": "Mock provider output did not conform to judge-result.v1.",
+            "explanation": "Fixture provider output did not conform to judge-result.v1.",
         }
         outcome = "INVALID_RESULT"
 
@@ -818,7 +908,7 @@ def _invoke_judge(
         parsed,
         role="judge-parsed-output",
         visibility="OPERATOR",
-        trust_class="TRUSTED",
+        trust_class="MODEL_OUTPUT_UNVALIDATED",
     )
     result = {
         "judge_result_id": make_id("judge_result"),
@@ -836,15 +926,16 @@ def _invoke_judge(
         "integrity_flags": parsed.get("integrity_flags", []),
         "explanation": parsed.get("explanation", "")[:500],
         "provider_model_identity": provider_response.model_identity,
-        "raw_output_artifact": raw_artifact.ref(),
-        "parsed_output_artifact": parsed_artifact.ref(),
+        "raw_output_artifact": raw_artifact.ref(ordinal=0),
+        "parsed_output_artifact": parsed_artifact.ref(ordinal=0),
         "usage": provider_response.usage,
     }
-    validate_contract("JudgeResult", result)
+    validate_judge_result(result, spec=spec, proof_digest=proof_bundle["digest"])
     return (
         result,
         {
             "spec": spec,
+            "request": _stored_payload(request_artifact),
             "raw_output": _stored_payload(raw_artifact),
             "parsed_output": _stored_payload(parsed_artifact),
             "request_digest": canonical_digest(request),
@@ -864,14 +955,14 @@ def verify_transition(request: VerifyTransitionRequest) -> dict[str, Any]:
             cad.task_reference(),
             role="task-reference-metadata",
             visibility="OPERATOR",
-            trust_class="REFERENCE",
+            trust_class="REFERENCE_AUTHORITY",
         )
         reference_artifact = artifact_store.put_bytes(
             cad.render_svg(cad.TARGET_STATE, label="Task reference"),
             role="task-reference",
             media_type="image/svg+xml",
             visibility="OPERATOR",
-            trust_class="REFERENCE",
+            trust_class="REFERENCE_AUTHORITY",
             viewer_hint="image-comparison",
         )
         source_render = artifact_store.put_bytes(
@@ -879,7 +970,7 @@ def verify_transition(request: VerifyTransitionRequest) -> dict[str, Any]:
             role="source-render",
             media_type="image/svg+xml",
             visibility="OPERATOR",
-            trust_class="TRUSTED",
+            trust_class="PLATFORM_DERIVED",
             viewer_hint="image-comparison",
         )
         candidate_render = artifact_store.put_bytes(
@@ -887,18 +978,18 @@ def verify_transition(request: VerifyTransitionRequest) -> dict[str, Any]:
             role="candidate-render",
             media_type="image/svg+xml",
             visibility="OPERATOR",
-            trust_class="CANDIDATE",
+            trust_class="PLATFORM_DERIVED",
             viewer_hint="image-comparison",
         )
         action_summary = artifact_store.put_json(
             {"action": request.action, "source_turn": request.source_state["turn"]},
             role="action-summary",
-            trust_class="CANDIDATE",
+            trust_class="CANDIDATE_CONTROLLED",
         )
         geometry_artifact = artifact_store.put_json(
             geometry,
             role="geometry-report",
-            trust_class="TRUSTED",
+            trust_class="HIDDEN_VERIFIER",
             viewer_hint="geometry-report",
         )
         artifacts = [
@@ -909,31 +1000,35 @@ def verify_transition(request: VerifyTransitionRequest) -> dict[str, Any]:
             action_summary,
             geometry_artifact,
         ]
-        proof_without_digest = {
-            "proof_bundle_id": make_id("proof"),
+        proof_content = {
             "subject_type": "TRANSITION",
             "subject_id": request.subject_id,
-            "task_reference": reference_artifact.ref(),
-            "source_render": source_render.ref(),
-            "candidate_render": candidate_render.ref(),
-            "action_summary": action_summary.ref(),
-            "geometry_report": geometry_artifact.ref(),
+            "task_reference_metadata": reference_metadata.ref(ordinal=0),
+            "task_reference": reference_artifact.ref(ordinal=0),
+            "source_render": source_render.ref(ordinal=0),
+            "candidate_render": candidate_render.ref(ordinal=0),
+            "action_summary": action_summary.ref(ordinal=0),
+            "geometry_report": geometry_artifact.ref(ordinal=0),
             "renderer": {
                 "version": "cad-fixture-renderer@1",
                 "camera": "isometric-orthographic@1",
                 "material": "drafting-blue@1",
                 "lighting": "three-point-neutral@1",
                 "resolution": [640, 480],
-                "views": ["isometric", "top", "front"],
+                "views": ["top", "isometric"],
             },
             "ordered_artifact_digests": [artifact.digest for artifact in artifacts],
         }
-        proof_bundle = {**proof_without_digest, "digest": canonical_digest(proof_without_digest)}
+        proof_bundle = {
+            "proof_bundle_id": make_id("proof"),
+            **proof_content,
+            "digest": canonical_digest(proof_content),
+        }
         validate_contract("ProofBundle", proof_bundle)
         proof_artifact = artifact_store.put_json(
             proof_bundle,
             role="proof-bundle",
-            trust_class="TRUSTED",
+            trust_class="PLATFORM_DERIVED",
             viewer_hint="structured-json",
         )
         judge_result, judge_meta, provider_attempts = _invoke_judge(
@@ -941,7 +1036,6 @@ def verify_transition(request: VerifyTransitionRequest) -> dict[str, Any]:
             verification_run_id=request.verification_run_id,
             subject_id=request.subject_id,
             fixture_scenario=request.fixture_scenario,
-            deterministic_progress=candidate_progress,
             judge_spec_version=request.judge_spec_version,
         )
 
@@ -1027,7 +1121,7 @@ def verify_transition(request: VerifyTransitionRequest) -> dict[str, Any]:
             "proof_bundle": proof_bundle,
             "proof_artifact": _stored_payload(proof_artifact),
             "artifacts": [_stored_payload(artifact) for artifact in artifacts]
-            + [judge_meta["raw_output"], judge_meta["parsed_output"]],
+            + [judge_meta["request"], judge_meta["raw_output"], judge_meta["parsed_output"]],
             "judge_result": judge_result,
             "judge": judge_meta,
             "deterministic_metrics": {
@@ -1055,12 +1149,39 @@ def verify_transition(request: VerifyTransitionRequest) -> dict[str, Any]:
 @app.post("/v1/verification-runs/rejudge")
 def rejudge(request: RejudgeRequest) -> dict[str, Any]:
     def worker(_conn: Any) -> dict[str, Any]:
+        original = _conn.execute(
+            """
+            SELECT result
+            FROM operations
+            WHERE operation_type = 'verify_transition'
+              AND status = 'SUCCEEDED'
+              AND result->'proof_bundle'->>'digest' = %s
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (request.proof_bundle_digest,),
+        ).fetchone()
+        if not original:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "PROOF_BUNDLE_NOT_FOUND"},
+            )
+        proof_bundle = original["result"]["proof_bundle"]
+        validate_contract("ProofBundle", proof_bundle)
+        for field in (
+            "task_reference_metadata",
+            "task_reference",
+            "source_render",
+            "candidate_render",
+            "action_summary",
+            "geometry_report",
+        ):
+            artifact_store.get_bytes(proof_bundle[field]["digest"])
         judge_result, judge_meta, provider_attempts = _invoke_judge(
-            proof_bundle=request.proof_bundle,
+            proof_bundle=proof_bundle,
             verification_run_id=request.verification_run_id,
-            subject_id=request.subject_id,
+            subject_id=proof_bundle["subject_id"],
             fixture_scenario=request.fixture_scenario,
-            deterministic_progress=request.deterministic_progress,
             judge_spec_version=request.judge_spec_version,
         )
         step = {
@@ -1075,18 +1196,27 @@ def rejudge(request: RejudgeRequest) -> dict[str, Any]:
                 "candidate-render",
                 "geometry-report",
             ],
-            "metrics": {},
-            "failure": None,
-            "cost": {"judge_tokens": 0, "credits": 0},
+                "metrics": {},
+                "failure": None,
+                "cost": {
+                    "judge_tokens": sum(
+                        judge_result["usage"][key] for key in ("input_tokens", "output_tokens")
+                    ),
+                    "credits": judge_result["usage"]["cost"],
+                },
         }
         return {
             "verification_run_id": request.verification_run_id,
             "status": judge_result["outcome"],
             "steps": [step],
-            "proof_bundle": request.proof_bundle,
+            "proof_bundle": proof_bundle,
             "judge_result": judge_result,
             "judge": judge_meta,
-            "artifacts": [judge_meta["raw_output"], judge_meta["parsed_output"]],
+            "artifacts": [
+                judge_meta["request"],
+                judge_meta["raw_output"],
+                judge_meta["parsed_output"],
+            ],
             "evidence_reused": True,
             "execution_steps_rerun": 0,
             "render_steps_rerun": 0,
@@ -1145,19 +1275,22 @@ def judge_group(request: GroupJudgeRequest) -> dict[str, Any]:
             "abstention_reason": None,
             "disagreement": False,
             "integrity_flags": [],
-            "explanation": "Mock group assessment compares blinded sibling proof bundles in pinned order.",
+            "explanation": (
+                "Deterministic fixture ranking compares blinded sibling proof bundles "
+                "using the persisted fixture progress signal."
+            ),
         }
         raw_artifact = artifact_store.put_json(
             parsed,
             role="judge-raw-output",
             visibility="OPERATOR",
-            trust_class="TRUSTED",
+            trust_class="MODEL_OUTPUT_UNVALIDATED",
         )
         parsed_artifact = artifact_store.put_json(
             parsed,
             role="judge-parsed-output",
             visibility="OPERATOR",
-            trust_class="TRUSTED",
+            trust_class="MODEL_OUTPUT_UNVALIDATED",
         )
         group_manifest = {
             "subject_id": request.subject_id,
@@ -1180,18 +1313,23 @@ def judge_group(request: GroupJudgeRequest) -> dict[str, Any]:
             "judge_spec_id": spec["judge_spec_id"],
             "proof_bundle_digest": proof_digest,
             **parsed,
-            "provider_model_identity": judge_provider.model_identity,
-            "raw_output_artifact": raw_artifact.ref(),
-            "parsed_output_artifact": parsed_artifact.ref(),
+            "provider_model_identity": "deterministic-group-ranking-fixture@1",
+            "raw_output_artifact": raw_artifact.ref(ordinal=0),
+            "parsed_output_artifact": parsed_artifact.ref(ordinal=0),
             "usage": {
-                "input_tokens": 900,
-                "output_tokens": 160,
-                "images": len(blinded),
-                "latency_ms": 12,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "images": 0,
+                "latency_ms": 0,
                 "cost": 0,
             },
         }
-        validate_contract("JudgeResult", judge_result)
+        validate_judge_result(
+            judge_result,
+            spec=spec,
+            proof_digest=proof_digest,
+            group_labels={item["label"] for item in blinded},
+        )
         return {
             "verification_run_id": request.verification_run_id,
             "status": "SUCCEEDED",
@@ -1203,7 +1341,7 @@ def judge_group(request: GroupJudgeRequest) -> dict[str, Any]:
             "steps": [
                 {
                     "step_id": "group-judge",
-                    "step_type": "llm_judge",
+                    "step_type": "deterministic_group_ranking_fixture",
                     "status": "SUCCEEDED",
                     "attempt_count": 1,
                     "cache_status": "MISS",

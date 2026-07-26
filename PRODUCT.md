@@ -20,6 +20,8 @@ stateful, long-horizon reinforcement-learning environments. Its active research 
 tests whether restoring several policy continuations from the same meaningful state makes
 post-training more efficient and attributable.
 
+The root `equinox-next.md` is the only editable product and architecture specification.
+
 Success means a researcher can reconstruct the shared prefix, checkpoint, four restored
 continuations, every action and verifier result, sibling-relative reward, and exact
 materialized examples behind one policy update.

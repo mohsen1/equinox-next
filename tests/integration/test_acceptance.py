@@ -57,6 +57,12 @@ def test_seeded_algorithms_commit_exact_inputs(
         inspected = api(f"/v1/iterations/{iterations[0]['training_iteration_id']}")
         manifest = inspected["iteration"]["iteration_input_manifest"]
         assert manifest["digest"] == inspected["iteration"]["iteration_input_digest"]
+        assert manifest["collection_closure_digest"]
+        assert manifest["dataset_digest"]
+        assert manifest["dataset_row_count"] > 0
+        assert inspected["iteration"]["update_kind"] == "SIMULATED_POLICY_COMMIT"
+        assert inspected["iteration"]["metrics"]["optimizer_steps"] == 0
+        assert inspected["iteration"]["metrics"]["model_artifact_count"] == 0
         assert manifest["rollout_tree_ids"]
         assert manifest["proof_bundle_ids"]
         assert manifest["verification_run_ids"]
@@ -321,9 +327,11 @@ def test_duplicate_operation_is_single_job_and_conflict_is_rejected() -> None:
     session = first.json()
     action_input = {
         "cursor_id": session["cursor_id"],
+        "lease_owner": session["lease_owner"],
         "expected_state_id": operation_input["scientific_state_id"],
         "expected_fencing_token": session["fencing_token"],
         "destination_scientific_state_id": f"state_destination_{suffix}",
+        "policy_decision_id": f"policy_decision_{suffix}",
         "action": {"kind": "create_base"},
     }
     action_id = f"op_action_duplicate_{suffix}"
@@ -471,11 +479,25 @@ def test_scientific_acceptance_and_commit_replays_are_idempotent(
 @pytest.mark.integration
 def test_migrations_are_recorded_in_both_authority_schemas() -> None:
     with psycopg.connect(SCIENCE_DSN) as conn:
-        assert conn.execute(
-            "SELECT array_agg(version ORDER BY version) FROM schema_migrations"
-        ).fetchone()[0] == [1, 2]
+        science = conn.execute(
+            """
+            SELECT version, filename, checksum, dirty
+            FROM schema_migrations ORDER BY version
+            """
+        ).fetchall()
+        assert [row[0] for row in science] == list(range(1, 10))
+        assert all(row[1] and row[2].startswith("sha256:") and not row[3] for row in science)
     with psycopg.connect(OPS_DSN) as conn:
-        assert conn.execute("SELECT array_agg(version) FROM schema_migrations").fetchone()[0] == [1]
+        operations = conn.execute(
+            """
+            SELECT version, filename, checksum, dirty
+            FROM schema_migrations ORDER BY version
+            """
+        ).fetchall()
+        assert [row[0] for row in operations] == [1, 2]
+        assert all(
+            row[1] and row[2].startswith("sha256:") and not row[3] for row in operations
+        )
 
 
 @pytest.mark.integration

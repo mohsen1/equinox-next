@@ -30,6 +30,7 @@ require_file() {
 
 require_command docker
 require_command git
+require_command python3
 
 if command -v docker >/dev/null 2>&1; then
   if docker info >/dev/null 2>&1; then
@@ -56,8 +57,18 @@ case "$architecture" in
 esac
 
 require_file \
-  "docs/equinox-next.md" \
-  "vendored canonical specification is available"
+  "equinox-next.md" \
+  "canonical specification is available"
+
+if [ -x "./scripts/check-spec" ]; then
+  if ./scripts/check-spec; then
+    :
+  else
+    failures=$((failures + 1))
+  fi
+else
+  fail "canonical specification checker is executable"
+fi
 
 if [ "$failures" -ne 0 ]; then
   printf '\npreflight failed with %s error(s)\n' "$failures" >&2

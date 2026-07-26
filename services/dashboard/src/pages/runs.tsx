@@ -63,8 +63,8 @@ export function RunsPage() {
       />
       <div className="content">
         <Notice title="Local provider boundary">
-          Policy compute resolves <code>MockRunPodProvider</code>; model
-          assessments resolve <code>MockJudgeProvider</code>. External capacity
+          Policy compute resolves <code>LocalFixtureComputeProvider</code>; model
+          assessments resolve <code>DeterministicJudgeFixture</code>. External capacity
           is disabled.
         </Notice>
         {seedError ? (
@@ -163,11 +163,11 @@ export function NewRunPage() {
       environment: "cad.reconstruction@1.0.0",
       task_revision: "mounting-plate@sha256:fixture-v1",
       algorithm,
-      policy_compute_provider: "MockRunPodProvider",
+      policy_compute_provider: "LocalFixtureComputeProvider",
       execution_provider: "ComposeExecutionProvider",
       snapshot_fidelity: "logical_restore",
-      judge_provider: "MockJudgeProvider",
-      judge_spec: "cad.pointwise.mock@1",
+      judge_provider: "DeterministicJudgeFixture",
+      judge_spec: "cad.pointwise.fixture@1",
       branch: {
         width: branchWidth,
         decision_after_actions: 3,
@@ -189,8 +189,8 @@ export function NewRunPage() {
         body: JSON.stringify({
           name,
           algorithm,
-          policy_compute_provider: "MockRunPodProvider",
-          judge_provider: "MockJudgeProvider",
+          policy_compute_provider: "LocalFixtureComputeProvider",
+          judge_provider: "DeterministicJudgeFixture",
           task_revision: "mounting-plate@sha256:fixture-v1",
           branch: {
             width: branchWidth,
@@ -307,7 +307,7 @@ export function NewRunPage() {
                   P
                 </span>
                 <span>
-                  <strong>MockRunPodProvider</strong>
+                  <strong>LocalFixtureComputeProvider</strong>
                   Deterministic policy allocation · local CPU · no RunPod
                   resolution path
                 </span>
@@ -318,7 +318,7 @@ export function NewRunPage() {
                   J
                 </span>
                 <span>
-                  <strong>MockJudgeProvider</strong>
+                  <strong>DeterministicJudgeFixture</strong>
                   Contract fixtures only · no model endpoint or credentials
                 </span>
                 <StatusBadge status="READY" />
@@ -962,7 +962,7 @@ export function RunDetailPage() {
                     },
                     {
                       label: "Calibration",
-                      value: <StatusBadge status="MOCK_CONTRACT_ONLY" />,
+                      value: <StatusBadge status="FIXTURE_CONTRACT_ONLY" />,
                     },
                   ]}
                 />

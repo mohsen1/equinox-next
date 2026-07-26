@@ -618,8 +618,8 @@ export function NewRunPage() {
           name,
           algorithm,
           environment_id: environment.environment_id,
-          policy_compute_provider: "MockRunPodProvider",
-          judge_provider: "MockJudgeProvider",
+          policy_compute_provider: "LocalFixtureComputeProvider",
+          judge_provider: "DeterministicJudgeFixture",
           task_revision: environment.task_revision,
           branch: {
             mode: "static",

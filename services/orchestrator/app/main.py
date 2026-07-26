@@ -12,7 +12,7 @@ from equinox_core import canonical_digest, make_id, utc_now
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .database import connection, migrate
 from .environments import (
@@ -33,7 +33,7 @@ class StrictModel(BaseModel):
 class BranchConfig(StrictModel):
     mode: Literal["static"] = "static"
     width: Literal[1, 4]
-    decision_after_actions: int = Field(default=3, ge=1, le=8)
+    decision_after_actions: Literal[3] = 3
     rng_mode: Literal["split_stream"] = "split_stream"
 
 
@@ -58,17 +58,31 @@ class BudgetConfig(StrictModel):
 class LaunchRunRequest(StrictModel):
     name: str = Field(min_length=3, max_length=80)
     algorithm: Literal["independent_rollout_baseline", "bpo_local_metric"]
-    environment_id: str = Field(default="cad.reconstruction", min_length=3, max_length=80)
-    policy_compute_provider: Literal["MockRunPodProvider"] = "MockRunPodProvider"
-    judge_provider: Literal["MockJudgeProvider"] = "MockJudgeProvider"
-    task_revision: str = Field(
-        default="mounting-plate@sha256:fixture-v1", min_length=3, max_length=160
+    environment_id: Literal["cad.reconstruction"] = "cad.reconstruction"
+    policy_compute_provider: Literal["LocalFixtureComputeProvider"] = "LocalFixtureComputeProvider"
+    judge_provider: Literal["DeterministicJudgeFixture"] = "DeterministicJudgeFixture"
+    task_revision: Literal["mounting-plate@sha256:fixture-v1"] = (
+        "mounting-plate@sha256:fixture-v1"
     )
     branch: BranchConfig
     complexity: ComplexityConfig = ComplexityConfig()
     budgets: BudgetConfig = BudgetConfig()
     seed: int = Field(default=17, ge=0, le=2**31 - 1)
     retention_class: Literal["local-research"] = "local-research"
+
+    @model_validator(mode="after")
+    def validate_supported_plan(self) -> LaunchRunRequest:
+        expected_width = 1 if self.algorithm == "independent_rollout_baseline" else 4
+        if self.branch.width != expected_width:
+            raise ValueError(
+                f"{self.algorithm} requires static branch width K={expected_width}"
+            )
+        required_transitions = 24 if expected_width == 1 else 15
+        if self.budgets.transitions < required_transitions:
+            raise ValueError(
+                f"{self.algorithm} requires at least {required_transitions} transition credits"
+            )
+        return self
 
 
 class CancelRequest(StrictModel):
@@ -81,6 +95,16 @@ class RejudgeApiRequest(StrictModel):
     fixture_scenario: Literal[
         "valid", "low", "tie", "abstain", "malformed", "retry", "disagreement", "integrity"
     ] = "valid"
+
+
+class WorkerClaimRequest(StrictModel):
+    worker_id: str = Field(min_length=3, max_length=160)
+
+
+class ClaimedAttemptRequest(StrictModel):
+    worker_id: str = Field(min_length=3, max_length=160)
+    claim_id: str = Field(min_length=3, max_length=160)
+    fencing_token: int = Field(ge=1)
 
 
 class ComplexityObservationRequest(StrictModel):
@@ -374,23 +398,33 @@ async def lifespan(_: FastAPI):
                 """
             )
         ]
-        conn.execute(
-            """
-            UPDATE runs SET status = 'QUEUED', updated_at = now()
-            WHERE status IN ('PROVISIONING', 'PREPARING', 'RUNNING')
-              AND desired_state = 'RUNNING'
-            """
+        expired = list(
+            conn.execute(
+                """
+                UPDATE run_attempts
+                SET status = 'QUEUED',
+                    claim_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    next_eligible_at = now(),
+                    updated_at = now()
+                WHERE status IN ('PROVISIONING', 'PREPARING', 'RUNNING')
+                  AND lease_expires_at < now()
+                RETURNING run_id
+                """
+            )
         )
-        conn.execute(
-            """
-            UPDATE run_attempts SET status = 'QUEUED', updated_at = now()
-            WHERE status IN ('PROVISIONING', 'PREPARING', 'RUNNING')
-              AND EXISTS (
-                SELECT 1 FROM runs r
-                WHERE r.run_id = run_attempts.run_id AND r.status = 'QUEUED'
-              )
-            """
-        )
+        if expired:
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = 'QUEUED', updated_at = now()
+                WHERE run_id = ANY(%s)
+                  AND desired_state = 'RUNNING'
+                  AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELED')
+                """,
+                ([row["run_id"] for row in expired],),
+            )
     for run_id in canceled_run_ids:
         release_run_resources(run_id)
     yield
@@ -459,14 +493,14 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
         "algorithm": {"id": request.algorithm, "version": "local@1"},
         "policy_compute": {
             "provider": request.policy_compute_provider,
-            "resource_profile": "mock-cpu",
+            "resource_profile": "fixture-cpu",
         },
         "verification": {
             "plan_id": "cad.transition-composite@1",
             "judge_provider": request.judge_provider,
-            "judge_spec_id": "cad.pointwise.mock@1",
-            "group_judge_spec_id": "cad.sibling-group.mock@1",
-            "calibration_status": "MOCK_CONTRACT_ONLY",
+            "judge_spec_id": "cad.pointwise.fixture@1",
+            "group_judge_spec_id": "cad.sibling-group.fixture@1",
+            "calibration_status": "FIXTURE_CONTRACT_ONLY",
         },
         "branch": request.branch.model_dump(),
         "complexity": request.complexity.model_dump(),
@@ -480,7 +514,7 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
     attempt_id = make_id("attempt")
     policy_id = make_id("policy")
     provider = POLICY_COMPUTE_PROVIDERS[request.policy_compute_provider]
-    allocation = provider.allocate("mock-cpu")
+    allocation = provider.allocate("fixture-cpu")
     with connection() as conn:
         conn.execute(
             """
@@ -501,7 +535,7 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
             """
             INSERT INTO run_attempts(
               attempt_id, run_id, attempt_number, status, provider_name, allocation_id
-            ) VALUES (%s, %s, 1, 'QUEUED', 'MockRunPodProvider', %s)
+            ) VALUES (%s, %s, 1, 'QUEUED', 'LocalFixtureComputeProvider', %s)
             """,
             (attempt_id, run_id, allocation.allocation_id),
         )
@@ -510,7 +544,7 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
             INSERT INTO compute_allocations(
               allocation_id, run_attempt_id, provider_name, desired_state, observed_state,
               resource_profile, provider_handle
-            ) VALUES (%s, %s, 'MockRunPodProvider', 'ALLOCATED', 'ALLOCATED', %s, %s)
+            ) VALUES (%s, %s, 'LocalFixtureComputeProvider', 'ALLOCATED', 'ALLOCATED', %s, %s)
             """,
             (
                 allocation.allocation_id,
@@ -542,7 +576,7 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
         )
         policy_manifest = {
             "model": "deterministic-cad-policy@1",
-            "tokenizer": "mock-tokenizer@1",
+            "tokenizer": "fixture-tokenizer@1",
             "prompt_template": "cad-policy@1",
             "tool_schema": "cad-actions@1",
             "sampling": {"temperature": 0, "seed": request.seed},
@@ -550,8 +584,9 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
         conn.execute(
             """
             INSERT INTO policy_versions(
-              policy_version_id, run_id, ordinal, artifact_digest, behavior_manifest
-            ) VALUES (%s, %s, 0, %s, %s)
+              policy_version_id, run_id, ordinal, artifact_digest,
+              behavior_manifest, update_kind
+            ) VALUES (%s, %s, 0, %s, %s, 'INITIAL_FIXTURE')
             """,
             (policy_id, run_id, canonical_digest(policy_manifest), Jsonb(policy_manifest)),
         )
@@ -566,7 +601,7 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
                 "run_id": run_id,
                 "attempt_id": attempt_id,
                 "manifest_digest": canonical_digest(normalized),
-                "providers": ["MockRunPodProvider", "MockJudgeProvider"],
+                "providers": ["LocalFixtureComputeProvider", "DeterministicJudgeFixture"],
                 "source_run_id": source_run_id,
             },
         )
@@ -587,7 +622,7 @@ def health() -> dict[str, Any]:
         "status": "ready",
         "service": "orchestrator",
         "policy_compute_providers": sorted(POLICY_COMPUTE_PROVIDERS),
-        "judge_providers": ["MockJudgeProvider"],
+        "judge_providers": ["DeterministicJudgeFixture"],
         "profile": "local-contract-proof",
     }
 
@@ -601,8 +636,8 @@ def run_templates() -> dict[str, Any]:
                 "name": "Independent CAD baseline",
                 "algorithm": "independent_rollout_baseline",
                 "branch_width": 1,
-                "policy_compute_provider": "MockRunPodProvider",
-                "judge_provider": "MockJudgeProvider",
+                "policy_compute_provider": "LocalFixtureComputeProvider",
+                "judge_provider": "DeterministicJudgeFixture",
                 "estimated_cost": {
                     "execution_credits": 0.6,
                     "render_credits": 0.3,
@@ -615,8 +650,8 @@ def run_templates() -> dict[str, Any]:
                 "name": "Branch-aware CAD proof",
                 "algorithm": "bpo_local_metric",
                 "branch_width": 4,
-                "policy_compute_provider": "MockRunPodProvider",
-                "judge_provider": "MockJudgeProvider",
+                "policy_compute_provider": "LocalFixtureComputeProvider",
+                "judge_provider": "DeterministicJudgeFixture",
                 "estimated_cost": {
                     "execution_credits": 0.4,
                     "render_credits": 0.2,
@@ -720,8 +755,8 @@ def list_runs() -> dict[str, Any]:
         )
     for run in data:
         run["providers"] = {
-            "policy_compute": "MockRunPodProvider",
-            "judge": "MockJudgeProvider",
+            "policy_compute": "LocalFixtureComputeProvider",
+            "judge": "DeterministicJudgeFixture",
             "execution": "ComposeExecutionProvider",
         }
         run["cost"] = {
@@ -792,13 +827,13 @@ def get_run(run_id: str) -> dict[str, Any]:
         "reward_signals": rewards,
         "failures": failures,
         "providers": {
-            "policy_compute": "MockRunPodProvider",
-            "judge": "MockJudgeProvider",
+            "policy_compute": "LocalFixtureComputeProvider",
+            "judge": "DeterministicJudgeFixture",
             "execution": "ComposeExecutionProvider",
         },
         "calibration": {
-            "status": "MOCK_CONTRACT_ONLY",
-            "message": "Mock assessments are contract fixtures, not human-aligned visual judgments.",
+            "status": "FIXTURE_CONTRACT_ONLY",
+            "message": "Deterministic fixture assessments are contract fixtures, not human-aligned visual judgments.",
         },
     }
 
@@ -845,8 +880,8 @@ def reproduce_run(run_id: str) -> dict[str, Any]:
         name=_reproduction_name(source["name"]),
         algorithm=manifest["algorithm"]["id"],
         environment_id=manifest["environment"]["id"],
-        policy_compute_provider="MockRunPodProvider",
-        judge_provider="MockJudgeProvider",
+        policy_compute_provider="LocalFixtureComputeProvider",
+        judge_provider="DeterministicJudgeFixture",
         task_revision=manifest["task_revision"],
         branch=BranchConfig(**manifest["branch"]),
         complexity=ComplexityConfig(**manifest.get("complexity", {})),
@@ -1019,13 +1054,22 @@ def rejudge(run_id: str, request: RejudgeApiRequest) -> dict[str, Any]:
 
 
 @app.post("/internal/agent/claims")
-def claim_run() -> dict[str, Any]:
+def claim_run(request: WorkerClaimRequest) -> dict[str, Any]:
+    claim_id = make_id("claim")
     with connection() as conn:
         attempt = conn.execute(
             """
             SELECT ra.* FROM run_attempts ra
             JOIN runs r ON r.run_id = ra.run_id
-            WHERE ra.status = 'QUEUED' AND r.desired_state = 'RUNNING'
+            WHERE (
+                    ra.status = 'QUEUED'
+                    OR (
+                      ra.status IN ('PROVISIONING', 'PREPARING', 'RUNNING')
+                      AND ra.lease_expires_at < now()
+                    )
+                  )
+              AND ra.next_eligible_at <= now()
+              AND r.desired_state = 'RUNNING'
             ORDER BY ra.created_at
             FOR UPDATE OF ra SKIP LOCKED
             LIMIT 1
@@ -1035,33 +1079,79 @@ def claim_run() -> dict[str, Any]:
             return {"claim": None}
         conn.execute(
             """
-            UPDATE run_attempts SET status = 'PROVISIONING', heartbeat_at = now(), updated_at = now()
+            UPDATE run_attempts
+            SET status = 'PROVISIONING',
+                claim_id = %s,
+                lease_owner = %s,
+                lease_expires_at = now() + interval '15 minutes',
+                fencing_token = fencing_token + 1,
+                heartbeat_at = now(),
+                updated_at = now()
             WHERE attempt_id = %s
             """,
-            (attempt["attempt_id"],),
+            (claim_id, request.worker_id, attempt["attempt_id"]),
         )
+        claimed = conn.execute(
+            """
+            SELECT claim_id, lease_owner, lease_expires_at, fencing_token
+            FROM run_attempts WHERE attempt_id = %s
+            """,
+            (attempt["attempt_id"],),
+        ).fetchone()
         conn.execute(
             "UPDATE runs SET status = 'PROVISIONING', updated_at = now() WHERE run_id = %s",
             (attempt["run_id"],),
         )
-    return {"claim": {"attempt_id": attempt["attempt_id"], "run_id": attempt["run_id"]}}
+    return {
+        "claim": {
+            "attempt_id": attempt["attempt_id"],
+            "run_id": attempt["run_id"],
+            **claimed,
+        }
+    }
 
 
 @app.post("/internal/run-attempts/{attempt_id}/heartbeat")
-def heartbeat(attempt_id: str) -> dict[str, Any]:
+def heartbeat(attempt_id: str, request: ClaimedAttemptRequest) -> dict[str, Any]:
     with connection() as conn:
         updated = conn.execute(
-            "UPDATE run_attempts SET heartbeat_at = now() WHERE attempt_id = %s RETURNING run_id",
-            (attempt_id,),
+            """
+            UPDATE run_attempts
+            SET heartbeat_at = now(),
+                lease_expires_at = now() + interval '15 minutes',
+                updated_at = now()
+            WHERE attempt_id = %s
+              AND claim_id = %s
+              AND lease_owner = %s
+              AND fencing_token = %s
+              AND lease_expires_at > now()
+              AND status IN ('PROVISIONING', 'PREPARING', 'RUNNING')
+            RETURNING run_id, lease_expires_at
+            """,
+            (
+                attempt_id,
+                request.claim_id,
+                request.worker_id,
+                request.fencing_token,
+            ),
         ).fetchone()
     if not updated:
-        raise HTTPException(status_code=404, detail={"code": "ATTEMPT_NOT_FOUND"})
-    return {"attempt_id": attempt_id, "heartbeat_at": utc_now()}
+        raise HTTPException(status_code=409, detail={"code": "STALE_ATTEMPT_CLAIM"})
+    return {
+        "attempt_id": attempt_id,
+        "heartbeat_at": utc_now(),
+        "lease_expires_at": updated["lease_expires_at"],
+    }
 
 
 @app.post("/internal/run-attempts/{attempt_id}/execute")
-def execute_claim(attempt_id: str) -> dict[str, Any]:
-    execute_run_attempt(attempt_id)
+def execute_claim(attempt_id: str, request: ClaimedAttemptRequest) -> dict[str, Any]:
+    execute_run_attempt(
+        attempt_id,
+        worker_id=request.worker_id,
+        claim_id=request.claim_id,
+        fencing_token=request.fencing_token,
+    )
     return {"attempt_id": attempt_id, "status": "TERMINAL"}
 
 
@@ -1530,7 +1620,7 @@ def verification_detail(verification_run_id: str) -> dict[str, Any]:
         "steps": steps,
         "judge": judge,
         "model_assessment_notice": (
-            "Mock judge output is stochastic-evidence contract data, not objective truth."
+            "Deterministic fixture output is contract evidence, not objective visual truth."
         ),
     }
 
@@ -1642,8 +1732,8 @@ def judge_result(judge_result_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail={"code": "JUDGE_RESULT_NOT_FOUND"})
     return {
         "judge_result": result,
-        "label": "Mock model assessment",
-        "calibration_status": "MOCK_CONTRACT_ONLY",
+        "label": "Fixture assessment",
+        "calibration_status": "FIXTURE_CONTRACT_ONLY",
         "hidden_chain_of_thought_stored": False,
     }
 
@@ -1949,8 +2039,8 @@ def resources() -> dict[str, Any]:
         "research_compute_proofs": research_compute_proofs,
         "research_compute_executions": research_compute_executions,
         "provider_boundaries": {
-            "policy_compute": ["MockRunPodProvider"],
-            "judge": ["MockJudgeProvider"],
+            "policy_compute": ["LocalFixtureComputeProvider"],
+            "judge": ["DeterministicJudgeFixture"],
             "execution": ["ComposeExecutionProvider"],
         },
         "external_capacity": 0,

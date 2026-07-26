@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 from dataclasses import dataclass
+from functools import lru_cache
+from hashlib import sha256
+from hmac import new as hmac_new
+from pathlib import Path
 from typing import Any
 
-from equinox_core import canonical_digest
+from equinox_core import canonical_bytes, content_digest
 
 CRITERIA = [
     "reference_correspondence",
@@ -28,9 +33,45 @@ class ProviderResponse:
     usage: dict[str, Any]
 
 
-class MockJudgeProvider:
-    name = "MockJudgeProvider"
-    model_identity = "mock-judge-deterministic-2026-07-26"
+@dataclass(frozen=True)
+class PromptTemplate:
+    template_id: str
+    content: str
+    content_digest: str
+
+    def render(self, evidence: dict[str, Any]) -> str:
+        return (
+            f"{self.content.rstrip()}\n\n"
+            "<untrusted-evidence>\n"
+            f"{canonical_bytes(evidence).decode('utf-8')}\n"
+            "</untrusted-evidence>\n"
+        )
+
+
+@lru_cache(maxsize=1)
+def prompt_registry() -> dict[str, PromptTemplate]:
+    prompts_dir = Path(__file__).parents[1] / "prompts"
+    manifest = json.loads((prompts_dir / "manifest.json").read_text(encoding="utf-8"))
+    templates: dict[str, PromptTemplate] = {}
+    for template_id, entry in manifest["templates"].items():
+        prompt_bytes = (prompts_dir / entry["path"]).read_bytes()
+        actual_digest = content_digest(prompt_bytes)
+        if actual_digest != entry["sha256"]:
+            raise RuntimeError(
+                f"prompt {template_id} digest mismatch: "
+                f"expected {entry['sha256']}, received {actual_digest}"
+            )
+        templates[template_id] = PromptTemplate(
+            template_id=template_id,
+            content=prompt_bytes.decode("utf-8"),
+            content_digest=actual_digest,
+        )
+    return templates
+
+
+class DeterministicJudgeFixture:
+    name = "DeterministicJudgeFixture"
+    model_identity = "deterministic-judge-fixture-2026-07-26"
 
     def invoke(self, request: dict[str, Any], *, attempt_number: int) -> ProviderResponse:
         scenario = request.get("fixture_scenario", "valid")
@@ -104,26 +145,20 @@ class MockJudgeProvider:
             "integrity_flags": integrity_flags,
             "tie": tie,
             "explanation": (
-                "Mock assessment cites pinned renders and geometry evidence; "
+                "Fixture assessment cites pinned renders and geometry evidence; "
                 "it is deterministic contract evidence, not visual ground truth."
             ),
         }
 
 
 def pointwise_spec(*, version: int = 1) -> dict[str, Any]:
-    prompt_digest = canonical_digest(
-        {
-            "template": "cad-pointwise",
-            "version": version,
-            "privileged_instructions": True,
-            "untrusted_evidence_delimiters": True,
-        }
-    )
+    template = prompt_registry()["cad-pointwise-v1"]
     return {
-        "judge_spec_id": f"cad.pointwise.mock@{version}",
-        "provider": "MockJudgeProvider",
-        "model_revision": "mock-judge-deterministic-2026-07-26",
-        "prompt_template_digest": prompt_digest,
+        "judge_spec_id": f"cad.pointwise.fixture@{version}",
+        "provider": "DeterministicJudgeFixture",
+        "model_revision": "deterministic-judge-fixture-2026-07-26",
+        "prompt_template_id": template.template_id,
+        "prompt_template_digest": template.content_digest,
         "rubric_version": f"cad-progress-rubric@{version}",
         "output_schema": "judge-result.v1",
         "mode": "POINTWISE",
@@ -135,7 +170,7 @@ def pointwise_spec(*, version: int = 1) -> dict[str, Any]:
             "minimum_confidence": 0.7,
             "disagreement_threshold": 0.25,
         },
-        "calibration_status": "MOCK_CONTRACT_ONLY",
+        "calibration_status": "FIXTURE_CONTRACT_ONLY",
         "integrity_profile": "untrusted-multimodal-input@1",
         "allowed_evidence_roles": [
             "task-reference",
@@ -149,12 +184,12 @@ def pointwise_spec(*, version: int = 1) -> dict[str, Any]:
 
 def group_spec() -> dict[str, Any]:
     spec = pointwise_spec()
+    template = prompt_registry()["cad-group-v1"]
     spec.update(
         {
-            "judge_spec_id": "cad.sibling-group.mock@1",
-            "prompt_template_digest": canonical_digest(
-                {"template": "cad-sibling-group", "version": 1}
-            ),
+            "judge_spec_id": "cad.sibling-group.fixture@1",
+            "prompt_template_id": template.template_id,
+            "prompt_template_digest": template.content_digest,
             "rubric_version": "cad-sibling-rubric@1",
             "mode": "GROUP",
             "criteria": ["sibling_preference", "progress", "regressions"],
@@ -172,5 +207,7 @@ def group_spec() -> dict[str, Any]:
 
 def blinded_order(subject_id: str, count: int) -> list[int]:
     order = list(range(count))
-    random.Random(canonical_digest(subject_id)).shuffle(order)
+    secret = os.getenv("JUDGE_PRESENTATION_SECRET", "equinox-local-fixture-only").encode()
+    seed = hmac_new(secret, subject_id.encode(), sha256).hexdigest()
+    random.Random(seed).shuffle(order)
     return order

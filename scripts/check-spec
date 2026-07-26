@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+
+repository = Path(__file__).resolve().parents[1]
+specification = repository / "equinox-next.md"
+provenance_path = repository / "docs/equinox-next.provenance.json"
+legacy_mirror = repository / "docs/equinox-next.md"
+
+errors: list[str] = []
+if legacy_mirror.exists():
+    errors.append("docs/equinox-next.md must not exist as a second editable specification")
+if not specification.is_file():
+    errors.append("canonical specification equinox-next.md is missing")
+if not provenance_path.is_file():
+    errors.append("specification provenance manifest is missing")
+
+if not errors:
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    specification_bytes = specification.read_bytes()
+    actual_digest = f"sha256:{hashlib.sha256(specification_bytes).hexdigest()}"
+    if provenance.get("canonical_path") != "equinox-next.md":
+        errors.append("provenance canonical_path must be equinox-next.md")
+    if provenance.get("source_sha256") != actual_digest:
+        errors.append(
+            "specification digest drift: update docs/equinox-next.provenance.json intentionally"
+        )
+    version_match = re.search(
+        rb'^version:\s*["\']?([^"\'\r\n]+)',
+        specification_bytes,
+        re.MULTILINE,
+    )
+    actual_version = version_match.group(1).decode().strip() if version_match else None
+    if provenance.get("specification_version") != actual_version:
+        errors.append("specification version differs from its provenance manifest")
+
+if errors:
+    for error in errors:
+        print(f"err {error}", file=sys.stderr)
+    raise SystemExit(1)
+
+print("ok  canonical specification and provenance agree")

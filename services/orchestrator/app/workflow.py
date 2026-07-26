@@ -5,7 +5,14 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from equinox_core import canonical_digest, make_id, utc_now, validate_contract
+from equinox_core import (
+    canonical_bytes,
+    canonical_digest,
+    content_digest,
+    make_id,
+    utc_now,
+    validate_contract,
+)
 from psycopg.types.json import Jsonb
 
 from .database import connection
@@ -34,6 +41,7 @@ class Cursor:
     state_id: str
     version: int
     fencing_token: int
+    lease_owner: str
 
 
 @dataclass
@@ -47,6 +55,169 @@ class TransitionEvidence:
     reward_signal_ids: list[str]
     progress: float
     cursor: Cursor
+
+
+@dataclass(frozen=True)
+class RunPlan:
+    algorithm: str
+    task_revision: str
+    seed: int
+    branch_width: int
+    decision_after_actions: int
+    transition_budget: int
+
+    @classmethod
+    def from_run(cls, run: dict[str, Any]) -> RunPlan:
+        manifest = run["manifest"]
+        if canonical_digest(manifest) != run["manifest_digest"]:
+            raise RuntimeError("run manifest bytes do not match the accepted digest")
+        if manifest["algorithm"]["id"] != run["algorithm"]:
+            raise RuntimeError("run algorithm column diverges from the immutable manifest")
+        expected_width = 1 if run["algorithm"] == "independent_rollout_baseline" else 4
+        if (
+            manifest["profile"] != "local-contract-proof"
+            or manifest["environment"]["id"] != "cad.reconstruction"
+            or manifest["environment"]["version"] != "1.0.0"
+            or manifest["task_revision"] != TASK_REVISION
+            or manifest["branch"]["mode"] != "static"
+            or manifest["branch"]["width"] != expected_width
+            or manifest["branch"]["decision_after_actions"] != 3
+            or manifest["verification"]["plan_id"] != VERIFICATION_PLAN_ID
+            or manifest["verification"]["judge_provider"] != "DeterministicJudgeFixture"
+            or manifest["policy_compute"]["provider"] != "LocalFixtureComputeProvider"
+        ):
+            raise RuntimeError("run manifest requests an unsupported executable configuration")
+        required_transitions = 24 if expected_width == 1 else 15
+        transition_budget = manifest["budgets"]["transitions"]
+        if transition_budget < required_transitions:
+            raise RuntimeError("run transition budget cannot execute the declared plan")
+        return cls(
+            algorithm=run["algorithm"],
+            task_revision=manifest["task_revision"],
+            seed=manifest["seed"],
+            branch_width=expected_width,
+            decision_after_actions=manifest["branch"]["decision_after_actions"],
+            transition_budget=transition_budget,
+        )
+
+
+def _record_fixture_policy_decision(
+    *,
+    run_id: str,
+    rollout_tree_id: str,
+    branch_member_id: str | None,
+    behavior_policy_version_id: str,
+    cursor: Cursor,
+    action: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    with connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT pd.*, a.digest AS action_digest, a.object_key, a.media_type, a.size_bytes
+            FROM policy_decisions pd
+            JOIN artifacts a ON a.artifact_id = pd.action_artifact_id
+            WHERE pd.rollout_tree_id = %s
+              AND pd.branch_member_id IS NOT DISTINCT FROM %s
+              AND pd.source_state_id = %s
+            """,
+            (rollout_tree_id, branch_member_id, cursor.state_id),
+        ).fetchone()
+        source = conn.execute(
+            """
+            SELECT s.logical_state_digest, s.observation_artifact_id, a.digest AS observation_digest
+            FROM states s
+            JOIN artifacts a ON a.artifact_id = s.observation_artifact_id
+            WHERE s.state_id = %s
+            """,
+            (cursor.state_id,),
+        ).fetchone()
+    if not source:
+        raise RuntimeError("policy decision source state is unavailable")
+    action_stored = artifact_store.put_json(
+        action,
+        role="selected-action",
+        visibility="POLICY",
+        trust_class="CANDIDATE_CONTROLLED",
+        viewer_hint="structured-json",
+    )
+    action_artifact = {
+        **action_stored.ref(ordinal=0),
+        "object_key": action_stored.object_key,
+        "size_bytes": action_stored.size_bytes,
+    }
+    decision_content = {
+        "behavior_policy_version_id": behavior_policy_version_id,
+        "decision_kind": "FIXTURE_SCRIPT",
+        "source_state_digest": source["logical_state_digest"],
+        "observation_digest": source["observation_digest"],
+        "selected_action_digest": action_stored.digest,
+        "sampling": {"temperature": 0, "stochastic": False},
+        "rng_receipt": {
+            "kind": "DETERMINISTIC_NO_DRAW",
+            "derivation_digest": canonical_digest(
+                {
+                    "behavior_policy_version_id": behavior_policy_version_id,
+                    "rollout_tree_id": rollout_tree_id,
+                    "branch_member_id": branch_member_id,
+                    "source_state_digest": source["logical_state_digest"],
+                    "cursor_version": cursor.version,
+                }
+            ),
+        },
+    }
+    decision_digest = canonical_digest(decision_content)
+    if existing:
+        if (
+            existing["behavior_policy_version_id"] != behavior_policy_version_id
+            or existing["decision_digest"] != decision_digest
+            or existing["action_digest"] != action_stored.digest
+        ):
+            raise RuntimeError("fixture policy decision replay conflicts with accepted lineage")
+        return existing["policy_decision_id"], action_artifact
+
+    decision_id = make_id("policy_decision")
+    payload = {
+        "policy_decision_id": decision_id,
+        "run_id": run_id,
+        "rollout_tree_id": rollout_tree_id,
+        "branch_member_id": branch_member_id,
+        "source_state_id": cursor.state_id,
+        **decision_content,
+    }
+    with connection() as conn:
+        action_artifact_id = record_artifact(
+            conn,
+            action_artifact,
+            entity_type="policy_decision",
+            entity_id=decision_id,
+            role="selected-action",
+        )
+        conn.execute(
+            """
+            INSERT INTO policy_decisions(
+              policy_decision_id, run_id, rollout_tree_id, branch_member_id,
+              behavior_policy_version_id, source_state_id, observation_artifact_id,
+              action_artifact_id, decision_kind, decision_digest, rng_receipt, payload
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s,
+              'FIXTURE_SCRIPT', %s, %s, %s
+            )
+            """,
+            (
+                decision_id,
+                run_id,
+                rollout_tree_id,
+                branch_member_id,
+                behavior_policy_version_id,
+                cursor.state_id,
+                source["observation_artifact_id"],
+                action_artifact_id,
+                decision_digest,
+                Jsonb(decision_content["rng_receipt"]),
+                Jsonb(payload),
+            ),
+        )
+    return decision_id, action_artifact
 
 
 def _run_status(run_id: str) -> dict[str, Any]:
@@ -94,6 +265,7 @@ def _create_initial_state(
     *,
     run_id: str,
     rollout_tree_id: str,
+    task_revision: str,
     lease_owner: str,
     seed: int,
 ) -> tuple[Cursor, str]:
@@ -115,7 +287,7 @@ def _create_initial_state(
         state_id = make_id("state")
         operation_id = make_id("op")
         operation_input = {
-            "task_revision": TASK_REVISION,
+            "task_revision": task_revision,
             "scientific_state_id": state_id,
             "lease_owner": lease_owner,
             "rng_state": f"seed:{seed}",
@@ -143,7 +315,7 @@ def _create_initial_state(
             role="logical-state",
             entity_type="state",
             entity_id=state_id,
-            trust_class="CANDIDATE",
+            trust_class="CANDIDATE_CONTROLLED",
         )
         observation = {
             "turn": logical_state["turn"],
@@ -157,14 +329,14 @@ def _create_initial_state(
             entity_type="state",
             entity_id=state_id,
             visibility="POLICY",
-            trust_class="CANDIDATE",
+            trust_class="CANDIDATE_CONTROLLED",
         )
         state_contract = {
             "state_id": state_id,
             "rollout_tree_id": rollout_tree_id,
             "parent_transition_id": None,
             "environment_version": "cad.reconstruction@1.0.0",
-            "task_revision": TASK_REVISION,
+            "task_revision": task_revision,
             "logical_state": {
                 "artifact_id": logical_artifact_id,
                 "digest": canonical_digest(logical_state),
@@ -173,7 +345,7 @@ def _create_initial_state(
                 "media_type": "application/json",
                 "viewer_hint": "structured-json",
                 "visibility": "OPERATOR",
-                "trust_class": "CANDIDATE",
+                "trust_class": "CANDIDATE_CONTROLLED",
             },
             "observation": {
                 "artifact_id": observation_artifact_id,
@@ -183,7 +355,7 @@ def _create_initial_state(
                 "media_type": "application/json",
                 "viewer_hint": "structured-json",
                 "visibility": "POLICY",
-                "trust_class": "CANDIDATE",
+                "trust_class": "CANDIDATE_CONTROLLED",
             },
             "semantic_status": "ACTIVE",
             "sequence": 0,
@@ -201,7 +373,7 @@ def _create_initial_state(
             (
                 state_id,
                 rollout_tree_id,
-                TASK_REVISION,
+                task_revision,
                 logical_artifact_id,
                 observation_artifact_id,
                 canonical_digest(logical_state),
@@ -227,6 +399,7 @@ def _create_initial_state(
             state_id=state_id,
             version=result["version"],
             fencing_token=result["fencing_token"],
+            lease_owner=lease_owner,
         ),
         state_id,
     )
@@ -235,19 +408,39 @@ def _create_initial_state(
 def _state_logical(state_id: str) -> dict[str, Any]:
     with connection() as conn:
         state = conn.execute(
-            "SELECT payload FROM states WHERE state_id = %s", (state_id,)
-        ).fetchone()
-        artifact = conn.execute(
             """
-            SELECT a.digest FROM artifacts a
-            JOIN artifact_refs r ON r.artifact_id = a.artifact_id
-            WHERE r.entity_type = 'state' AND r.entity_id = %s AND r.role = 'logical-state'
+            SELECT
+              s.logical_state_artifact_id,
+              s.logical_state_digest,
+              s.payload,
+              a.digest AS artifact_digest,
+              r.artifact_id AS referenced_artifact_id
+            FROM states s
+            JOIN artifacts a ON a.artifact_id = s.logical_state_artifact_id
+            JOIN artifact_refs r
+              ON r.artifact_id = s.logical_state_artifact_id
+             AND r.entity_type = 'state'
+             AND r.entity_id = s.state_id
+             AND r.role = 'logical-state'
+             AND r.ordinal = 0
+            WHERE s.state_id = %s
             """,
             (state_id,),
         ).fetchone()
-    if not state or not artifact:
+    if not state:
         raise ValueError(f"state not found: {state_id}")
-    return json_load_artifact(artifact["digest"])
+    payload_ref = state["payload"]["logical_state"]
+    if (
+        state["logical_state_artifact_id"] != state["referenced_artifact_id"]
+        or payload_ref["artifact_id"] != state["logical_state_artifact_id"]
+        or payload_ref["digest"] != state["logical_state_digest"]
+        or state["artifact_digest"] != state["logical_state_digest"]
+    ):
+        raise RuntimeError(f"state provenance binding is inconsistent: {state_id}")
+    value = json_load_artifact(state["artifact_digest"])
+    if canonical_digest(value) != state["logical_state_digest"]:
+        raise RuntimeError(f"state artifact content diverges from state digest: {state_id}")
+    return value
 
 
 def json_load_artifact(digest: str) -> Any:
@@ -315,7 +508,11 @@ def _accept_verification(
     judge_result_id = judge_result["judge_result_id"]
     now = utc_now()
     computed_proof_digest = canonical_digest(
-        {key: value for key, value in proof_bundle.items() if key != "digest"}
+        {
+            key: value
+            for key, value in proof_bundle.items()
+            if key not in {"proof_bundle_id", "digest"}
+        }
     )
     if computed_proof_digest != proof_bundle["digest"]:
         raise ValueError(
@@ -424,7 +621,7 @@ def _accept_verification(
         conn.execute(
             """
             INSERT INTO judge_specs(judge_spec_id, provider_name, digest, spec)
-            VALUES (%s, 'MockJudgeProvider', %s, %s)
+            VALUES (%s, 'DeterministicJudgeFixture', %s, %s)
             ON CONFLICT (judge_spec_id) DO NOTHING
             """,
             (spec["judge_spec_id"], spec_digest, Jsonb(spec)),
@@ -643,24 +840,35 @@ def _execute_transition(
     *,
     run_id: str,
     rollout_tree_id: str,
+    task_revision: str,
     cursor: Cursor,
     action: dict[str, Any],
+    behavior_policy_version_id: str,
     branch_member_id: str | None = None,
     fixture_scenario: str = "valid",
     simulate_infra_retry: bool = False,
 ) -> TransitionEvidence:
     _ensure_running(run_id)
     source_state = _state_logical(cursor.state_id)
-    transition_id = make_id("transition")
+    policy_decision_id, action_artifact = _record_fixture_policy_decision(
+        run_id=run_id,
+        rollout_tree_id=rollout_tree_id,
+        branch_member_id=branch_member_id,
+        behavior_policy_version_id=behavior_policy_version_id,
+        cursor=cursor,
+        action=action,
+    )
     with connection() as conn:
         action_intent = conn.execute(
             """
-            SELECT * FROM operations
+            SELECT o.*, t.transition_id AS accepted_transition_id
+            FROM operations o
+            LEFT JOIN transitions t ON t.operation_id = o.operation_id
             WHERE run_id = %s AND operation_type = 'apply_action'
               AND operation_input->>'cursor_id' = %s
               AND operation_input->>'expected_state_id' = %s
               AND expected_version = %s
-            ORDER BY created_at LIMIT 1
+            ORDER BY o.created_at LIMIT 1
             """,
             (run_id, cursor.cursor_id, cursor.state_id, cursor.version),
         ).fetchone()
@@ -670,14 +878,18 @@ def _execute_transition(
         if action_input["action"] != action:
             raise RuntimeError("persisted action intent diverges from the declared action plan")
         destination_state_id = action_input["destination_scientific_state_id"]
+        transition_id = action_intent["accepted_transition_id"] or make_id("transition")
     else:
+        transition_id = make_id("transition")
         destination_state_id = make_id("state")
         action_operation_id = make_id("op")
         action_input = {
             "cursor_id": cursor.cursor_id,
+            "lease_owner": cursor.lease_owner,
             "expected_state_id": cursor.state_id,
             "expected_fencing_token": cursor.fencing_token,
             "destination_scientific_state_id": destination_state_id,
+            "policy_decision_id": policy_decision_id,
             "action": action,
         }
         _authorize(
@@ -702,14 +914,12 @@ def _execute_transition(
     )
     with connection() as conn:
         accept_operation_result(conn, operation_id=action_operation_id, result=action_result)
-        action_artifact_id, _ = store_json_artifact(
+        action_artifact_id = record_artifact(
             conn,
-            action,
+            action_artifact,
             role="action",
             entity_type="transition",
             entity_id=transition_id,
-            visibility="POLICY",
-            trust_class="CANDIDATE",
         )
         logical_artifact_id, logical_artifact = store_json_artifact(
             conn,
@@ -717,7 +927,7 @@ def _execute_transition(
             role="logical-state",
             entity_type="state",
             entity_id=destination_state_id,
-            trust_class="CANDIDATE",
+            trust_class="CANDIDATE_CONTROLLED",
         )
         observation = {
             "turn": candidate_state["turn"],
@@ -732,7 +942,7 @@ def _execute_transition(
             entity_type="state",
             entity_id=destination_state_id,
             visibility="POLICY",
-            trust_class="CANDIDATE",
+            trust_class="CANDIDATE_CONTROLLED",
         )
         sequence = conn.execute(
             "SELECT COALESCE(max(sequence), -1) + 1 AS next FROM states WHERE rollout_tree_id = %s",
@@ -743,7 +953,7 @@ def _execute_transition(
             "rollout_tree_id": rollout_tree_id,
             "parent_transition_id": transition_id,
             "environment_version": "cad.reconstruction@1.0.0",
-            "task_revision": TASK_REVISION,
+            "task_revision": task_revision,
             "logical_state": {
                 key: logical_artifact[key]
                 for key in (
@@ -787,7 +997,7 @@ def _execute_transition(
                 destination_state_id,
                 rollout_tree_id,
                 transition_id,
-                TASK_REVISION,
+                task_revision,
                 logical_artifact_id,
                 observation_artifact_id,
                 action_result["candidate_state_digest"],
@@ -801,9 +1011,8 @@ def _execute_transition(
             INSERT INTO transitions(
               transition_id, rollout_tree_id, branch_member_id, source_state_id,
               destination_state_id, runtime_cursor_id, cursor_version, cursor_fencing_token,
-              action_artifact_id, operation_id, outcome, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (operation_id) DO NOTHING
+              action_artifact_id, policy_decision_id, operation_id, outcome, payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 transition_id,
@@ -815,12 +1024,14 @@ def _execute_transition(
                 cursor.version,
                 action_result["fencing_token"],
                 action_artifact_id,
+                policy_decision_id,
                 action_operation_id,
                 action_result["semantic_outcome"],
                 Jsonb(
                     {
                         "transition_id": transition_id,
                         "action": action,
+                        "lease_owner": cursor.lease_owner,
                         "source_state_id": cursor.state_id,
                         "destination_state_id": destination_state_id,
                         "outcome": action_result["semantic_outcome"],
@@ -883,6 +1094,7 @@ def _execute_transition(
         state_id=destination_state_id,
         version=action_result["version"],
         fencing_token=action_result["fencing_token"],
+        lease_owner=cursor.lease_owner,
     )
     return TransitionEvidence(
         transition_id=transition_id,
@@ -971,6 +1183,7 @@ def _ensure_existing_transition_verified(
         state_id=transition["destination_state_id"],
         version=transition["cursor_version"] + 1,
         fencing_token=transition["cursor_fencing_token"],
+        lease_owner=transition["payload"]["lease_owner"],
     )
     accepted = _evidence_from_science(transition=transition, cursor=next_cursor)
     if accepted:
@@ -1034,9 +1247,11 @@ def _resume_path(
     *,
     run_id: str,
     rollout_tree_id: str,
+    task_revision: str,
     branch_member_id: str | None,
     initial_cursor: Cursor,
     actions: list[dict[str, Any]],
+    behavior_policy_version_id: str,
     final_scenario: str = "valid",
     retry_first: bool = False,
 ) -> tuple[Cursor, list[TransitionEvidence]]:
@@ -1075,8 +1290,10 @@ def _resume_path(
         evidence = _execute_transition(
             run_id=run_id,
             rollout_tree_id=rollout_tree_id,
+            task_revision=task_revision,
             cursor=cursor,
             action=action,
+            behavior_policy_version_id=behavior_policy_version_id,
             branch_member_id=branch_member_id,
             fixture_scenario=final_scenario if index == len(actions) - 1 else "valid",
             simulate_infra_retry=retry_first and index == 0,
@@ -1086,7 +1303,13 @@ def _resume_path(
     return cursor, evidences
 
 
-def _root_cursor(run_id: str, rollout_tree_id: str, lease_owner: str, seed: int) -> Cursor:
+def _root_cursor(
+    run_id: str,
+    rollout_tree_id: str,
+    task_revision: str,
+    lease_owner: str,
+    seed: int,
+) -> Cursor:
     with connection() as conn:
         tree = conn.execute(
             "SELECT root_state_id FROM rollout_trees WHERE rollout_tree_id = %s",
@@ -1110,10 +1333,12 @@ def _root_cursor(run_id: str, rollout_tree_id: str, lease_owner: str, seed: int)
                 state_id=tree["root_state_id"],
                 version=result["version"],
                 fencing_token=result["fencing_token"],
+                lease_owner=lease_owner,
             )
     cursor, _ = _create_initial_state(
         run_id=run_id,
         rollout_tree_id=rollout_tree_id,
+        task_revision=task_revision,
         lease_owner=lease_owner,
         seed=seed,
     )
@@ -1124,7 +1349,9 @@ def _capture_checkpoint(
     *,
     run_id: str,
     rollout_tree_id: str,
+    task_revision: str,
     policy_version_id: str,
+    policy_seed: int,
     cursor: Cursor,
     turns_remaining: int,
 ) -> tuple[str, str, str]:
@@ -1147,7 +1374,10 @@ def _capture_checkpoint(
         operation_id = make_id("op")
         snapshot_input = {
             "cursor_id": cursor.cursor_id,
+            "lease_owner": cursor.lease_owner,
             "source_state_id": cursor.state_id,
+            "expected_cursor_version": cursor.version,
+            "expected_fencing_token": cursor.fencing_token,
             "requested_fidelity": "logical_restore",
             "ephemeral": False,
         }
@@ -1178,13 +1408,13 @@ def _capture_checkpoint(
             role="logical-snapshot",
             entity_type="environment_snapshot",
             entity_id=snapshot_id,
-            trust_class="TRUSTED",
+            trust_class="PLATFORM_DERIVED",
         )
         snapshot_contract = {
             "snapshot_id": snapshot_id,
             "source_state_id": cursor.state_id,
             "environment_version": "cad.reconstruction@1.0.0",
-            "task_revision": TASK_REVISION,
+            "task_revision": task_revision,
             "logical_state": {
                 key: logical_artifact[key]
                 for key in (
@@ -1202,6 +1432,9 @@ def _capture_checkpoint(
             "requested_fidelity": "logical_restore",
             "obtained_fidelity": result["obtained_fidelity"],
             "fidelity_probe_passed": result["fidelity_probe_passed"],
+            "fidelity_probe_receipt": result["fidelity_probe_receipt"],
+            "captured_cursor_version": result["captured_cursor_version"],
+            "captured_fencing_token": result["captured_fencing_token"],
             "rng_state": result["rng_state"],
             "runtime_snapshot_handle": None,
         }
@@ -1232,7 +1465,7 @@ def _capture_checkpoint(
                     "content": "Shared prefix reached the fixed decision boundary.",
                 },
             ],
-            "sampling": {"temperature": 0, "seed": 17},
+            "sampling": {"temperature": 0, "seed": policy_seed},
         }
         policy_context_artifact_id, policy_context_artifact = store_json_artifact(
             conn,
@@ -1241,7 +1474,7 @@ def _capture_checkpoint(
             entity_type="decision_checkpoint",
             entity_id=checkpoint_id,
             visibility="POLICY",
-            trust_class="CANDIDATE",
+            trust_class="CANDIDATE_CONTROLLED",
         )
         checkpoint_contract = {
             "checkpoint_id": checkpoint_id,
@@ -1263,7 +1496,7 @@ def _capture_checkpoint(
             },
             "behavior_policy_version_id": policy_version_id,
             "policy_rng_state": "policy-seed:17",
-            "tokenizer_revision": "mock-tokenizer@1",
+            "tokenizer_revision": "fixture-tokenizer@1",
             "prompt_template_revision": "cad-policy@1",
             "tool_schema_revision": "cad-actions@1",
             "turns_remaining": turns_remaining,
@@ -1411,6 +1644,7 @@ def _fork_checkpoint(
                         state_id=child["current_state_id"],
                         version=child["version"],
                         fencing_token=child["fencing_token"],
+                        lease_owner=f"run:{run_id}:sibling:{child['sibling_index']}",
                     ),
                 )
             )
@@ -1478,7 +1712,7 @@ def _accept_group_judgment(
             role="branch-group-proof",
             entity_type="evidence_bundle",
             entity_id=group_proof_id,
-            trust_class="TRUSTED",
+            trust_class="PLATFORM_DERIVED",
         )
         conn.execute(
             """
@@ -1541,7 +1775,7 @@ def _accept_group_judgment(
         conn.execute(
             """
             INSERT INTO judge_specs(judge_spec_id, provider_name, digest, spec)
-            VALUES (%s, 'MockJudgeProvider', %s, %s)
+            VALUES (%s, 'DeterministicJudgeFixture', %s, %s)
             ON CONFLICT (judge_spec_id) DO NOTHING
             """,
             (spec["judge_spec_id"], canonical_digest(spec), Jsonb(spec)),
@@ -1675,13 +1909,21 @@ def _start_collection(
     *,
     run_id: str,
     attempt_id: str,
+    task_revision: str,
     tree_count: int,
 ) -> tuple[str, str, str, list[str]]:
     with connection() as conn:
         policy = conn.execute(
-            "SELECT * FROM policy_versions WHERE run_id = %s AND ordinal = 0",
+            """
+            SELECT * FROM policy_versions
+            WHERE run_id = %s
+            ORDER BY ordinal DESC
+            LIMIT 1
+            """,
             (run_id,),
         ).fetchone()
+        if not policy:
+            raise RuntimeError("collection cannot start without an accepted behavior policy")
         existing = conn.execute(
             """
             SELECT cb.collection_batch_id, cb.behavior_policy_version_id,
@@ -1718,7 +1960,7 @@ def _start_collection(
             "run_attempt_id": attempt_id,
             "behavior_policy_version_id": policy["policy_version_id"],
             "verification_plan_id": VERIFICATION_PLAN_ID,
-            "judge_spec_id": "cad.pointwise.mock@1",
+            "judge_spec_id": "cad.pointwise.fixture@1",
             "reward_pipeline_id": REWARD_PIPELINE_ID,
             "status": "COLLECTING",
         }
@@ -1735,7 +1977,7 @@ def _start_collection(
                 attempt_id,
                 policy["policy_version_id"],
                 VERIFICATION_PLAN_ID,
-                "cad.pointwise.mock@1",
+                "cad.pointwise.fixture@1",
                 REWARD_PIPELINE_ID,
             ),
         )
@@ -1745,13 +1987,14 @@ def _start_collection(
             INSERT INTO training_iterations(
               training_iteration_id, run_id, collection_batch_id, status,
               input_policy_version_id, expected_policy_ordinal
-            ) VALUES (%s, %s, %s, 'PLANNED', %s, 0)
+            ) VALUES (%s, %s, %s, 'PLANNED', %s, %s)
             """,
             (
                 training_iteration_id,
                 run_id,
                 collection_batch_id,
                 policy["policy_version_id"],
+                policy["ordinal"],
             ),
         )
         tree_ids = []
@@ -1764,7 +2007,7 @@ def _start_collection(
                   rollout_tree_id, collection_batch_id, task_revision, status
                 ) VALUES (%s, %s, %s, 'COLLECTING')
                 """,
-                (tree_id, collection_batch_id, TASK_REVISION),
+                (tree_id, collection_batch_id, task_revision),
             )
         emit_event(
             conn,
@@ -1789,8 +2032,10 @@ def _start_collection(
 
 def _record_eligibility(
     *,
+    collection_batch_id: str,
     rollout_tree_id: str,
     branch_member_id: str | None,
+    terminal_evidence: TransitionEvidence,
     status: str,
     reason_code: str,
 ) -> str:
@@ -1806,34 +2051,536 @@ def _record_eligibility(
     if existing:
         if existing["status"] != status or existing["reason_code"] != reason_code:
             raise RuntimeError("eligibility replay conflicts with the accepted decision")
-        return existing["decision_id"]
-    decision_id = make_id("eligibility")
-    contract = {
-        "decision_id": decision_id,
-        "rollout_tree_id": rollout_tree_id,
-        "branch_member_id": branch_member_id,
-        "status": status,
-        "reason_code": reason_code,
-        "version": "local-eligibility@1",
-    }
-    validate_contract("EligibilityDecision", contract)
+        decision_id = existing["decision_id"]
+    else:
+        decision_id = make_id("eligibility")
+        contract = {
+            "decision_id": decision_id,
+            "rollout_tree_id": rollout_tree_id,
+            "branch_member_id": branch_member_id,
+            "status": status,
+            "reason_code": reason_code,
+            "version": "local-eligibility@1",
+        }
+        validate_contract("EligibilityDecision", contract)
+        with connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO eligibility_decisions(
+                  decision_id, rollout_tree_id, branch_member_id, status,
+                  reason_code, version, payload
+                ) VALUES (%s, %s, %s, %s, %s, 'local-eligibility@1', %s)
+                """,
+                (
+                    decision_id,
+                    rollout_tree_id,
+                    branch_member_id,
+                    status,
+                    reason_code,
+                    Jsonb(contract),
+                ),
+            )
+
     with connection() as conn:
-        conn.execute(
+        terminal = conn.execute(
             """
-            INSERT INTO eligibility_decisions(
-              decision_id, rollout_tree_id, branch_member_id, status, reason_code, version, payload
-            ) VALUES (%s, %s, %s, %s, %s, 'local-eligibility@1', %s)
+            SELECT
+              t.transition_id,
+              s.logical_state_digest,
+              pd.decision_digest,
+              eb.digest AS proof_digest
+            FROM transitions t
+            JOIN states s ON s.state_id = t.destination_state_id
+            JOIN policy_decisions pd ON pd.policy_decision_id = t.policy_decision_id
+            JOIN evidence_bundles eb ON eb.proof_bundle_id = %s
+            WHERE t.transition_id = %s
+              AND t.rollout_tree_id = %s
+              AND t.branch_member_id IS NOT DISTINCT FROM %s
             """,
             (
-                decision_id,
+                terminal_evidence.proof_bundle_id,
+                terminal_evidence.transition_id,
                 rollout_tree_id,
                 branch_member_id,
-                status,
-                reason_code,
-                Jsonb(contract),
+            ),
+        ).fetchone()
+        if not terminal:
+            raise RuntimeError("eligibility candidate lacks accepted terminal evidence")
+        candidate_content = {
+            "terminal_state_digest": terminal["logical_state_digest"],
+            "terminal_policy_decision_digest": terminal["decision_digest"],
+            "proof_bundle_digest": terminal["proof_digest"],
+            "eligibility": {
+                "status": status,
+                "reason_code": reason_code,
+                "version": "local-eligibility@1",
+            },
+        }
+        candidate_digest = canonical_digest(candidate_content)
+        accepted = conn.execute(
+            """
+            SELECT
+              collection_candidate_id,
+              terminal_transition_id,
+              eligibility_decision_id,
+              proof_bundle_id,
+              candidate_digest
+            FROM collection_candidates
+            WHERE collection_batch_id = %s
+              AND rollout_tree_id = %s
+              AND branch_member_id IS NOT DISTINCT FROM %s
+            FOR UPDATE
+            """,
+            (collection_batch_id, rollout_tree_id, branch_member_id),
+        ).fetchone()
+        expected = {
+            "terminal_transition_id": terminal_evidence.transition_id,
+            "eligibility_decision_id": decision_id,
+            "proof_bundle_id": terminal_evidence.proof_bundle_id,
+            "candidate_digest": candidate_digest,
+        }
+        if accepted:
+            if any(accepted[key] != value for key, value in expected.items()):
+                raise RuntimeError("collection candidate replay conflicts with frozen evidence")
+        else:
+            conn.execute(
+                """
+                INSERT INTO collection_candidates(
+                  collection_candidate_id, collection_batch_id, rollout_tree_id,
+                  branch_member_id, terminal_transition_id, eligibility_decision_id,
+                  proof_bundle_id, candidate_digest
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    make_id("collection_candidate"),
+                    collection_batch_id,
+                    rollout_tree_id,
+                    branch_member_id,
+                    terminal_evidence.transition_id,
+                    decision_id,
+                    terminal_evidence.proof_bundle_id,
+                    candidate_digest,
+                ),
+            )
+    return decision_id
+
+
+def _candidate_rows(
+    conn: Any,
+    collection_batch_id: str,
+) -> list[dict[str, Any]]:
+    return list(
+        conn.execute(
+            """
+            SELECT
+              cc.*,
+              ed.status AS eligibility_status,
+              ed.reason_code,
+              ed.version AS eligibility_version,
+              bm.sibling_index,
+              pv.artifact_digest AS behavior_policy_digest
+            FROM collection_candidates cc
+            JOIN eligibility_decisions ed
+              ON ed.decision_id = cc.eligibility_decision_id
+            JOIN collection_batches cb
+              ON cb.collection_batch_id = cc.collection_batch_id
+            JOIN policy_versions pv
+              ON pv.policy_version_id = cb.behavior_policy_version_id
+            LEFT JOIN branch_members bm
+              ON bm.branch_member_id = cc.branch_member_id
+            WHERE cc.collection_batch_id = %s
+            """,
+            (collection_batch_id,),
+        )
+    )
+
+
+def _close_collection(
+    *,
+    collection_batch_id: str,
+    tree_ids: list[str],
+    eligibility_ids: list[str],
+) -> dict[str, Any]:
+    tree_order = {tree_id: index for index, tree_id in enumerate(tree_ids)}
+    with connection() as conn:
+        existing = conn.execute(
+            "SELECT * FROM collection_closures WHERE collection_batch_id = %s",
+            (collection_batch_id,),
+        ).fetchone()
+        if existing:
+            return existing
+        candidates = _candidate_rows(conn, collection_batch_id)
+    if {row["rollout_tree_id"] for row in candidates} != set(tree_ids):
+        raise RuntimeError("collection candidates do not match the declared rollout trees")
+    if {row["eligibility_decision_id"] for row in candidates} != set(eligibility_ids):
+        raise RuntimeError("collection closure is missing an eligibility decision")
+    admitted = [row for row in candidates if row["eligibility_status"] == "ADMITTED"]
+    if not admitted:
+        raise RuntimeError("a collection cannot close without admitted candidates")
+    admitted.sort(
+        key=lambda row: (
+            tree_order[row["rollout_tree_id"]],
+            row["sibling_index"] if row["sibling_index"] is not None else -1,
+            row["candidate_digest"],
+        )
+    )
+    all_decisions = sorted(
+        (
+            {
+                "candidate_digest": row["candidate_digest"],
+                "status": row["eligibility_status"],
+                "reason_code": row["reason_code"],
+                "version": row["eligibility_version"],
+            }
+            for row in candidates
+        ),
+        key=lambda item: item["candidate_digest"],
+    )
+    closure_content = {
+        "schema": "equinox.collection-closure.v1",
+        "behavior_policy_digest": admitted[0]["behavior_policy_digest"],
+        "members": [
+            {
+                "ordinal": ordinal,
+                "candidate_digest": row["candidate_digest"],
+                "weight": 1.0,
+            }
+            for ordinal, row in enumerate(admitted)
+        ],
+        "candidate_decisions": all_decisions,
+    }
+    closure_id = make_id("collection_closure")
+    closure_digest = canonical_digest(closure_content)
+    closure_manifest = {
+        "collection_closure_id": closure_id,
+        "collection_batch_id": collection_batch_id,
+        "closure_digest": closure_digest,
+        "content": closure_content,
+    }
+    stored = artifact_store.put_json(
+        closure_manifest,
+        role="collection-closure-manifest",
+        visibility="OPERATOR",
+        trust_class="PLATFORM_DERIVED",
+        viewer_hint="structured-json",
+    )
+    artifact = {
+        **stored.ref(ordinal=0),
+        "object_key": stored.object_key,
+        "size_bytes": stored.size_bytes,
+    }
+    with connection() as conn:
+        batch = conn.execute(
+            """
+            SELECT status FROM collection_batches
+            WHERE collection_batch_id = %s
+            FOR UPDATE
+            """,
+            (collection_batch_id,),
+        ).fetchone()
+        if not batch:
+            raise RuntimeError("collection batch disappeared before closure")
+        existing = conn.execute(
+            "SELECT * FROM collection_closures WHERE collection_batch_id = %s",
+            (collection_batch_id,),
+        ).fetchone()
+        if existing:
+            if existing["closure_digest"] != closure_digest:
+                raise RuntimeError("collection closure replay produced different content")
+            return existing
+        current = _candidate_rows(conn, collection_batch_id)
+        if sorted(row["candidate_digest"] for row in current) != sorted(
+            row["candidate_digest"] for row in candidates
+        ):
+            raise RuntimeError("collection membership changed during closure")
+        artifact_id = record_artifact(
+            conn,
+            artifact,
+            entity_type="collection_closure",
+            entity_id=closure_id,
+            role="collection-closure-manifest",
+        )
+        for ordinal, row in enumerate(admitted):
+            membership_content = {
+                "candidate_digest": row["candidate_digest"],
+                "ordinal": ordinal,
+                "weight": 1.0,
+            }
+            conn.execute(
+                """
+                INSERT INTO collection_memberships(
+                  collection_membership_id, collection_batch_id,
+                  collection_candidate_id, ordinal, weight, membership_digest
+                ) VALUES (%s, %s, %s, %s, 1.0, %s)
+                """,
+                (
+                    make_id("collection_membership"),
+                    collection_batch_id,
+                    row["collection_candidate_id"],
+                    ordinal,
+                    canonical_digest(membership_content),
+                ),
+            )
+        conn.execute(
+            """
+            INSERT INTO collection_closures(
+              collection_closure_id, collection_batch_id, closure_digest,
+              member_count, manifest_artifact_id, manifest
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                closure_id,
+                collection_batch_id,
+                closure_digest,
+                len(admitted),
+                artifact_id,
+                Jsonb(closure_manifest),
             ),
         )
-    return decision_id
+        conn.execute(
+            """
+            UPDATE collection_batches
+            SET status = 'CLOSED', updated_at = now()
+            WHERE collection_batch_id = %s
+            """,
+            (collection_batch_id,),
+        )
+        return conn.execute(
+            "SELECT * FROM collection_closures WHERE collection_closure_id = %s",
+            (closure_id,),
+        ).fetchone()
+
+
+def _materialize_iteration_input(
+    *,
+    training_iteration_id: str,
+    closure: dict[str, Any],
+    tree_ids: list[str],
+    eligibility_ids: list[str],
+    group_verification_ids: list[str],
+) -> dict[str, Any]:
+    with connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT manifest FROM iteration_inputs
+            WHERE collection_closure_id = %s
+            """,
+            (closure["collection_closure_id"],),
+        ).fetchone()
+        if existing:
+            return existing["manifest"]
+        members = list(
+            conn.execute(
+                """
+                SELECT
+                  cm.ordinal,
+                  cm.weight,
+                  cc.candidate_digest,
+                  cc.terminal_transition_id,
+                  cc.branch_member_id,
+                  eb.digest AS proof_bundle_digest,
+                  ed.status AS eligibility_status,
+                  ed.reason_code,
+                  ed.version AS eligibility_version,
+                  pd.decision_digest AS policy_decision_digest,
+                  pv.artifact_digest AS behavior_policy_digest,
+                  source.logical_state_digest AS source_state_digest,
+                  destination.logical_state_digest AS destination_state_digest,
+                  destination.task_revision,
+                  action.digest AS action_digest,
+                  vr.verification_run_id,
+                  jr.judge_result_id
+                FROM collection_memberships cm
+                JOIN collection_candidates cc
+                  ON cc.collection_candidate_id = cm.collection_candidate_id
+                JOIN evidence_bundles eb
+                  ON eb.proof_bundle_id = cc.proof_bundle_id
+                JOIN eligibility_decisions ed
+                  ON ed.decision_id = cc.eligibility_decision_id
+                JOIN transitions t
+                  ON t.transition_id = cc.terminal_transition_id
+                JOIN policy_decisions pd
+                  ON pd.policy_decision_id = t.policy_decision_id
+                JOIN policy_versions pv
+                  ON pv.policy_version_id = pd.behavior_policy_version_id
+                JOIN states source ON source.state_id = t.source_state_id
+                JOIN states destination ON destination.state_id = t.destination_state_id
+                JOIN artifacts action ON action.artifact_id = t.action_artifact_id
+                JOIN verification_runs vr ON vr.subject_id = t.transition_id
+                JOIN judge_invocations ji ON ji.verification_run_id = vr.verification_run_id
+                JOIN judge_results jr ON jr.judge_invocation_id = ji.judge_invocation_id
+                WHERE cm.collection_batch_id = %s
+                ORDER BY cm.ordinal
+                """,
+                (closure["collection_batch_id"],),
+            )
+        )
+        dataset_rows: list[dict[str, Any]] = []
+        reward_ids: list[str] = []
+        for member in members:
+            rewards = list(
+                conn.execute(
+                    """
+                    SELECT reward_signal_id, name, value, reward_pipeline_id
+                    FROM reward_signals
+                    WHERE subject_id = %s
+                       OR (%s::text IS NOT NULL AND subject_id = %s)
+                    ORDER BY name, reward_pipeline_id
+                    """,
+                    (
+                        member["terminal_transition_id"],
+                        member["branch_member_id"],
+                        member["branch_member_id"],
+                    ),
+                )
+            )
+            reward_ids.extend(row["reward_signal_id"] for row in rewards)
+            dataset_rows.append(
+                {
+                    "schema": "equinox.training-sample.v1",
+                    "ordinal": member["ordinal"],
+                    "weight": member["weight"],
+                    "candidate_digest": member["candidate_digest"],
+                    "behavior_policy_digest": member["behavior_policy_digest"],
+                    "policy_decision_digest": member["policy_decision_digest"],
+                    "task_revision": member["task_revision"],
+                    "source_state_digest": member["source_state_digest"],
+                    "action_digest": member["action_digest"],
+                    "destination_state_digest": member["destination_state_digest"],
+                    "proof_bundle_digest": member["proof_bundle_digest"],
+                    "eligibility": {
+                        "status": member["eligibility_status"],
+                        "reason_code": member["reason_code"],
+                        "version": member["eligibility_version"],
+                    },
+                    "rewards": [
+                        {
+                            "name": reward["name"],
+                            "value": reward["value"],
+                            "reward_pipeline_id": reward["reward_pipeline_id"],
+                        }
+                        for reward in rewards
+                    ],
+                }
+            )
+        proof_ids = [
+            row["proof_bundle_id"]
+            for row in conn.execute(
+                """
+                SELECT cc.proof_bundle_id
+                FROM collection_memberships cm
+                JOIN collection_candidates cc
+                  ON cc.collection_candidate_id = cm.collection_candidate_id
+                WHERE cm.collection_batch_id = %s
+                ORDER BY cm.ordinal
+                """,
+                (closure["collection_batch_id"],),
+            )
+        ]
+        verification_ids = [member["verification_run_id"] for member in members]
+        judge_ids = [member["judge_result_id"] for member in members]
+    dataset_bytes = b"".join(canonical_bytes(row) + b"\n" for row in dataset_rows)
+    dataset_digest = content_digest(dataset_bytes)
+    dataset_stored = artifact_store.put_bytes(
+        dataset_bytes,
+        role="training-dataset",
+        media_type="application/x-ndjson",
+        visibility="POLICY",
+        trust_class="PLATFORM_DERIVED",
+        viewer_hint="json-lines",
+    )
+    dataset_artifact = {
+        **dataset_stored.ref(ordinal=0),
+        "object_key": dataset_stored.object_key,
+        "size_bytes": dataset_stored.size_bytes,
+    }
+    manifest_id = make_id("iteration_input")
+    content = {
+        "collection_closure_digest": closure["closure_digest"],
+        "dataset_digest": dataset_digest,
+        "dataset_row_count": len(dataset_rows),
+        "materializer_version": "branch-jsonl@1",
+        "weights": {
+            row["candidate_digest"]: row["weight"]
+            for row in dataset_rows
+        },
+    }
+    manifest = {
+        "manifest_id": manifest_id,
+        "digest": canonical_digest(content),
+        "collection_closure_id": closure["collection_closure_id"],
+        "collection_closure_digest": closure["closure_digest"],
+        "dataset_artifact_id": dataset_stored.artifact_id,
+        "dataset_digest": dataset_digest,
+        "dataset_row_count": len(dataset_rows),
+        "rollout_tree_ids": tree_ids,
+        "proof_bundle_ids": proof_ids,
+        "eligibility_decision_ids": eligibility_ids,
+        "verification_run_ids": verification_ids + group_verification_ids,
+        "judge_result_ids": judge_ids,
+        "reward_signal_ids": reward_ids,
+        "materializer_version": "branch-jsonl@1",
+        "weights": content["weights"],
+    }
+    validate_contract("IterationInput", manifest)
+    manifest_stored = artifact_store.put_json(
+        manifest,
+        role="iteration-input-manifest",
+        visibility="OPERATOR",
+        trust_class="PLATFORM_DERIVED",
+        viewer_hint="structured-json",
+    )
+    manifest_artifact = {
+        **manifest_stored.ref(ordinal=0),
+        "object_key": manifest_stored.object_key,
+        "size_bytes": manifest_stored.size_bytes,
+    }
+    with connection() as conn:
+        existing = conn.execute(
+            """
+            SELECT manifest FROM iteration_inputs
+            WHERE collection_closure_id = %s
+            FOR UPDATE
+            """,
+            (closure["collection_closure_id"],),
+        ).fetchone()
+        if existing:
+            if existing["manifest"]["digest"] != manifest["digest"]:
+                raise RuntimeError("iteration materialization replay changed content")
+            return existing["manifest"]
+        dataset_artifact_id = record_artifact(
+            conn,
+            dataset_artifact,
+            entity_type="training_iteration",
+            entity_id=training_iteration_id,
+            role="training-dataset",
+        )
+        manifest_artifact_id = record_artifact(
+            conn,
+            manifest_artifact,
+            entity_type="training_iteration",
+            entity_id=training_iteration_id,
+            role="iteration-input-manifest",
+        )
+        conn.execute(
+            """
+            INSERT INTO iteration_inputs(
+              manifest_id, digest, manifest, artifact_id, collection_closure_id,
+              dataset_artifact_id, dataset_digest, dataset_row_count
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                manifest_id,
+                manifest["digest"],
+                Jsonb(manifest),
+                manifest_artifact_id,
+                closure["collection_closure_id"],
+                dataset_artifact_id,
+                dataset_digest,
+                len(dataset_rows),
+            ),
+        )
+    return manifest
 
 
 def _commit_iteration(
@@ -1850,163 +2597,21 @@ def _commit_iteration(
             "SELECT status FROM training_iterations WHERE training_iteration_id = %s",
             (training_iteration_id,),
         ).fetchone()
-        if current and current["status"] == "COMMITTED":
+        if current and current["status"] in {"COMMITTED", "SIMULATED_COMMITTED"}:
             return
-        proof_ids = [
-            row["proof_bundle_id"]
-            for row in conn.execute(
-                """
-                SELECT eb.proof_bundle_id
-                FROM evidence_bundles eb
-                JOIN verification_runs vr ON vr.verification_run_id = eb.verification_run_id
-                WHERE vr.run_id = %s
-                  AND (
-                    vr.subject_type = 'BRANCH_GROUP'
-                    OR (
-                      vr.subject_type = 'TRANSITION'
-                      AND EXISTS (
-                        SELECT 1 FROM transitions t
-                        WHERE t.transition_id = vr.subject_id
-                          AND (
-                            t.branch_member_id IS NULL
-                            OR EXISTS (
-                              SELECT 1 FROM eligibility_decisions ed
-                              WHERE ed.branch_member_id = t.branch_member_id
-                                AND ed.status = 'ADMITTED'
-                            )
-                          )
-                      )
-                    )
-                  )
-                ORDER BY eb.created_at, eb.proof_bundle_id
-                """,
-                (run_id,),
-            )
-        ]
-        verification_ids = [
-            row["verification_run_id"]
-            for row in conn.execute(
-                """
-                SELECT vr.verification_run_id FROM verification_runs vr
-                WHERE vr.run_id = %s
-                  AND (
-                    vr.subject_type = 'BRANCH_GROUP'
-                    OR (
-                      vr.subject_type = 'TRANSITION'
-                      AND EXISTS (
-                        SELECT 1 FROM transitions t
-                        WHERE t.transition_id = vr.subject_id
-                          AND (
-                            t.branch_member_id IS NULL
-                            OR EXISTS (
-                              SELECT 1 FROM eligibility_decisions ed
-                              WHERE ed.branch_member_id = t.branch_member_id
-                                AND ed.status = 'ADMITTED'
-                            )
-                          )
-                      )
-                    )
-                  )
-                ORDER BY vr.created_at
-                """,
-                (run_id,),
-            )
-        ]
-        judge_ids = [
-            row["judge_result_id"]
-            for row in conn.execute(
-                """
-                SELECT jr.judge_result_id FROM judge_results jr
-                JOIN judge_invocations ji ON ji.judge_invocation_id = jr.judge_invocation_id
-                JOIN verification_runs vr ON vr.verification_run_id = ji.verification_run_id
-                WHERE vr.run_id = %s
-                  AND (
-                    vr.subject_type = 'BRANCH_GROUP'
-                    OR (
-                      vr.subject_type = 'TRANSITION'
-                      AND EXISTS (
-                        SELECT 1 FROM transitions t
-                        WHERE t.transition_id = vr.subject_id
-                          AND (
-                            t.branch_member_id IS NULL
-                            OR EXISTS (
-                              SELECT 1 FROM eligibility_decisions ed
-                              WHERE ed.branch_member_id = t.branch_member_id
-                                AND ed.status = 'ADMITTED'
-                            )
-                          )
-                      )
-                    )
-                  )
-                ORDER BY jr.created_at
-                """,
-                (run_id,),
-            )
-        ]
-        reward_ids = [
-            row["reward_signal_id"]
-            for row in conn.execute(
-                """
-                SELECT rs.reward_signal_id FROM reward_signals rs
-                WHERE rs.run_id = %s
-                  AND (
-                    (
-                      rs.subject_type = 'TRANSITION'
-                      AND EXISTS (
-                        SELECT 1 FROM transitions t
-                        WHERE t.transition_id = rs.subject_id
-                          AND (
-                            t.branch_member_id IS NULL
-                            OR EXISTS (
-                              SELECT 1 FROM eligibility_decisions ed
-                              WHERE ed.branch_member_id = t.branch_member_id
-                                AND ed.status = 'ADMITTED'
-                            )
-                          )
-                      )
-                    )
-                    OR (
-                      rs.subject_type = 'BRANCH_MEMBER'
-                      AND EXISTS (
-                        SELECT 1 FROM eligibility_decisions ed
-                        WHERE ed.branch_member_id = rs.subject_id
-                          AND ed.status = 'ADMITTED'
-                      )
-                    )
-                  )
-                ORDER BY rs.created_at
-                """,
-                (run_id,),
-            )
-        ]
-        base_manifest = {
-            "manifest_id": make_id("iteration_input"),
-            "rollout_tree_ids": tree_ids,
-            "proof_bundle_ids": proof_ids,
-            "eligibility_decision_ids": eligibility_ids,
-            "verification_run_ids": verification_ids,
-            "judge_result_ids": judge_ids,
-            "reward_signal_ids": reward_ids,
-            "materializer_version": "branch-jsonl@1",
-            "weights": {tree_id: 1.0 for tree_id in tree_ids},
-        }
-        manifest = {**base_manifest, "digest": canonical_digest(base_manifest)}
-        validate_contract("IterationInput", manifest)
-        artifact_id, _ = store_json_artifact(
-            conn,
-            manifest,
-            role="iteration-input-manifest",
-            entity_type="training_iteration",
-            entity_id=training_iteration_id,
-            trust_class="TRUSTED",
-        )
-        conn.execute(
-            """
-            INSERT INTO iteration_inputs(manifest_id, digest, manifest, artifact_id)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (manifest["manifest_id"], manifest["digest"], Jsonb(manifest), artifact_id),
-        )
+    closure = _close_collection(
+        collection_batch_id=collection_batch_id,
+        tree_ids=tree_ids,
+        eligibility_ids=eligibility_ids,
+    )
+    manifest = _materialize_iteration_input(
+        training_iteration_id=training_iteration_id,
+        closure=closure,
+        tree_ids=tree_ids,
+        eligibility_ids=eligibility_ids,
+        group_verification_ids=group_verification_ids or [],
+    )
+    with connection() as conn:
         iteration = conn.execute(
             """
             SELECT * FROM training_iterations
@@ -2014,40 +2619,52 @@ def _commit_iteration(
             """,
             (training_iteration_id,),
         ).fetchone()
+        if iteration["status"] in {"COMMITTED", "SIMULATED_COMMITTED"}:
+            return
         current_policy = conn.execute(
-            "SELECT * FROM policy_versions WHERE run_id = %s ORDER BY ordinal DESC LIMIT 1 FOR UPDATE",
+            """
+            SELECT * FROM policy_versions
+            WHERE run_id = %s
+            ORDER BY ordinal DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
             (run_id,),
         ).fetchone()
         if current_policy["ordinal"] != iteration["expected_policy_ordinal"]:
             raise ValueError("policy compare-and-swap conflict")
         output_policy_id = make_id("policy")
-        policy_manifest = {
-            "trainer": "mock-bpo-trainer@1",
-            "input_policy_version_id": iteration["input_policy_version_id"],
+        next_ordinal = current_policy["ordinal"] + 1
+        policy_content = {
+            "update_kind": "SIMULATED_POLICY_COMMIT",
+            "fixture": "deterministic-lineage-fixture@1",
+            "input_policy_artifact_digest": current_policy["artifact_digest"],
             "iteration_input_digest": manifest["digest"],
-            "estimator": "trainer-owned-local-sibling@1",
-            "group_verification_ids": group_verification_ids or [],
+            "dataset_digest": manifest["dataset_digest"],
+            "note": "No optimizer step or model artifact was produced.",
         }
         conn.execute(
             """
             INSERT INTO policy_versions(
-              policy_version_id, run_id, ordinal, artifact_digest, behavior_manifest
-            ) VALUES (%s, %s, 1, %s, %s)
+              policy_version_id, run_id, ordinal, artifact_digest,
+              behavior_manifest, update_kind
+            ) VALUES (%s, %s, %s, %s, %s, 'SIMULATED_POLICY_COMMIT')
             """,
             (
                 output_policy_id,
                 run_id,
-                canonical_digest(policy_manifest),
-                Jsonb(policy_manifest),
+                next_ordinal,
+                canonical_digest(policy_content),
+                Jsonb(policy_content),
             ),
         )
-        commit_operation_id = make_id("commit")
-        conn.execute(
+        commit_operation_id = make_id("simulated_commit")
+        updated = conn.execute(
             """
             UPDATE training_iterations
-            SET status = 'COMMITTED', output_policy_version_id = %s,
+            SET status = 'SIMULATED_COMMITTED', output_policy_version_id = %s,
               iteration_input_id = %s, commit_operation_id = %s, committed_at = now(),
-              metrics = %s
+              update_kind = 'SIMULATED_POLICY_COMMIT', metrics = %s
             WHERE training_iteration_id = %s AND status = 'PLANNED'
             """,
             (
@@ -2057,38 +2674,33 @@ def _commit_iteration(
                 Jsonb(
                     {
                         "tree_count": len(tree_ids),
-                        "proof_count": len(proof_ids),
-                        "judge_result_count": len(judge_ids),
-                        "reward_signal_count": len(reward_ids),
+                        "dataset_row_count": manifest["dataset_row_count"],
+                        "proof_count": len(manifest["proof_bundle_ids"]),
+                        "judge_result_count": len(manifest["judge_result_ids"]),
+                        "reward_signal_count": len(manifest["reward_signal_ids"]),
+                        "optimizer_steps": 0,
+                        "model_artifact_count": 0,
                     }
                 ),
                 training_iteration_id,
             ),
         )
-        conn.execute(
-            """
-            UPDATE collection_batches SET status = 'CLOSED', updated_at = now()
-            WHERE collection_batch_id = %s
-            """,
-            (collection_batch_id,),
-        )
+        if updated.rowcount != 1:
+            raise RuntimeError("simulated policy commit lost its iteration compare-and-set")
         emit_event(
             conn,
-            event_type="training_iteration.committed",
+            event_type="training_iteration.simulated_policy_committed",
             aggregate_type="run",
             aggregate_id=run_id,
             run_id=run_id,
             correlation_id=commit_operation_id,
             payload={
                 "training_iteration_id": training_iteration_id,
+                "update_kind": "SIMULATED_POLICY_COMMIT",
                 "iteration_input_id": manifest["manifest_id"],
+                "dataset_digest": manifest["dataset_digest"],
                 "input_policy_version_id": iteration["input_policy_version_id"],
                 "output_policy_version_id": output_policy_id,
-                "rollout_tree_ids": tree_ids,
-                "proof_bundle_ids": proof_ids,
-                "verification_run_ids": verification_ids,
-                "judge_result_ids": judge_ids,
-                "reward_signal_ids": reward_ids,
             },
         )
 
@@ -2096,11 +2708,29 @@ def _commit_iteration(
 def _finish_tree(rollout_tree_id: str) -> None:
     with connection() as conn:
         transitions = [
-            row["transition_id"]
+            {
+                "source_state_digest": row["source_state_digest"],
+                "policy_decision_digest": row["policy_decision_digest"],
+                "action_digest": row["action_digest"],
+                "destination_state_digest": row["destination_state_digest"],
+                "outcome": row["outcome"],
+            }
             for row in conn.execute(
                 """
-                SELECT transition_id FROM transitions
-                WHERE rollout_tree_id = %s ORDER BY created_at, transition_id
+                SELECT
+                  source.logical_state_digest AS source_state_digest,
+                  pd.decision_digest AS policy_decision_digest,
+                  action.digest AS action_digest,
+                  destination.logical_state_digest AS destination_state_digest,
+                  t.outcome,
+                  destination.sequence
+                FROM transitions t
+                JOIN states source ON source.state_id = t.source_state_id
+                JOIN states destination ON destination.state_id = t.destination_state_id
+                JOIN policy_decisions pd ON pd.policy_decision_id = t.policy_decision_id
+                JOIN artifacts action ON action.artifact_id = t.action_artifact_id
+                WHERE t.rollout_tree_id = %s
+                ORDER BY destination.sequence, t.created_at
                 """,
                 (rollout_tree_id,),
             )
@@ -2118,10 +2748,12 @@ def _process_baseline(
     *,
     run_id: str,
     attempt_id: str,
+    plan: RunPlan,
 ) -> None:
-    collection_id, iteration_id, _, tree_ids = _start_collection(
+    collection_id, iteration_id, policy_version_id, tree_ids = _start_collection(
         run_id=run_id,
         attempt_id=attempt_id,
+        task_revision=plan.task_revision,
         tree_count=4,
     )
     eligibility_ids: list[str] = []
@@ -2137,21 +2769,26 @@ def _process_baseline(
         cursor = _root_cursor(
             run_id,
             tree_id,
+            plan.task_revision,
             f"run:{run_id}:baseline:{tree_index}",
-            100 + tree_index,
+            plan.seed + tree_index,
         )
-        _resume_path(
+        _, tree_evidence = _resume_path(
             run_id=run_id,
             rollout_tree_id=tree_id,
+            task_revision=plan.task_revision,
             branch_member_id=None,
             initial_cursor=cursor,
             actions=actions,
+            behavior_policy_version_id=policy_version_id,
         )
         _finish_tree(tree_id)
         eligibility_ids.append(
             _record_eligibility(
+                collection_batch_id=collection_id,
                 rollout_tree_id=tree_id,
                 branch_member_id=None,
+                terminal_evidence=tree_evidence[-1],
                 status="ADMITTED",
                 reason_code="COMPLETE_INDEPENDENT_ROLLOUT",
             )
@@ -2169,24 +2806,29 @@ def _process_branch_run(
     *,
     run_id: str,
     attempt_id: str,
+    plan: RunPlan,
 ) -> None:
     collection_id, iteration_id, policy_version_id, tree_ids = _start_collection(
         run_id=run_id,
         attempt_id=attempt_id,
+        task_revision=plan.task_revision,
         tree_count=1,
     )
     tree_id = tree_ids[0]
     cursor = _root_cursor(
         run_id,
         tree_id,
+        plan.task_revision,
         f"run:{run_id}:backbone",
-        17,
+        plan.seed,
     )
     cursor, _ = _resume_path(
         run_id=run_id,
         rollout_tree_id=tree_id,
+        task_revision=plan.task_revision,
         branch_member_id=None,
         initial_cursor=cursor,
+        behavior_policy_version_id=policy_version_id,
         actions=[
             {"kind": "create_base"},
             {"kind": "add_boss"},
@@ -2212,7 +2854,9 @@ def _process_branch_run(
         _, checkpoint_id, operational_snapshot_id = _capture_checkpoint(
             run_id=run_id,
             rollout_tree_id=tree_id,
+            task_revision=plan.task_revision,
             policy_version_id=policy_version_id,
+            policy_seed=plan.seed,
             cursor=cursor,
             turns_remaining=3,
         )
@@ -2228,7 +2872,8 @@ def _process_branch_run(
             list(
                 conn.execute(
                     """
-                    SELECT branch_member_id, runtime_cursor_id FROM branch_members
+                    SELECT branch_member_id, runtime_cursor_id, sibling_index
+                    FROM branch_members
                     WHERE branch_group_id = %s ORDER BY sibling_index
                     """,
                     (branch_group["branch_group_id"],),
@@ -2247,6 +2892,9 @@ def _process_branch_run(
                     state_id=cursor.state_id,
                     version=0,
                     fencing_token=1,
+                    lease_owner=(
+                        f"run:{run_id}:sibling:{member['sibling_index']}"
+                    ),
                 ),
             )
             for member in persisted_members
@@ -2292,9 +2940,11 @@ def _process_branch_run(
         _, member_evidence = _resume_path(
             run_id=run_id,
             rollout_tree_id=tree_id,
+            task_revision=plan.task_revision,
             branch_member_id=member_id,
             initial_cursor=member_cursor,
             actions=actions,
+            behavior_policy_version_id=policy_version_id,
             final_scenario=final_scenario,
             retry_first=retry_once,
         )
@@ -2320,8 +2970,10 @@ def _process_branch_run(
             )
         eligibility_ids.append(
             _record_eligibility(
+                collection_batch_id=collection_id,
                 rollout_tree_id=tree_id,
                 branch_member_id=member_id,
+                terminal_evidence=last_evidence,
                 status=status,
                 reason_code=reason,
             )
@@ -2533,24 +3185,53 @@ def release_run_resources(run_id: str) -> None:
     _release_run_resources(run_id)
 
 
-def execute_run_attempt(attempt_id: str) -> None:
+def execute_run_attempt(
+    attempt_id: str,
+    *,
+    worker_id: str,
+    claim_id: str,
+    fencing_token: int,
+) -> None:
     with connection() as conn:
         attempt = conn.execute(
             """
-            SELECT ra.*, r.algorithm, r.run_id, r.desired_state
+            SELECT
+              ra.*,
+              r.algorithm,
+              r.run_id,
+              r.desired_state,
+              r.manifest,
+              r.manifest_digest
             FROM run_attempts ra JOIN runs r ON r.run_id = ra.run_id
-            WHERE ra.attempt_id = %s FOR UPDATE
+            WHERE ra.attempt_id = %s
+              AND ra.claim_id = %s
+              AND ra.lease_owner = %s
+              AND ra.fencing_token = %s
+              AND ra.lease_expires_at > now()
+            FOR UPDATE
             """,
-            (attempt_id,),
+            (attempt_id, claim_id, worker_id, fencing_token),
         ).fetchone()
         if not attempt:
-            raise ValueError(f"attempt not found: {attempt_id}")
+            raise ValueError(f"attempt claim is absent, expired, or fenced: {attempt_id}")
         if attempt["status"] == "SUCCEEDED":
             return
-        conn.execute(
-            "UPDATE run_attempts SET status = 'RUNNING', updated_at = now() WHERE attempt_id = %s",
-            (attempt_id,),
+        plan = RunPlan.from_run(attempt)
+        claimed = conn.execute(
+            """
+            UPDATE run_attempts
+            SET status = 'RUNNING', updated_at = now()
+            WHERE attempt_id = %s
+              AND status = 'PROVISIONING'
+              AND claim_id = %s
+              AND lease_owner = %s
+              AND fencing_token = %s
+              AND lease_expires_at > now()
+            """,
+            (attempt_id, claim_id, worker_id, fencing_token),
         )
+        if claimed.rowcount != 1:
+            raise RuntimeError("attempt claim lost its start compare-and-set")
         conn.execute(
             "UPDATE runs SET status = 'RUNNING', updated_at = now() WHERE run_id = %s",
             (attempt["run_id"],),
@@ -2563,19 +3244,42 @@ def execute_run_attempt(attempt_id: str) -> None:
             run_id=attempt["run_id"],
             correlation_id=attempt_id,
             payload={"attempt_id": attempt_id, "algorithm": attempt["algorithm"]},
-            producer="mock-run-agent",
+            producer="fixture-run-worker",
         )
     try:
         if attempt["algorithm"] == "independent_rollout_baseline":
-            _process_baseline(run_id=attempt["run_id"], attempt_id=attempt_id)
+            _process_baseline(
+                run_id=attempt["run_id"],
+                attempt_id=attempt_id,
+                plan=plan,
+            )
         else:
-            _process_branch_run(run_id=attempt["run_id"], attempt_id=attempt_id)
+            _process_branch_run(
+                run_id=attempt["run_id"],
+                attempt_id=attempt_id,
+                plan=plan,
+            )
         cleanup_warnings = _cancel_runtime_cursors(attempt["run_id"])
         with connection() as conn:
-            conn.execute(
-                "UPDATE run_attempts SET status = 'SUCCEEDED', updated_at = now() WHERE attempt_id = %s",
-                (attempt_id,),
+            accepted = conn.execute(
+                """
+                UPDATE run_attempts
+                SET status = 'SUCCEEDED',
+                    claim_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = now()
+                WHERE attempt_id = %s
+                  AND status = 'RUNNING'
+                  AND claim_id = %s
+                  AND lease_owner = %s
+                  AND fencing_token = %s
+                  AND lease_expires_at > now()
+                """,
+                (attempt_id, claim_id, worker_id, fencing_token),
             )
+            if accepted.rowcount != 1:
+                raise RuntimeError("attempt result was rejected by the claim fence")
             conn.execute(
                 """
                 UPDATE compute_allocations
@@ -2608,7 +3312,7 @@ def execute_run_attempt(attempt_id: str) -> None:
                 run_id=attempt["run_id"],
                 correlation_id=attempt_id,
                 payload={"attempt_id": attempt_id},
-                producer="mock-run-agent",
+                producer="fixture-run-worker",
             )
     except RunCanceled:
         _release_run_resources(attempt["run_id"])
@@ -2620,29 +3324,63 @@ def execute_run_attempt(attempt_id: str) -> None:
                 "retryable": True,
                 "message": str(exc),
             }
-            conn.execute(
+            retry = conn.execute(
                 """
-                UPDATE run_attempts SET status = 'QUEUED', failure = %s, updated_at = now()
+                UPDATE run_attempts
+                SET status = CASE
+                      WHEN retry_count < max_retries THEN 'QUEUED'
+                      ELSE 'FAILED'
+                    END,
+                    retry_count = LEAST(retry_count + 1, max_retries),
+                    next_eligible_at = now() + (
+                      interval '1 second' * power(2, LEAST(retry_count, 6))
+                    ),
+                    failure = %s,
+                    claim_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = now()
                 WHERE attempt_id = %s
+                  AND claim_id = %s
+                  AND lease_owner = %s
+                  AND fencing_token = %s
+                RETURNING status, retry_count, max_retries
                 """,
-                (Jsonb(failure), attempt_id),
-            )
+                (
+                    Jsonb(failure),
+                    attempt_id,
+                    claim_id,
+                    worker_id,
+                    fencing_token,
+                ),
+            ).fetchone()
+            if not retry:
+                return
+            scheduled = retry["status"] == "QUEUED"
             conn.execute(
                 """
-                UPDATE runs SET status = 'QUEUED', warning = %s, updated_at = now()
+                UPDATE runs SET status = %s, warning = %s, updated_at = now()
                 WHERE run_id = %s AND desired_state = 'RUNNING'
                 """,
-                (Jsonb(failure), attempt["run_id"]),
+                (
+                    "QUEUED" if scheduled else "FAILED",
+                    Jsonb(failure),
+                    attempt["run_id"],
+                ),
             )
             emit_event(
                 conn,
-                event_type="run.retry_scheduled",
+                event_type="run.retry_scheduled" if scheduled else "run.retry_exhausted",
                 aggregate_type="run",
                 aggregate_id=attempt["run_id"],
                 run_id=attempt["run_id"],
                 correlation_id=attempt_id,
-                payload=failure,
-                producer="mock-run-agent",
+                payload={
+                    **failure,
+                    "retry_count": retry["retry_count"],
+                    "max_retries": retry["max_retries"],
+                },
+                producer="fixture-run-worker",
             )
     except Exception as exc:
         with connection() as conn:
@@ -2654,10 +3392,19 @@ def execute_run_attempt(attempt_id: str) -> None:
             }
             conn.execute(
                 """
-                UPDATE run_attempts SET status = 'FAILED', failure = %s, updated_at = now()
+                UPDATE run_attempts
+                SET status = 'FAILED',
+                    failure = %s,
+                    claim_id = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = now()
                 WHERE attempt_id = %s
+                  AND claim_id = %s
+                  AND lease_owner = %s
+                  AND fencing_token = %s
                 """,
-                (Jsonb(failure), attempt_id),
+                (Jsonb(failure), attempt_id, claim_id, worker_id, fencing_token),
             )
             conn.execute(
                 "UPDATE runs SET status = 'FAILED', warning = %s, updated_at = now() WHERE run_id = %s",
@@ -2671,7 +3418,7 @@ def execute_run_attempt(attempt_id: str) -> None:
                 run_id=attempt["run_id"],
                 correlation_id=attempt_id,
                 payload=failure,
-                producer="mock-run-agent",
+                producer="fixture-run-worker",
             )
         raise
 
@@ -2685,7 +3432,7 @@ def rejudge_transition(
     with connection() as conn:
         original = conn.execute(
             """
-            SELECT vr.*, eb.manifest
+            SELECT vr.*, eb.manifest, eb.digest
             FROM verification_runs vr
             JOIN evidence_bundles eb ON eb.proof_bundle_id = vr.proof_bundle_id
             WHERE vr.verification_run_id = %s AND vr.run_id = %s
@@ -2694,21 +3441,11 @@ def rejudge_transition(
         ).fetchone()
         if not original:
             raise ValueError("verification run not found")
-        progress = conn.execute(
-            """
-            SELECT value FROM metric_observations
-            WHERE subject_id = %s AND descriptor = 'deterministic.terminal_quality'
-            LIMIT 1
-            """,
-            (original["subject_id"],),
-        ).fetchone()
     new_verification_id = make_id("verification")
     operation_id = make_id("op")
     operation_input = {
         "verification_run_id": new_verification_id,
-        "subject_id": original["subject_id"],
-        "proof_bundle": original["manifest"],
-        "deterministic_progress": float(progress["value"]) if progress else 0.5,
+        "proof_bundle_digest": original["digest"],
         "fixture_scenario": fixture_scenario,
         "judge_spec_version": 2,
     }

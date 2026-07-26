@@ -23,8 +23,8 @@ from services.orchestrator.app.providers import (
 
 def test_local_provider_registry_has_no_real_provider() -> None:
     assert_local_registry()
-    assert set(POLICY_COMPUTE_PROVIDERS) == {"MockRunPodProvider"}
-    assert {"MockJudgeProvider"} == JUDGE_PROVIDER_NAMES
+    assert set(POLICY_COMPUTE_PROVIDERS) == {"LocalFixtureComputeProvider"}
+    assert {"DeterministicJudgeFixture"} == JUDGE_PROVIDER_NAMES
 
 
 def test_prompts_treat_candidate_content_as_untrusted_and_disable_tools() -> None:

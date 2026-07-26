@@ -382,7 +382,7 @@ function JudgeAssessment({ detail }: { detail: VerificationGraphResponse }) {
               },
               {
                 label: "Calibration",
-                value: <StatusBadge status="MOCK_CONTRACT_ONLY" />,
+                value: <StatusBadge status="FIXTURE_CONTRACT_ONLY" />,
               },
               {
                 label: "Abstained",

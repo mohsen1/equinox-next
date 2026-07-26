@@ -25,7 +25,7 @@ next trust-boundary integration, not a precondition for testing branch-aware cre
 Do not use AWS. Do not increase model size or GPU count until shared-prefix branching is
 observable and produces useful learning signal.
 
-The canonical [Equinox Next specification](docs/equinox-next.md) and the acceptance
+The canonical [Equinox Next specification](equinox-next.md) and the acceptance
 requirements below remain the contract for the completed local CAD fixture. The active
 research profile extends that fixture; it does not reinterpret or weaken its accepted
 evidence.
@@ -69,12 +69,11 @@ passes.
 
 ## Source of truth
 
-- Treat `/Users/mohsen/code/equinox/equinox-next.md` as the product and architecture
-  source of truth.
-- At bootstrap, copy it into this repository at `docs/equinox-next.md` and record source
-  provenance in a sidecar manifest rather than a self-referential file digest.
-- After bootstrap, the repository copy is the implementation reference for a given
-  commit. The build and tests must not depend on the original absolute path.
+- Treat the root `equinox-next.md` as the only editable product and architecture source
+  of truth.
+- Record its version and byte digest in `docs/equinox-next.provenance.json`.
+- The build and tests must not depend on an external absolute path or a second editable
+  mirror.
 - Treat the specification's **local contract-proof acceptance** as the current release
   target. Do not accidentally implement the CAD research beta or production-v1
   acceptance as part of this task.
@@ -322,8 +321,7 @@ Update it when a slice changes status. Do not use it as a diary.
 
 1. Run the preflight before substantial scaffolding.
 2. Initialize the repository and development toolchain.
-3. Copy the product specification into `docs/equinox-next.md` and write a provenance
-   sidecar.
+3. Pin the root product specification and write its provenance sidecar.
 4. Create `PRODUCT.md` from confirmed product facts.
 5. Create `docs/reuse-inventory.md`.
 6. Write the exact local CAD acceptance scenario.
@@ -691,7 +689,7 @@ Checks: lint,typecheck,unit,integration,build
 
 The review prompt must ask Claude to assess:
 
-- correctness against `docs/equinox-next.md` and the current local acceptance level;
+- correctness against `equinox-next.md` and the current local acceptance level;
 - scientific authority and lineage ownership;
 - data loss, races, fencing, retries, idempotency, cancellation, and recovery;
 - state versus runtime-cursor separation;

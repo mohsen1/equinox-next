@@ -20,7 +20,21 @@
         "media_type": {"type": "string", "minLength": 1},
         "viewer_hint": {"type": ["string", "null"]},
         "visibility": {"enum": ["PUBLIC", "POLICY", "OPERATOR", "HIDDEN"]},
-        "trust_class": {"enum": ["CANDIDATE", "PUBLIC_TASK", "REFERENCE", "HIDDEN", "TRUSTED"]}
+        "trust_class": {
+          "enum": [
+            "CANDIDATE",
+            "PUBLIC_TASK",
+            "REFERENCE",
+            "HIDDEN",
+            "TRUSTED",
+            "REFERENCE_AUTHORITY",
+            "PLATFORM_DERIVED",
+            "CANDIDATE_CONTROLLED",
+            "MODEL_OUTPUT_UNVALIDATED",
+            "MODEL_OUTPUT_ACCEPTED",
+            "HIDDEN_VERIFIER"
+          ]
+        }
       }
     },
     "State": {
@@ -86,6 +100,9 @@
         "requested_fidelity",
         "obtained_fidelity",
         "fidelity_probe_passed",
+        "fidelity_probe_receipt",
+        "captured_cursor_version",
+        "captured_fencing_token",
         "rng_state"
       ],
       "properties": {
@@ -99,7 +116,13 @@
           "enum": ["logical_restore", "filesystem_restore", "process_restore", "full_runtime_restore"]
         },
         "obtained_fidelity": {"const": "logical_restore"},
-        "fidelity_probe_passed": {"const": true},
+        "fidelity_probe_passed": {"type": "boolean"},
+        "fidelity_probe_receipt": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "captured_cursor_version": {"type": "integer", "minimum": 0},
+        "captured_fencing_token": {"type": "integer", "minimum": 1},
         "rng_state": {"type": "string"},
         "runtime_snapshot_handle": {"type": "null"}
       }
@@ -127,7 +150,7 @@
         "policy_context": {"$ref": "#/$defs/ArtifactRef"},
         "behavior_policy_version_id": {"type": "string"},
         "policy_rng_state": {"type": "string"},
-        "tokenizer_revision": {"const": "mock-tokenizer@1"},
+        "tokenizer_revision": {"const": "fixture-tokenizer@1"},
         "prompt_template_revision": {"const": "cad-policy@1"},
         "tool_schema_revision": {"const": "cad-actions@1"},
         "turns_remaining": {"type": "integer", "minimum": 1},
@@ -178,6 +201,11 @@
       "required": [
         "manifest_id",
         "digest",
+        "collection_closure_id",
+        "collection_closure_digest",
+        "dataset_artifact_id",
+        "dataset_digest",
+        "dataset_row_count",
         "rollout_tree_ids",
         "eligibility_decision_ids",
         "verification_run_ids",
@@ -188,6 +216,11 @@
       "properties": {
         "manifest_id": {"type": "string"},
         "digest": {"$ref": "#/$defs/Digest"},
+        "collection_closure_id": {"type": "string"},
+        "collection_closure_digest": {"$ref": "#/$defs/Digest"},
+        "dataset_artifact_id": {"type": "string"},
+        "dataset_digest": {"$ref": "#/$defs/Digest"},
+        "dataset_row_count": {"type": "integer", "minimum": 1},
         "rollout_tree_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
         "proof_bundle_ids": {"type": "array", "items": {"type": "string"}},
         "eligibility_decision_ids": {"type": "array", "items": {"type": "string"}},
@@ -195,7 +228,12 @@
         "judge_result_ids": {"type": "array", "items": {"type": "string"}},
         "reward_signal_ids": {"type": "array", "items": {"type": "string"}},
         "materializer_version": {"const": "branch-jsonl@1"},
-        "weights": {"type": "object", "additionalProperties": {"type": "number"}}
+        "weights": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"$ref": "#/$defs/Digest"},
+          "additionalProperties": {"type": "number", "exclusiveMinimum": 0}
+        }
       }
     },
     "VerificationStep": {
@@ -264,6 +302,7 @@
         "subject_type",
         "subject_id",
         "task_reference",
+        "task_reference_metadata",
         "source_render",
         "candidate_render",
         "action_summary",
@@ -277,6 +316,7 @@
         "subject_type": {"enum": ["TRANSITION", "BRANCH_MEMBER"]},
         "subject_id": {"type": "string"},
         "task_reference": {"$ref": "#/$defs/ArtifactRef"},
+        "task_reference_metadata": {"$ref": "#/$defs/ArtifactRef"},
         "source_render": {"$ref": "#/$defs/ArtifactRef"},
         "candidate_render": {"$ref": "#/$defs/ArtifactRef"},
         "action_summary": {"$ref": "#/$defs/ArtifactRef"},
@@ -291,13 +331,14 @@
             "material": {"const": "drafting-blue@1"},
             "lighting": {"const": "three-point-neutral@1"},
             "resolution": {"const": [640, 480]},
-            "views": {"const": ["isometric", "top", "front"]}
+            "views": {"const": ["top", "isometric"]}
           }
         },
         "ordered_artifact_digests": {
           "type": "array",
           "items": {"$ref": "#/$defs/Digest"},
-          "minItems": 5
+          "minItems": 6,
+          "maxItems": 6
         },
         "digest": {"$ref": "#/$defs/Digest"}
       }
@@ -309,6 +350,7 @@
         "judge_spec_id",
         "provider",
         "model_revision",
+        "prompt_template_id",
         "prompt_template_digest",
         "rubric_version",
         "output_schema",
@@ -323,8 +365,12 @@
       ],
       "properties": {
         "judge_spec_id": {"type": "string"},
-        "provider": {"const": "MockJudgeProvider"},
-        "model_revision": {"type": "string", "pattern": "^mock-judge-"},
+        "provider": {"const": "DeterministicJudgeFixture"},
+        "model_revision": {
+          "type": "string",
+          "pattern": "^deterministic-judge-fixture-"
+        },
+        "prompt_template_id": {"enum": ["cad-pointwise-v1", "cad-group-v1"]},
         "prompt_template_digest": {"$ref": "#/$defs/Digest"},
         "rubric_version": {"type": "string"},
         "output_schema": {"const": "judge-result.v1"},
@@ -332,6 +378,7 @@
         "criteria": {"type": "array", "items": {"type": "string"}, "minItems": 1},
         "sampling": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["temperature", "samples", "sample_index"],
           "properties": {
             "temperature": {"const": 0},
@@ -341,6 +388,7 @@
         },
         "presentation": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["blind_identity", "randomize_order"],
           "properties": {
             "blind_identity": {"const": true},
@@ -349,6 +397,7 @@
         },
         "abstention": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["allowed", "minimum_confidence", "disagreement_threshold"],
           "properties": {
             "allowed": {"const": true},
@@ -356,7 +405,7 @@
             "disagreement_threshold": {"type": "number", "minimum": 0, "maximum": 1}
           }
         },
-        "calibration_status": {"const": "MOCK_CONTRACT_ONLY"},
+        "calibration_status": {"const": "FIXTURE_CONTRACT_ONLY"},
         "integrity_profile": {"const": "untrusted-multimodal-input@1"},
         "allowed_evidence_roles": {
           "type": "array",
@@ -432,6 +481,7 @@
         "parsed_output_artifact": {"$ref": "#/$defs/ArtifactRef"},
         "usage": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["input_tokens", "output_tokens", "images", "latency_ms", "cost"],
           "properties": {
             "input_tokens": {"type": "integer", "minimum": 0},

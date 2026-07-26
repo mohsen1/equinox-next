@@ -23,12 +23,14 @@ class StoredArtifact:
     trust_class: str
     viewer_hint: str | None
 
-    def ref(self) -> dict[str, Any]:
+    def ref(self, *, ordinal: int) -> dict[str, Any]:
+        if ordinal < 0:
+            raise ValueError("artifact ordinal must be non-negative")
         return {
             "artifact_id": self.artifact_id,
             "digest": self.digest,
             "role": self.role,
-            "ordinal": 0,
+            "ordinal": ordinal,
             "media_type": self.media_type,
             "viewer_hint": self.viewer_hint,
             "visibility": self.visibility,
@@ -52,7 +54,12 @@ class ArtifactStore:
     def ensure_bucket(self) -> None:
         try:
             self.client.head_bucket(Bucket=self.bucket)
-        except ClientError:
+        except ClientError as exc:
+            error_code = str(exc.response.get("Error", {}).get("Code", ""))
+            if error_code not in {"404", "NoSuchBucket", "NotFound"}:
+                raise
+            if os.getenv("S3_BOOTSTRAP_BUCKET", "true").lower() not in {"1", "true", "yes"}:
+                raise RuntimeError(f"artifact bucket {self.bucket!r} does not exist") from exc
             self.client.create_bucket(Bucket=self.bucket)
 
     def put_bytes(
@@ -61,21 +68,32 @@ class ArtifactStore:
         *,
         role: str,
         media_type: str,
+        trust_class: str,
         visibility: str = "OPERATOR",
-        trust_class: str = "TRUSTED",
         viewer_hint: str | None = None,
     ) -> StoredArtifact:
         digest = content_digest(data)
-        object_key = f"sha256/{digest.removeprefix('sha256:')}"
-        self.client.put_object(
-            Bucket=self.bucket,
-            Key=object_key,
-            Body=data,
-            ContentType=media_type,
-            Metadata={"sha256": digest.removeprefix("sha256:")},
-        )
+        digest_hex = digest.removeprefix("sha256:")
+        object_key = f"sha256/{digest_hex}"
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=object_key,
+                Body=data,
+                ContentType=media_type,
+                Metadata={"sha256": digest_hex},
+                IfNoneMatch="*",
+            )
+        except ClientError as exc:
+            error_code = str(exc.response.get("Error", {}).get("Code", ""))
+            if error_code not in {"PreconditionFailed", "412", "ConditionalRequestConflict"}:
+                raise
+        metadata = self.client.head_object(Bucket=self.bucket, Key=object_key)
+        stored_digest = metadata.get("Metadata", {}).get("sha256")
+        if metadata.get("ContentLength") != len(data) or stored_digest != digest_hex:
+            raise RuntimeError(f"immutable artifact metadata mismatch for {digest}")
         return StoredArtifact(
-            artifact_id=f"art_{digest.removeprefix('sha256:')[:32]}",
+            artifact_id=f"art_sha256_{digest_hex}",
             digest=digest,
             role=role,
             media_type=media_type,
@@ -91,8 +109,8 @@ class ArtifactStore:
         value: Any,
         *,
         role: str,
+        trust_class: str,
         visibility: str = "OPERATOR",
-        trust_class: str = "TRUSTED",
         viewer_hint: str | None = "structured-json",
     ) -> StoredArtifact:
         return self.put_bytes(

@@ -26,7 +26,7 @@ prompt_file=$(mktemp)
 trap 'rm -f "$prompt_file"' EXIT HUP INT TERM
 
 cat >"$prompt_file" <<'EOF'
-Review the staged diff read-only against docs/equinox-next.md and the local
+Review the staged diff read-only against equinox-next.md and the local
 contract-proof acceptance level. Do not edit files or create a commit.
 Do not delegate, spawn agents, or start background tasks; review directly in
 this process so the complete findings are returned synchronously.

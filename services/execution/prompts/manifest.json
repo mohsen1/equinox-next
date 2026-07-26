@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "templates": {
+    "cad-group-v1": {
+      "path": "cad-group-v1.md",
+      "sha256": "sha256:eda5391bc342512181aaf0acbb12797b9a1f0ac42e2763e8570bea0c4eb70c68"
+    },
+    "cad-pointwise-v1": {
+      "path": "cad-pointwise-v1.md",
+      "sha256": "sha256:dbd50674b28605a46b13af6834d91d95d82cec815338dfb9b9e54712a12f72e5"
+    }
+  }
+}
