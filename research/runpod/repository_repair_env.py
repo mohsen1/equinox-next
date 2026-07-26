@@ -344,7 +344,7 @@ class RepositoryRepairEnvironment:
                 "accepted": step.accepted,
                 "observation": step.observation,
             }
-            for step in self.steps
+            for step in self.steps[-8:]
         ]
         task_data = {
             "phase": phase,
@@ -460,7 +460,12 @@ class RepositoryRepairEnvironment:
             )
         raise AssertionError(f"unhandled tool: {tool}")
 
-    def step(self, response: str) -> StepResult:
+    def step(
+        self,
+        response: str,
+        *,
+        allowed_tools: frozenset[str] | None = None,
+    ) -> StepResult:
         if self.terminal:
             raise RuntimeError("cannot act after terminal state")
         state_before = self.state_digest
@@ -470,7 +475,10 @@ class RepositoryRepairEnvironment:
         tool: str | None = None
         if action is not None:
             tool = action["tool"]
-            accepted, observation = self._execute(action)
+            if allowed_tools is not None and tool not in allowed_tools:
+                observation = f"Action {tool} is not allowed in this trajectory phase."
+            else:
+                accepted, observation = self._execute(action)
 
         fixed, failing = self._test_results()
         if accepted and tool == "finish":

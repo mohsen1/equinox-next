@@ -96,6 +96,25 @@ def test_paths_and_edits_are_bounded() -> None:
     ).accepted
 
 
+def test_shared_prefix_rejects_mutation_without_changing_repository() -> None:
+    task = make_task(0, seed=7)
+    environment = RepositoryRepairEnvironment(task)
+    fault = task.faults[0]
+    response = encode_action(
+        {
+            "tool": "edit",
+            "path": fault.path,
+            "old": fault.old,
+            "new": fault.new,
+        }
+    )
+
+    step = environment.step(response, allowed_tools=DIAGNOSTIC_TOOLS)
+
+    assert not step.accepted
+    assert environment.files == task.files
+
+
 def test_horizon_terminates_unsolved_trajectory() -> None:
     task = make_task(0, seed=29)
     environment = RepositoryRepairEnvironment(task)
