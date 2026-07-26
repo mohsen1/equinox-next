@@ -108,9 +108,11 @@ export interface ResearchLevelObservation {
   level: number;
   examples: number;
   exact_rate: number;
-  format_rate: number;
+  format_rate?: number;
+  checkpoint_rate?: number;
+  mean_actions?: number;
   mean_reward: number;
-  per_domain: Record<
+  per_domain?: Record<
     string,
     {
       exact_rate: number;
@@ -139,55 +141,118 @@ export interface ResearchTrajectoryPromotion {
   from_level: number;
   to_level: number;
   exact_rate: number;
-  minimum_domain_exact_rate: number;
+  minimum_domain_exact_rate?: number;
+  checkpoint_rate?: number;
   mastery_windows: number;
+}
+
+export interface ResearchBranchStep {
+  step_id: string;
+  index: number;
+  tool: string | null;
+  action: Record<string, string> | null;
+  accepted: boolean;
+  observation: string;
+  state_digest_before: string;
+  state_digest_after: string;
+  verifier_passed: boolean;
+  fixed_faults: number;
+  total_faults: number;
+  terminal: boolean;
+  terminal_reason: string | null;
+  reward: number;
 }
 
 export interface ResearchBranchSibling {
   index: number;
-  response: string;
-  action: string | null;
-  format_valid: boolean;
+  response?: string;
+  action?: string | null;
+  format_valid?: boolean;
   passed: boolean;
-  reward: number;
+  reward?: number;
+  return?: number;
   advantage: number;
   policy_signal: boolean;
+  sampling_seed?: number;
+  terminal_reason?: string | null;
+  trajectory_digest?: string;
+  steps?: ResearchBranchStep[];
 }
 
 export interface ResearchBranchSnapshot {
+  schema_version?: 1 | 2;
   snapshot_id: string;
   update: number;
   level: number;
   domain: string;
-  prompt: string;
-  expected_action: string;
-  best_sibling_index: number;
+  task_id?: string;
+  task?: {
+    description: string;
+    known_failing_tests: string[];
+    complexity: {
+      level: number;
+      file_count: number;
+      fault_count: number;
+      dependency_depth: number;
+      repair_horizon: number;
+    };
+  };
+  checkpoint?: {
+    checkpoint_id: string;
+    payload_digest: string;
+    fidelity: string;
+    environment_revision: string;
+    verifier_revision: string;
+    action_protocol_revision: string;
+    static_branch_width: 4;
+  } | null;
+  shared_prefix?: {
+    policy_generated: boolean;
+    accepted_diagnostic_actions: number;
+    steps: ResearchBranchStep[];
+  };
+  prompt?: string;
+  expected_action?: string;
+  best_sibling_index: number | null;
   learning_signal: boolean;
   teacher_fallback: boolean;
+  excluded?: boolean;
+  exclusion_reason?: string | null;
+  replay?: boolean;
   siblings: ResearchBranchSibling[];
 }
 
 export interface ResearchTrajectory {
-  schema_version: 1;
+  schema_version: 1 | 2;
   branch_width: 4;
   complexity_strategy: "adaptive";
-  maximum_level: number;
-  reached_level: number;
-  updates_completed: number;
-  initial_exact_rate: number;
-  final_exact_rate: number;
-  exact_gain: number;
-  stop_reason: string;
+  multi_step?: boolean;
+  restored_continuations?: boolean;
+  prefix_gradient?: boolean | null;
+  replay_enabled?: boolean | null;
+  environment_revision?: string | null;
+  verifier_revision?: string | null;
+  action_protocol_revision?: string | null;
+  snapshot_fidelity?: string | null;
+  maximum_level?: number;
+  reached_level?: number;
+  updates_completed?: number;
+  initial_exact_rate?: number;
+  final_exact_rate?: number;
+  exact_gain?: number;
+  stop_reason?: string;
   checkpoints: ResearchTrajectoryCheckpoint[];
   promotions: ResearchTrajectoryPromotion[];
   branch_snapshots: ResearchBranchSnapshot[];
   initial_by_level: Record<string, ResearchLevelObservation>;
   final_by_level: Record<string, ResearchLevelObservation>;
-  policy_update_count: number;
-  teacher_update_count: number;
-  informative_group_rate: number;
-  teacher_fallback_rate: number;
-  total_sampled_completions: number;
+  policy_update_count?: number;
+  teacher_update_count?: number;
+  informative_group_rate?: number;
+  teacher_fallback_rate?: number;
+  total_sampled_completions?: number;
+  total_sampled_actions?: number;
+  total_post_branch_actions?: number;
 }
 
 export interface ResearchTrajectoryResponse {

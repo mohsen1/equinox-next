@@ -5,7 +5,11 @@ import {
   TrajectoryOutline,
 } from "./pages/research-trajectory";
 import { BranchOutline, buildBranchFlow } from "./pages/research-branches";
-import type { ResearchTrajectory } from "./types";
+import type {
+  ResearchBranchSnapshot,
+  ResearchBranchStep,
+  ResearchTrajectory,
+} from "./types";
 
 const observation = {
   level: 0,
@@ -117,6 +121,78 @@ const trajectory: ResearchTrajectory = {
   total_sampled_completions: 960,
 };
 
+function branchStep(
+  index: number,
+  tool: string,
+  terminal = false,
+): ResearchBranchStep {
+  return {
+    step_id: `step-${index}`,
+    index,
+    tool,
+    action: { tool, ...(tool === "read" ? { path: "src/repair.py" } : {}) },
+    accepted: true,
+    observation: terminal ? '{"passed":1,"failed":0}' : "Accepted",
+    state_digest_before: `sha256:before-${index}`,
+    state_digest_after: `sha256:after-${index}`,
+    verifier_passed: terminal,
+    fixed_faults: terminal ? 1 : 0,
+    total_faults: 1,
+    terminal,
+    terminal_reason: terminal ? "solved" : null,
+    reward: terminal ? 0.94 : 0,
+  };
+}
+
+const multiStepSnapshot: ResearchBranchSnapshot = {
+  schema_version: 2,
+  snapshot_id: "update-5-snapshot-repo",
+  update: 5,
+  level: 1,
+  domain: "micro_repository",
+  task_id: "repo-1-test",
+  task: {
+    description: "Repair the repository.",
+    known_failing_tests: ["test_repair"],
+    complexity: {
+      level: 1,
+      file_count: 6,
+      fault_count: 1,
+      dependency_depth: 2,
+      repair_horizon: 10,
+    },
+  },
+  checkpoint: {
+    checkpoint_id: "snapshot-repo",
+    payload_digest: "sha256:snapshot",
+    fidelity: "logical_restore",
+    environment_revision: "repository-repair-simulator@1",
+    verifier_revision: "repository-repair-hidden-state@1",
+    action_protocol_revision: "repository-repair-json-tools@1",
+    static_branch_width: 4,
+  },
+  shared_prefix: {
+    policy_generated: true,
+    accepted_diagnostic_actions: 2,
+    steps: [branchStep(0, "list"), branchStep(1, "read")],
+  },
+  best_sibling_index: 0,
+  learning_signal: true,
+  teacher_fallback: false,
+  replay: false,
+  siblings: Array.from({ length: 4 }, (_, index) => ({
+    index,
+    sampling_seed: 100 + index,
+    passed: index === 0,
+    return: index === 0 ? 0.94 : 0,
+    advantage: index === 0 ? 1.5 : -0.5,
+    policy_signal: true,
+    terminal_reason: index === 0 ? "solved" : "finished_with_failures",
+    trajectory_digest: `sha256:sibling-${index}`,
+    steps: [branchStep(2, "edit"), branchStep(3, "finish", true)],
+  })),
+};
+
 describe("research trajectory", () => {
   it("builds a real checkpoint sequence with promotions", () => {
     const steps = buildTrajectorySteps(trajectory);
@@ -173,5 +249,38 @@ describe("research trajectory", () => {
     expect(html.match(/Sibling [1-4]/g)).toHaveLength(4);
     expect(html).toContain("Sibling 2 · Best");
     expect(html).toContain("Passed");
+  });
+
+  it("renders one shared prefix and four multi-step continuation lanes", () => {
+    const flow = buildBranchFlow(multiStepSnapshot, 0, "sibling-0-3");
+
+    expect(flow.nodes).toHaveLength(12);
+    expect(flow.edges).toHaveLength(11);
+    expect(flow.nodes.filter((node) => node.data.prefix)).toHaveLength(2);
+    expect(
+      flow.nodes.filter((node) => node.data.siblingIndex === 0),
+    ).toHaveLength(2);
+    expect(
+      flow.nodes.find((node) => node.data.actionId === "sibling-0-3")?.selected,
+    ).toBe(true);
+  });
+
+  it("provides an outline for every prefix and continuation action", () => {
+    const html = renderToStaticMarkup(
+      <BranchOutline
+        snapshot={multiStepSnapshot}
+        selectedIndex={0}
+        selectedActionId="sibling-0-3"
+        select={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+
+    expect(html).toContain(
+      "<caption>Shared prefix and K=4 continuation steps</caption>",
+    );
+    expect(html.match(/>Shared</g)).toHaveLength(2);
+    expect(html.match(/Sibling [1-4]/g)).toHaveLength(8);
+    expect(html).toContain('class="selected"');
   });
 });

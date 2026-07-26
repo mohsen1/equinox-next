@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY packages packages
 COPY schemas schemas
 COPY services services
+COPY research research
 COPY tests tests
 COPY pyproject.toml .
 

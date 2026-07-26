@@ -1271,7 +1271,6 @@ h3 {
 .research-branch-sibling-node.selected {
   border-color: var(--accent);
   background: var(--accent-soft);
-  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .research-branch-sibling-node > div {
@@ -1307,11 +1306,105 @@ h3 {
 }
 
 .research-branch-task-node .react-flow__handle,
-.research-branch-sibling-node .react-flow__handle {
+.research-branch-sibling-node .react-flow__handle,
+.research-branch-checkpoint-node .react-flow__handle,
+.research-branch-action-node .react-flow__handle {
   width: 7px;
   height: 7px;
   border: 1px solid var(--rule-strong);
   background: var(--surface);
+}
+
+.branch-workspace {
+  min-height: 720px;
+}
+
+.branch-canvas .react-flow {
+  min-height: 720px;
+}
+
+.research-branch-checkpoint-node {
+  display: grid;
+  width: 156px;
+  min-height: 88px;
+  align-content: center;
+  gap: 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.research-branch-checkpoint-node.unavailable {
+  border-color: var(--rule-strong);
+  border-style: dashed;
+  background: var(--surface-raised);
+}
+
+.research-branch-checkpoint-node strong {
+  font-size: 0.8125rem;
+}
+
+.research-branch-checkpoint-node small {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.research-branch-action-node {
+  display: grid;
+  width: 164px;
+  min-height: 80px;
+  align-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  padding: 10px 11px;
+  text-align: left;
+  transition:
+    border-color var(--transition),
+    background-color var(--transition);
+}
+
+.research-branch-action-node:hover {
+  border-color: var(--accent);
+}
+
+.research-branch-action-node.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.research-branch-action-node.rejected {
+  border-style: dashed;
+}
+
+.research-branch-action-node > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.research-branch-action-node span,
+.research-branch-action-node small {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.research-branch-action-node em {
+  color: var(--accent-strong);
+  font-size: 0.625rem;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.research-branch-action-node code {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 0.6875rem;
+  line-height: 1.4;
 }
 
 .research-trajectory-inspector {
@@ -3351,6 +3444,10 @@ h3 {
 
   .research-trajectory-canvas .react-flow {
     min-width: 960px;
+  }
+
+  .branch-canvas .react-flow {
+    min-width: 780px;
   }
 
   .trajectory-controls label {

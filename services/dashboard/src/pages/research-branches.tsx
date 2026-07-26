@@ -10,48 +10,77 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 import { friendlyStatus, StatusBadge } from "../components";
-import type { ResearchBranchSibling, ResearchBranchSnapshot } from "../types";
+import type {
+  ResearchBranchSibling,
+  ResearchBranchSnapshot,
+  ResearchBranchStep,
+} from "../types";
 
 type BranchView = "graph" | "outline";
 
 interface BranchNodeData extends Record<string, unknown> {
   siblingIndex?: number;
+  actionId?: string;
   title: string;
   detail: string;
-  action?: string | null;
+  action?: string | Record<string, string> | null;
   reward?: number;
   passed?: boolean;
   best?: boolean;
+  multiStep?: boolean;
+  prefix?: boolean;
+}
+
+interface BranchSelection {
+  actionId: string;
+  title: string;
+  sibling: ResearchBranchSibling | null;
+  step: ResearchBranchStep | null;
 }
 
 type BranchFlowNode = Node<BranchNodeData>;
 
 const branchNodeTypes = {
   task: BranchTaskNode,
+  checkpoint: BranchCheckpointNode,
+  action: BranchActionNode,
   sibling: BranchSiblingNode,
 };
 
 export function ResearchBranchWorkspace({
   snapshot,
   selectedSibling,
+  selectedActionId,
   view,
   selectSibling,
+  selectAction,
 }: {
   snapshot: ResearchBranchSnapshot;
-  selectedSibling: ResearchBranchSibling;
+  selectedSibling: ResearchBranchSibling | null;
+  selectedActionId: string;
   view: BranchView;
   selectSibling: (index: number) => void;
+  selectAction: (actionId: string, siblingIndex?: number) => void;
 }) {
-  const flow = buildBranchFlow(snapshot, selectedSibling.index);
-  const siblingPosition = snapshot.siblings.findIndex(
-    (sibling) => sibling.index === selectedSibling.index,
+  const flow = buildBranchFlow(
+    snapshot,
+    selectedSibling?.index ?? -1,
+    selectedActionId,
   );
+  const navigation = branchNavigation(snapshot, selectedSibling);
+  const selected =
+    navigation.find((item) => item.actionId === selectedActionId) ??
+    navigation.at(-1) ??
+    null;
+  const selectedPosition = selected
+    ? navigation.findIndex((item) => item.actionId === selected.actionId)
+    : -1;
 
   return (
-    <div className="research-trajectory-workspace">
+    <div className="research-trajectory-workspace branch-workspace">
       <section
-        className="research-trajectory-canvas"
-        aria-label="K=4 sibling actions"
+        className="research-trajectory-canvas branch-canvas"
+        aria-label="Shared prefix and four restored continuations"
       >
         {view === "graph" ? (
           <ReactFlow
@@ -62,17 +91,20 @@ export function ResearchBranchWorkspace({
               if (typeof node.data.siblingIndex === "number") {
                 selectSibling(node.data.siblingIndex);
               }
+              if (typeof node.data.actionId === "string") {
+                selectAction(node.data.actionId, node.data.siblingIndex);
+              }
             }}
             fitView
-            fitViewOptions={{ padding: 0.22 }}
-            minZoom={0.5}
+            fitViewOptions={{ padding: 0.14 }}
+            minZoom={0.25}
             maxZoom={1.5}
             nodesDraggable={false}
             nodesConnectable={false}
             nodesFocusable
             edgesFocusable={false}
             autoPanOnNodeFocus
-            aria-label="One task branching into four sampled and verified actions."
+            aria-label="One diagnostic prefix restored into four multi-step continuations."
             proOptions={{ hideAttribution: true }}
           >
             <Background color="var(--rule)" gap={32} size={1} />
@@ -81,23 +113,137 @@ export function ResearchBranchWorkspace({
         ) : (
           <BranchOutline
             snapshot={snapshot}
-            selectedIndex={selectedSibling.index}
+            selectedIndex={selectedSibling?.index ?? -1}
+            selectedActionId={selectedActionId}
             select={selectSibling}
+            selectAction={selectAction}
           />
         )}
       </section>
       <BranchInspector
         snapshot={snapshot}
-        sibling={selectedSibling}
-        previous={snapshot.siblings[siblingPosition - 1]}
-        next={snapshot.siblings[siblingPosition + 1]}
-        select={selectSibling}
+        selection={selected}
+        previous={navigation[selectedPosition - 1]}
+        next={navigation[selectedPosition + 1]}
+        selectAction={selectAction}
       />
     </div>
   );
 }
 
 export function buildBranchFlow(
+  snapshot: ResearchBranchSnapshot,
+  selectedIndex: number,
+  selectedActionId = "",
+): { nodes: BranchFlowNode[]; edges: Edge[] } {
+  if (!snapshot.shared_prefix) {
+    return buildLegacyBranchFlow(snapshot, selectedIndex);
+  }
+
+  const nodes: BranchFlowNode[] = [];
+  const edges: Edge[] = [];
+  const prefix = snapshot.shared_prefix.steps;
+  const rootId = `${snapshot.snapshot_id}-task`;
+  const checkpointId = `${snapshot.snapshot_id}-checkpoint`;
+  const centerX = 330;
+  nodes.push({
+    id: rootId,
+    type: "task",
+    position: { x: centerX - 41, y: 18 },
+    selectable: false,
+    focusable: false,
+    draggable: false,
+    data: {
+      title: friendlyStatus(snapshot.domain),
+      detail: `Level ${snapshot.level} · ${snapshot.task?.complexity.file_count ?? "—"} files`,
+      multiStep: true,
+    },
+  });
+
+  let previousId = rootId;
+  prefix.forEach((step, position) => {
+    const actionId = prefixActionId(step);
+    const nodeId = `${snapshot.snapshot_id}-${actionId}`;
+    nodes.push({
+      id: nodeId,
+      type: "action",
+      position: { x: centerX, y: 132 + position * 104 },
+      selected: actionId === selectedActionId,
+      data: {
+        actionId,
+        title: `Prefix ${position + 1}`,
+        detail: stepOutcome(step),
+        action: step.action,
+        passed: step.accepted,
+        prefix: true,
+      },
+    });
+    edges.push(branchEdge(previousId, nodeId, actionId === selectedActionId));
+    previousId = nodeId;
+  });
+
+  const checkpointY = 132 + prefix.length * 104;
+  nodes.push({
+    id: checkpointId,
+    type: "checkpoint",
+    position: { x: centerX + 4, y: checkpointY },
+    selectable: false,
+    focusable: false,
+    draggable: false,
+    data: {
+      title: "Checkpoint",
+      detail: snapshot.checkpoint?.fidelity
+        ? friendlyStatus(snapshot.checkpoint.fidelity)
+        : friendlyStatus(snapshot.exclusion_reason ?? "Unavailable"),
+      passed: snapshot.checkpoint !== null,
+    },
+  });
+  edges.push(branchEdge(previousId, checkpointId, false));
+
+  snapshot.siblings.forEach((sibling, lanePosition) => {
+    let lanePreviousId = checkpointId;
+    const laneX = lanePosition * 190;
+    (sibling.steps ?? []).forEach((step, stepPosition) => {
+      const actionId = siblingActionId(sibling, step);
+      const nodeId = `${snapshot.snapshot_id}-${actionId}`;
+      nodes.push({
+        id: nodeId,
+        type: "action",
+        position: {
+          x: laneX,
+          y: checkpointY + 138 + stepPosition * 94,
+        },
+        selected: actionId === selectedActionId,
+        data: {
+          siblingIndex: sibling.index,
+          actionId,
+          title:
+            stepPosition === 0
+              ? `Sibling ${sibling.index + 1} · 1`
+              : `Step ${stepPosition + 1}`,
+          detail: stepOutcome(step),
+          action: step.action,
+          reward: step.terminal ? siblingReturn(sibling) : undefined,
+          passed: step.accepted,
+          best:
+            stepPosition === 0 && sibling.index === snapshot.best_sibling_index,
+        },
+      });
+      edges.push(
+        branchEdge(
+          lanePreviousId,
+          nodeId,
+          sibling.index === selectedIndex,
+          sibling.passed,
+        ),
+      );
+      lanePreviousId = nodeId;
+    });
+  });
+  return { nodes, edges };
+}
+
+function buildLegacyBranchFlow(
   snapshot: ResearchBranchSnapshot,
   selectedIndex: number,
 ): { nodes: BranchFlowNode[]; edges: Edge[] } {
@@ -121,10 +267,11 @@ export function buildBranchFlow(
       selected: sibling.index === selectedIndex,
       data: {
         siblingIndex: sibling.index,
+        actionId: legacyActionId(sibling),
         title: `Sibling ${sibling.index + 1}`,
         detail: sibling.passed ? "Verifier passed" : "Verifier failed",
         action: sibling.action,
-        reward: sibling.reward,
+        reward: siblingReturn(sibling),
         passed: sibling.passed,
         best: sibling.index === snapshot.best_sibling_index,
       },
@@ -134,15 +281,12 @@ export function buildBranchFlow(
     const selected = sibling.index === selectedIndex;
     const best = sibling.index === snapshot.best_sibling_index;
     return {
-      id: `${snapshot.snapshot_id}-${sibling.index}`,
-      source: snapshot.snapshot_id,
-      target: `${snapshot.snapshot_id}-sibling-${sibling.index}`,
-      type: "smoothstep",
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        width: 14,
-        height: 14,
-      },
+      ...branchEdge(
+        snapshot.snapshot_id,
+        `${snapshot.snapshot_id}-sibling-${sibling.index}`,
+        selected,
+        sibling.passed,
+      ),
       className: [
         sibling.passed ? "branch-edge-passed" : "branch-edge-failed",
         best ? "branch-edge-best" : "",
@@ -150,17 +294,36 @@ export function buildBranchFlow(
       ]
         .filter(Boolean)
         .join(" "),
-      style: {
-        stroke: selected
-          ? "var(--accent)"
-          : sibling.passed
-            ? "var(--success)"
-            : "var(--rule-strong)",
-        strokeWidth: selected ? 2 : 1.25,
-      },
     };
   });
   return { nodes, edges };
+}
+
+function branchEdge(
+  source: string,
+  target: string,
+  selected: boolean,
+  passed?: boolean,
+): Edge {
+  return {
+    id: `${source}-${target}`,
+    source,
+    target,
+    type: "smoothstep",
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      width: 13,
+      height: 13,
+    },
+    style: {
+      stroke: selected
+        ? "var(--accent)"
+        : passed
+          ? "var(--success)"
+          : "var(--rule-strong)",
+      strokeWidth: selected ? 2 : 1.25,
+    },
+  };
 }
 
 function BranchTaskNode({ data }: NodeProps<BranchFlowNode>) {
@@ -168,6 +331,42 @@ function BranchTaskNode({ data }: NodeProps<BranchFlowNode>) {
     <div className="research-branch-task-node">
       <span>Task</span>
       <strong>{data.title}</strong>
+      <small>{data.detail}</small>
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  );
+}
+
+function BranchCheckpointNode({ data }: NodeProps<BranchFlowNode>) {
+  return (
+    <div
+      className={`research-branch-checkpoint-node ${
+        data.passed ? "" : "unavailable"
+      }`}
+    >
+      <Handle type="target" position={Position.Top} />
+      <strong>{data.title}</strong>
+      <small>{data.detail}</small>
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  );
+}
+
+function BranchActionNode({ data, selected }: NodeProps<BranchFlowNode>) {
+  return (
+    <div
+      className={`research-branch-action-node ${selected ? "selected" : ""} ${
+        data.passed ? "accepted" : "rejected"
+      }`}
+    >
+      <Handle type="target" position={Position.Top} />
+      <div>
+        <span>{data.title}</span>
+        {data.best ? <em>Best</em> : null}
+      </div>
+      <code title={formatAction(data.action)}>
+        {compactAction(data.action)}
+      </code>
       <small>{data.detail}</small>
       <Handle type="source" position={Position.Bottom} />
     </div>
@@ -186,7 +385,7 @@ function BranchSiblingNode({ data, selected }: NodeProps<BranchFlowNode>) {
         <span>{data.title}</span>
         {data.best ? <em>Best reward</em> : null}
       </div>
-      <code title={data.action ?? "No valid action"}>
+      <code title={formatAction(data.action)}>
         {compactAction(data.action)}
       </code>
       <div>
@@ -200,12 +399,25 @@ function BranchSiblingNode({ data, selected }: NodeProps<BranchFlowNode>) {
 export function BranchOutline({
   snapshot,
   selectedIndex,
+  selectedActionId = "",
   select,
+  selectAction = () => undefined,
 }: {
   snapshot: ResearchBranchSnapshot;
   selectedIndex: number;
+  selectedActionId?: string;
   select: (index: number) => void;
+  selectAction?: (actionId: string, siblingIndex?: number) => void;
 }) {
+  if (snapshot.shared_prefix) {
+    return (
+      <MultiStepBranchOutline
+        snapshot={snapshot}
+        selectedActionId={selectedActionId}
+        selectAction={selectAction}
+      />
+    );
+  }
   return (
     <div className="research-trajectory-outline branch-outline">
       <table>
@@ -239,7 +451,7 @@ export function BranchOutline({
               <td>
                 <code>{sibling.action ?? "No valid action"}</code>
               </td>
-              <td>{formatReward(sibling.reward)}</td>
+              <td>{formatReward(siblingReturn(sibling))}</td>
               <td>{sibling.format_valid ? "Valid" : "Invalid"}</td>
               <td>{sibling.passed ? "Passed" : "Failed"}</td>
               <td>
@@ -253,92 +465,324 @@ export function BranchOutline({
   );
 }
 
-function BranchInspector({
+function MultiStepBranchOutline({
   snapshot,
-  sibling,
-  previous,
-  next,
-  select,
+  selectedActionId,
+  selectAction,
 }: {
   snapshot: ResearchBranchSnapshot;
-  sibling: ResearchBranchSibling;
-  previous?: ResearchBranchSibling;
-  next?: ResearchBranchSibling;
-  select: (index: number) => void;
+  selectedActionId: string;
+  selectAction: (actionId: string, siblingIndex?: number) => void;
 }) {
-  const isBest = sibling.index === snapshot.best_sibling_index;
+  return (
+    <div className="research-trajectory-outline branch-outline">
+      <table>
+        <caption>Shared prefix and K=4 continuation steps</caption>
+        <thead>
+          <tr>
+            <th>Lane</th>
+            <th>Step</th>
+            <th>Action</th>
+            <th>Observation</th>
+            <th>Verifier</th>
+            <th>Reward</th>
+          </tr>
+        </thead>
+        <tbody>
+          {snapshot.shared_prefix?.steps.map((step, index) => {
+            const actionId = prefixActionId(step);
+            return (
+              <BranchStepRow
+                key={actionId}
+                lane="Shared"
+                actionId={actionId}
+                step={step}
+                displayIndex={index + 1}
+                selected={actionId === selectedActionId}
+                select={() => selectAction(actionId)}
+              />
+            );
+          })}
+          {snapshot.siblings.flatMap((sibling) =>
+            (sibling.steps ?? []).map((step, index) => {
+              const actionId = siblingActionId(sibling, step);
+              return (
+                <BranchStepRow
+                  key={actionId}
+                  lane={`Sibling ${sibling.index + 1}`}
+                  actionId={actionId}
+                  step={step}
+                  displayIndex={index + 1}
+                  reward={step.terminal ? siblingReturn(sibling) : undefined}
+                  selected={actionId === selectedActionId}
+                  select={() => selectAction(actionId, sibling.index)}
+                />
+              );
+            }),
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BranchStepRow({
+  lane,
+  step,
+  displayIndex,
+  reward,
+  selected,
+  select,
+}: {
+  lane: string;
+  actionId: string;
+  step: ResearchBranchStep;
+  displayIndex: number;
+  reward?: number;
+  selected: boolean;
+  select: () => void;
+}) {
+  return (
+    <tr className={selected ? "selected" : undefined}>
+      <td>
+        <button type="button" onClick={select}>
+          {lane}
+        </button>
+      </td>
+      <td>{displayIndex}</td>
+      <td>
+        <code>{compactAction(step.action)}</code>
+      </td>
+      <td>{compactObservation(step.observation)}</td>
+      <td>{step.verifier_passed ? "Passing" : "Failing"}</td>
+      <td>{reward === undefined ? "—" : formatReward(reward)}</td>
+    </tr>
+  );
+}
+
+function BranchInspector({
+  snapshot,
+  selection,
+  previous,
+  next,
+  selectAction,
+}: {
+  snapshot: ResearchBranchSnapshot;
+  selection: BranchSelection | null;
+  previous?: BranchSelection;
+  next?: BranchSelection;
+  selectAction: (actionId: string, siblingIndex?: number) => void;
+}) {
+  if (!selection) {
+    return (
+      <aside
+        className="research-trajectory-inspector branch-inspector"
+        aria-label="Selected branch action"
+      >
+        <header>
+          <span>
+            Update {snapshot.update} · Level {snapshot.level}
+          </span>
+          <StatusBadge status={snapshot.excluded ? "EXCLUDED" : "RUNNING"} />
+        </header>
+        <div className="trajectory-selected-step">
+          <h2>{snapshot.exclusion_reason ?? "Waiting for branch actions"}</h2>
+        </div>
+      </aside>
+    );
+  }
+
+  const { sibling, step } = selection;
+  const reward = sibling ? siblingReturn(sibling) : (step?.reward ?? 0);
+  const status = step?.accepted
+    ? step.terminal && !step.verifier_passed
+      ? "FAILED"
+      : "VERIFIED"
+    : sibling?.passed
+      ? "SUCCEEDED"
+      : "FAILED";
   return (
     <aside
       className="research-trajectory-inspector branch-inspector"
-      aria-label="Selected sibling"
+      aria-label="Selected branch action"
     >
       <header>
         <span>
           Update {snapshot.update} · Level {snapshot.level}
         </span>
-        <StatusBadge status={sibling.passed ? "SUCCEEDED" : "FAILED"} />
+        <StatusBadge status={status} />
       </header>
       <div className="trajectory-selected-step">
-        <h2>Sibling {sibling.index + 1}</h2>
-        <strong>{formatReward(sibling.reward)}</strong>
-        <span>{isBest ? "best reward" : "reward"}</span>
+        <h2>{selection.title}</h2>
+        <strong>
+          {step?.terminal || !step ? formatReward(reward) : step.index + 1}
+        </strong>
+        <span>{step?.terminal || !step ? "return" : "step"}</span>
       </div>
-      <dl className="trajectory-step-facts">
-        <Fact
-          label="Format"
-          value={sibling.format_valid ? "Valid" : "Invalid"}
-        />
-        <Fact label="Verifier" value={sibling.passed ? "Passed" : "Failed"} />
-        <Fact label="Advantage" value={formatSigned(sibling.advantage)} />
-        <Fact
-          label="Policy signal"
-          value={sibling.policy_signal ? "Applied" : "None"}
-        />
-        <Fact
-          label="Group signal"
-          value={snapshot.learning_signal ? "Informative" : "Uniform"}
-        />
-        <Fact
-          label="Fallback"
-          value={snapshot.teacher_fallback ? "Teacher" : "None"}
-        />
-      </dl>
-      <div className="branch-evidence">
-        <section>
-          <span>Action</span>
-          <code>{sibling.action ?? "No valid action parsed"}</code>
-        </section>
-        <section>
-          <span>Expected action</span>
-          <code>{snapshot.expected_action}</code>
-        </section>
-        <section>
-          <span>Raw response</span>
-          <pre>{sibling.response || "Empty response"}</pre>
-        </section>
-        <details>
-          <summary>Task prompt</summary>
-          <pre>{snapshot.prompt}</pre>
-        </details>
-      </div>
-      <div className="step-navigation" aria-label="Sibling navigation">
+      {step ? (
+        <>
+          <dl className="trajectory-step-facts">
+            <Fact label="Tool" value={friendlyStatus(step.tool ?? "Invalid")} />
+            <Fact
+              label="Action"
+              value={step.accepted ? "Accepted" : "Rejected"}
+            />
+            <Fact
+              label="Verifier"
+              value={
+                step.verifier_passed
+                  ? "Passing"
+                  : `${step.fixed_faults} / ${step.total_faults} fixed`
+              }
+            />
+            <Fact
+              label="Terminal"
+              value={friendlyStatus(step.terminal_reason ?? "No")}
+            />
+            <Fact
+              label="Advantage"
+              value={sibling ? formatSigned(sibling.advantage) : "Masked"}
+            />
+            <Fact
+              label="Policy signal"
+              value={
+                sibling
+                  ? sibling.policy_signal
+                    ? "Applied"
+                    : "None"
+                  : "Prefix masked"
+              }
+            />
+          </dl>
+          <div className="branch-evidence">
+            <section>
+              <span>Action</span>
+              <pre>{formatAction(step.action)}</pre>
+            </section>
+            <section>
+              <span>Observation</span>
+              <pre>{step.observation}</pre>
+            </section>
+            <details>
+              <summary>State</summary>
+              <code>{step.state_digest_after}</code>
+            </details>
+          </div>
+        </>
+      ) : sibling ? (
+        <>
+          <dl className="trajectory-step-facts">
+            <Fact
+              label="Format"
+              value={sibling.format_valid ? "Valid" : "Invalid"}
+            />
+            <Fact
+              label="Verifier"
+              value={sibling.passed ? "Passed" : "Failed"}
+            />
+            <Fact label="Advantage" value={formatSigned(sibling.advantage)} />
+            <Fact
+              label="Policy signal"
+              value={sibling.policy_signal ? "Applied" : "None"}
+            />
+          </dl>
+          <div className="branch-evidence">
+            <section>
+              <span>Action</span>
+              <code>{sibling.action ?? "No valid action parsed"}</code>
+            </section>
+            <section>
+              <span>Raw response</span>
+              <pre>{sibling.response || "Empty response"}</pre>
+            </section>
+          </div>
+        </>
+      ) : null}
+      <div className="step-navigation" aria-label="Action navigation">
         <button
           type="button"
           disabled={!previous}
-          onClick={() => previous && select(previous.index)}
+          onClick={() =>
+            previous && selectAction(previous.actionId, previous.sibling?.index)
+          }
         >
           ← Previous
         </button>
         <button
           type="button"
           disabled={!next}
-          onClick={() => next && select(next.index)}
+          onClick={() =>
+            next && selectAction(next.actionId, next.sibling?.index)
+          }
         >
           Next →
         </button>
       </div>
     </aside>
   );
+}
+
+function branchNavigation(
+  snapshot: ResearchBranchSnapshot,
+  selectedSibling: ResearchBranchSibling | null,
+): BranchSelection[] {
+  if (!snapshot.shared_prefix) {
+    return snapshot.siblings.map((sibling) => ({
+      actionId: legacyActionId(sibling),
+      title: `Sibling ${sibling.index + 1}`,
+      sibling,
+      step: null,
+    }));
+  }
+  const items: BranchSelection[] = snapshot.shared_prefix.steps.map(
+    (step, index) => ({
+      actionId: prefixActionId(step),
+      title: `Shared prefix · step ${index + 1}`,
+      sibling: null,
+      step,
+    }),
+  );
+  if (selectedSibling) {
+    items.push(
+      ...(selectedSibling.steps ?? []).map((step, index) => ({
+        actionId: siblingActionId(selectedSibling, step),
+        title: `Sibling ${selectedSibling.index + 1} · step ${index + 1}`,
+        sibling: selectedSibling,
+        step,
+      })),
+    );
+  }
+  return items;
+}
+
+export function defaultBranchActionId(
+  snapshot: ResearchBranchSnapshot,
+  sibling: ResearchBranchSibling | null,
+): string {
+  if (snapshot.shared_prefix) {
+    const firstSiblingStep = sibling?.steps?.[0];
+    if (sibling && firstSiblingStep) {
+      return siblingActionId(sibling, firstSiblingStep);
+    }
+    const lastPrefixStep = snapshot.shared_prefix.steps.at(-1);
+    return lastPrefixStep ? prefixActionId(lastPrefixStep) : "";
+  }
+  return sibling ? legacyActionId(sibling) : "";
+}
+
+function prefixActionId(step: ResearchBranchStep): string {
+  return `prefix-${step.index}`;
+}
+
+function siblingActionId(
+  sibling: ResearchBranchSibling,
+  step: ResearchBranchStep,
+): string {
+  return `sibling-${sibling.index}-${step.index}`;
+}
+
+function legacyActionId(sibling: ResearchBranchSibling): string {
+  return `sibling-${sibling.index}`;
 }
 
 function Fact({ label, value }: { label: string; value: string }) {
@@ -351,12 +795,48 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 export function branchSnapshotLabel(snapshot: ResearchBranchSnapshot): string {
-  return `Update ${snapshot.update} · ${friendlyStatus(snapshot.domain)} · Level ${snapshot.level}`;
+  const replay = snapshot.replay ? " · Replay" : "";
+  return `Update ${snapshot.update} · Level ${snapshot.level}${replay}`;
 }
 
-function compactAction(action: string | null | undefined): string {
+function siblingReturn(sibling: ResearchBranchSibling): number {
+  return sibling.return ?? sibling.reward ?? 0;
+}
+
+function stepOutcome(step: ResearchBranchStep): string {
+  if (!step.accepted) return "Rejected";
+  if (step.terminal_reason) return friendlyStatus(step.terminal_reason);
+  if (step.tool === "test") {
+    return `${step.fixed_faults}/${step.total_faults} fixed`;
+  }
+  return "Accepted";
+}
+
+function formatAction(
+  action: string | Record<string, string> | null | undefined,
+): string {
   if (!action) return "No valid action";
+  return typeof action === "string" ? action : JSON.stringify(action, null, 2);
+}
+
+function compactAction(
+  action: string | Record<string, string> | null | undefined,
+): string {
+  if (!action) return "No valid action";
+  if (typeof action === "object") {
+    const tool = action.tool ?? "action";
+    const target = action.path ?? action.query ?? "";
+    const compactTarget = action.path
+      ? (action.path.split("/").at(-1) ?? action.path)
+      : target;
+    const value = compactTarget ? `${tool} · ${compactTarget}` : tool;
+    return value.length > 44 ? `${value.slice(0, 41)}…` : value;
+  }
   return action.length > 54 ? `${action.slice(0, 51)}…` : action;
+}
+
+function compactObservation(observation: string): string {
+  return observation.length > 72 ? `${observation.slice(0, 69)}…` : observation;
 }
 
 function formatReward(value: number): string {

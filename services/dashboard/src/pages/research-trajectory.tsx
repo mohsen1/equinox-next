@@ -34,6 +34,7 @@ import type {
 } from "../types";
 import {
   branchSnapshotLabel,
+  defaultBranchActionId,
   ResearchBranchWorkspace,
 } from "./research-branches";
 
@@ -115,8 +116,12 @@ export function ResearchTrajectoryPage() {
     requestedView === "graph" || requestedView === "outline"
       ? requestedView
       : defaultView;
+  const requestedTrack = params.get("track");
   const track: TrajectoryTrack =
-    params.get("track") === "branches" ? "branches" : "curriculum";
+    requestedTrack === "branches" ||
+    (requestedTrack !== "curriculum" && trajectory?.multi_step)
+      ? "branches"
+      : "curriculum";
   const steps = useMemo(
     () => (trajectory ? buildTrajectorySteps(trajectory) : []),
     [trajectory],
@@ -132,7 +137,9 @@ export function ResearchTrajectoryPage() {
     ) ??
     branchSnapshots.at(-1) ??
     null;
-  const requestedSibling = Number(params.get("sibling"));
+  const siblingParam = params.get("sibling");
+  const requestedSibling =
+    siblingParam === null ? undefined : Number(siblingParam);
   const selectedSibling =
     selectedSnapshot?.siblings.find(
       (sibling) => sibling.index === requestedSibling,
@@ -142,6 +149,11 @@ export function ResearchTrajectoryPage() {
     ) ??
     selectedSnapshot?.siblings[0] ??
     null;
+  const selectedActionId =
+    params.get("action") ??
+    (selectedSnapshot
+      ? defaultBranchActionId(selectedSnapshot, selectedSibling)
+      : "");
   const flow = useMemo(
     () =>
       trajectory
@@ -162,15 +174,19 @@ export function ResearchTrajectoryPage() {
     if (
       track !== "branches" ||
       !selectedSnapshot ||
-      !selectedSibling ||
       (params.get("branch") === selectedSnapshot.snapshot_id &&
-        params.get("sibling") === String(selectedSibling.index))
+        (!selectedSibling ||
+          params.get("sibling") === String(selectedSibling.index)) &&
+        params.get("action") === selectedActionId)
     ) {
       return;
     }
     const next = new URLSearchParams(params);
     next.set("branch", selectedSnapshot.snapshot_id);
-    next.set("sibling", String(selectedSibling.index));
+    if (selectedSibling) {
+      next.set("sibling", String(selectedSibling.index));
+    }
+    if (selectedActionId) next.set("action", selectedActionId);
     if (!next.get("view")) next.set("view", defaultView);
     setParams(next, { replace: true });
   }, [
@@ -178,6 +194,7 @@ export function ResearchTrajectoryPage() {
     params,
     selectedSibling,
     selectedSnapshot,
+    selectedActionId,
     setParams,
     track,
   ]);
@@ -202,6 +219,8 @@ export function ResearchTrajectoryPage() {
     if (nextTrack === "branches" && selectedSnapshot && selectedSibling) {
       next.set("branch", selectedSnapshot.snapshot_id);
       next.set("sibling", String(selectedSibling.index));
+      const actionId = defaultBranchActionId(selectedSnapshot, selectedSibling);
+      if (actionId) next.set("action", actionId);
     }
     setParams(next);
   }
@@ -213,13 +232,40 @@ export function ResearchTrajectoryPage() {
     if (!snapshot) return;
     const next = new URLSearchParams(params);
     next.set("branch", snapshot.snapshot_id);
-    next.set("sibling", String(snapshot.best_sibling_index));
+    const sibling =
+      snapshot.siblings.find(
+        (candidate) => candidate.index === snapshot.best_sibling_index,
+      ) ??
+      snapshot.siblings[0] ??
+      null;
+    if (sibling) next.set("sibling", String(sibling.index));
+    else next.delete("sibling");
+    const actionId = defaultBranchActionId(snapshot, sibling);
+    if (actionId) next.set("action", actionId);
+    else next.delete("action");
     setParams(next);
   }
 
   function selectSibling(index: number) {
     const next = new URLSearchParams(params);
     next.set("sibling", String(index));
+    const sibling =
+      selectedSnapshot?.siblings.find(
+        (candidate) => candidate.index === index,
+      ) ?? null;
+    if (selectedSnapshot && sibling) {
+      const actionId = defaultBranchActionId(selectedSnapshot, sibling);
+      if (actionId) next.set("action", actionId);
+    }
+    setParams(next);
+  }
+
+  function selectBranchAction(actionId: string, siblingIndex?: number) {
+    const next = new URLSearchParams(params);
+    next.set("action", actionId);
+    if (siblingIndex !== undefined) {
+      next.set("sibling", String(siblingIndex));
+    }
     setParams(next);
   }
 
@@ -250,20 +296,28 @@ export function ResearchTrajectoryPage() {
             <div className="research-trajectory-toolbar">
               <div className="trajectory-toolbar-main">
                 <div className="trajectory-result">
-                  <span>
-                    {formatPercent(trajectory.initial_exact_rate)} →{" "}
-                    {formatPercent(trajectory.final_exact_rate)}
-                  </span>
-                  <span>
-                    Level {trajectory.reached_level} of{" "}
-                    {trajectory.maximum_level}
-                  </span>
-                  <span>{trajectory.updates_completed} updates</span>
+                  {trajectory.initial_exact_rate != null &&
+                  trajectory.final_exact_rate != null ? (
+                    <span>
+                      {formatPercent(trajectory.initial_exact_rate)} →{" "}
+                      {formatPercent(trajectory.final_exact_rate)}
+                    </span>
+                  ) : null}
+                  {trajectory.reached_level != null &&
+                  trajectory.maximum_level != null ? (
+                    <span>
+                      Level {trajectory.reached_level} of{" "}
+                      {trajectory.maximum_level}
+                    </span>
+                  ) : null}
+                  {trajectory.updates_completed != null ? (
+                    <span>{trajectory.updates_completed} updates</span>
+                  ) : null}
                 </div>
                 {track === "branches" && branchSnapshots.length ? (
                   <label className="branch-snapshot-select">
-                    <span>Checkpoint</span>
                     <select
+                      aria-label="Checkpoint"
                       value={selectedSnapshot?.snapshot_id ?? ""}
                       onChange={(event) =>
                         selectSnapshot(event.currentTarget.value)
@@ -366,21 +420,20 @@ export function ResearchTrajectoryPage() {
                 />
               </div>
             ) : null}
-            {track === "branches" && selectedSnapshot && selectedSibling ? (
+            {track === "branches" && selectedSnapshot ? (
               <ResearchBranchWorkspace
                 snapshot={selectedSnapshot}
                 selectedSibling={selectedSibling}
+                selectedActionId={selectedActionId}
                 view={view}
                 selectSibling={selectSibling}
+                selectAction={selectBranchAction}
               />
             ) : null}
             {track === "branches" && !branchSnapshots.length ? (
               <div className="research-branch-empty">
                 <h2>No saved branches</h2>
-                <p>
-                  Workload revision @2 did not persist sibling responses. New
-                  runs save one K=4 group per domain at every evaluation.
-                </p>
+                <p>Branch steps appear after the first collection group.</p>
               </div>
             ) : null}
           </div>
@@ -393,8 +446,9 @@ export function ResearchTrajectoryPage() {
 export function buildTrajectorySteps(
   trajectory: ResearchTrajectory,
 ): TrajectoryStep[] {
-  const steps: TrajectoryStep[] = [
-    {
+  const steps: TrajectoryStep[] = [];
+  if (trajectory.initial_exact_rate != null) {
+    steps.push({
       id: "baseline",
       kind: "baseline",
       title: "Baseline",
@@ -402,8 +456,8 @@ export function buildTrajectorySteps(
       level: 0,
       exactRate: trajectory.initial_exact_rate,
       levelObservations: trajectory.initial_by_level,
-    },
-  ];
+    });
+  }
   for (const checkpoint of trajectory.checkpoints) {
     steps.push({
       id: `update-${checkpoint.update}`,
@@ -419,15 +473,17 @@ export function buildTrajectorySteps(
       ),
     });
   }
-  steps.push({
-    id: "final",
-    kind: "final",
-    title: "Final policy",
-    update: trajectory.updates_completed,
-    level: trajectory.reached_level,
-    exactRate: trajectory.final_exact_rate,
-    levelObservations: trajectory.final_by_level,
-  });
+  if (trajectory.final_exact_rate != null) {
+    steps.push({
+      id: "final",
+      kind: "final",
+      title: "Final policy",
+      update: trajectory.updates_completed ?? 0,
+      level: trajectory.reached_level ?? 0,
+      exactRate: trajectory.final_exact_rate,
+      levelObservations: trajectory.final_by_level,
+    });
+  }
   return steps;
 }
 
@@ -439,7 +495,7 @@ function buildTrajectoryFlow(
   const laneWidth = 250;
   const rowHeight = 154;
   const nodes: ResearchFlowNode[] = [];
-  for (let level = 0; level <= trajectory.maximum_level; level += 1) {
+  for (let level = 0; level <= (trajectory.maximum_level ?? 0); level += 1) {
     nodes.push({
       id: `lane-${level}`,
       type: "lane",
@@ -449,7 +505,8 @@ function buildTrajectoryFlow(
       draggable: false,
       data: {
         title: `Level ${level}`,
-        detail: level <= trajectory.reached_level ? "Reached" : "Not reached",
+        detail:
+          level <= (trajectory.reached_level ?? 0) ? "Reached" : "Not reached",
         level,
       },
     });
@@ -477,7 +534,7 @@ function buildTrajectoryFlow(
               }`
             : step.kind === "baseline"
               ? "Fixed suite"
-              : friendlyStatus(trajectory.stop_reason),
+              : friendlyStatus(trajectory.stop_reason ?? "Complete"),
         exactRate: step.exactRate,
         promotedTo: step.promotion?.to_level,
         level: step.level,
@@ -653,7 +710,7 @@ function TrajectoryInspector({
             />
             <Fact
               label="Mastery"
-              value={`${checkpoint.mastery_streak ?? 0} / 2 windows`}
+              value={`${checkpoint.mastery_streak ?? 0} windows`}
             />
             <Fact
               label="Policy updates"
@@ -692,7 +749,9 @@ function TrajectoryInspector({
           </strong>
           <small>
             {step.promotion.mastery_windows} mastery windows · minimum domain{" "}
-            {formatPercent(step.promotion.minimum_domain_exact_rate)}
+            {step.promotion.minimum_domain_exact_rate === undefined
+              ? "—"
+              : formatPercent(step.promotion.minimum_domain_exact_rate)}
           </small>
         </div>
       ) : null}
@@ -700,21 +759,25 @@ function TrajectoryInspector({
         <dl className="trajectory-step-facts final">
           <Fact
             label="Exact gain"
-            value={`${trajectory.exact_gain >= 0 ? "+" : ""}${(
-              trajectory.exact_gain * 100
+            value={`${(trajectory.exact_gain ?? 0) >= 0 ? "+" : ""}${(
+              (trajectory.exact_gain ?? 0) * 100
             ).toFixed(1)} pts`}
           />
           <Fact
-            label="Completions"
-            value={trajectory.total_sampled_completions.toLocaleString()}
+            label={trajectory.multi_step ? "Actions" : "Completions"}
+            value={(
+              trajectory.total_sampled_actions ??
+              trajectory.total_sampled_completions ??
+              0
+            ).toLocaleString()}
           />
           <Fact
             label="RL signal"
-            value={formatPercent(trajectory.informative_group_rate)}
+            value={formatOptionalPercent(trajectory.informative_group_rate)}
           />
           <Fact
             label="Teacher fallback"
-            value={formatPercent(trajectory.teacher_fallback_rate)}
+            value={formatOptionalPercent(trajectory.teacher_fallback_rate)}
           />
         </dl>
       ) : null}
@@ -745,7 +808,7 @@ function DomainResults({
 }) {
   return (
     <div className="trajectory-domain-results">
-      {Object.entries(observation.per_domain).map(([domain, result]) => (
+      {Object.entries(observation.per_domain ?? {}).map(([domain, result]) => (
         <div key={domain}>
           <span>{friendlyStatus(domain)}</span>
           <strong>{formatPercent(result.exact_rate)}</strong>
