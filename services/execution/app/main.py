@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 import psycopg
@@ -115,15 +116,37 @@ artifact_store = ArtifactStore()
 judge_provider = DeterministicJudgeFixture()
 
 WORKLOAD_PROFILES = {
-    "cad.session@1": {"trust_class": "PUBLIC_CANDIDATE", "network": "disabled"},
-    "cad.action@1": {"trust_class": "PUBLIC_CANDIDATE", "network": "disabled"},
-    "cad.geometry-verify@1": {"trust_class": "TRUSTED_EVIDENCE", "network": "disabled"},
-    "cad.canonical-render@1": {"trust_class": "TRUSTED_EVIDENCE", "network": "disabled"},
-    "cad.proof-bundle@1": {"trust_class": "TRUSTED_EVIDENCE", "network": "disabled"},
-    "judge.multimodal-rubric@1": {"trust_class": "ISOLATED_JUDGE", "network": "disabled"},
-    "judge.branch-group@1": {"trust_class": "ISOLATED_JUDGE", "network": "disabled"},
+    "cad.session@1": {
+        "trust_class": "PUBLIC_CANDIDATE",
+        "candidate_network": "NONE",
+    },
+    "cad.action@1": {
+        "trust_class": "PUBLIC_CANDIDATE",
+        "candidate_network": "NONE",
+    },
+    "cad.geometry-verify@1": {
+        "trust_class": "TRUSTED_EVIDENCE",
+        "candidate_network": "NOT_APPLICABLE",
+    },
+    "cad.canonical-render@1": {
+        "trust_class": "TRUSTED_EVIDENCE",
+        "candidate_network": "NOT_APPLICABLE",
+    },
+    "cad.proof-bundle@1": {
+        "trust_class": "TRUSTED_EVIDENCE",
+        "candidate_network": "NOT_APPLICABLE",
+    },
+    "judge.multimodal-rubric@1": {
+        "trust_class": "ISOLATED_JUDGE",
+        "provider_access": "DETERMINISTIC_FIXTURE_ONLY",
+    },
+    "judge.branch-group@1": {
+        "trust_class": "ISOLATED_JUDGE",
+        "provider_access": "DETERMINISTIC_FIXTURE_ONLY",
+    },
 }
 JUDGE_PROVIDERS = {"DeterministicJudgeFixture": judge_provider}
+EXECUTION_CONCURRENCY = int(os.getenv("EXECUTION_CONCURRENCY", "1"))
 
 
 def _wait_for_dependencies() -> None:
@@ -189,20 +212,43 @@ def _retryable_worker_exception(exc: Exception) -> bool:
     return False
 
 
-def _run_operation(
+@dataclass(frozen=True)
+class ActivityClaim:
+    job_id: str
+    attempt_id: str
+    attempt_number: int
+    lease_owner: str
+    fencing_token: int
+    max_attempts: int
+
+
+ACTIVITY_LEASE_SECONDS = 300
+ACTIVITY_MAX_ATTEMPTS = 3
+
+
+def _operation_failure(exc: Exception, *, retryable: bool) -> dict[str, Any]:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        code = str(detail.get("code", "REQUEST_REJECTED"))
+        failure_class = "CALLER_OR_PRECONDITION"
+    else:
+        code = type(exc).__name__
+        failure_class = "PLATFORM_TRANSIENT" if retryable else "PLATFORM_TERMINAL"
+    return {
+        "code": code,
+        "failure_class": failure_class,
+        "retryable": retryable,
+    }
+
+
+def _prepare_operation(
     request: OperationEnvelope,
+    *,
     operation_type: str,
     profile: str,
-    worker: Callable[[Any], dict[str, Any]],
-    *,
-    simulate_infra_retry: bool = False,
-) -> dict[str, Any]:
-    operation_input = _validate_request_digest(request, operation_type)
-
-    # Persist the idempotency intent before touching runtime state. The operation
-    # row is also the serialization lock: a concurrent replay waits for the
-    # active worker, while a replay after a process crash can safely resume the
-    # rolled-back worker transaction.
+    operation_input: dict[str, Any],
+    simulate_infra_retry: bool,
+) -> tuple[dict[str, Any] | None, ActivityClaim | None]:
     with connection() as conn:
         conn.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
@@ -211,7 +257,9 @@ def _run_operation(
         existing = conn.execute(
             """
             SELECT operation_id, request_digest, status, result
-            FROM operations WHERE idempotency_key = %s FOR UPDATE
+            FROM operations
+            WHERE idempotency_key = %s
+            FOR UPDATE
             """,
             (request.idempotency_key,),
         ).fetchone()
@@ -227,86 +275,77 @@ def _run_operation(
             if existing["request_digest"] != request.request_digest:
                 raise HTTPException(
                     status_code=409,
-                    detail={"code": "IDEMPOTENCY_CONFLICT", "operation_id": request.operation_id},
+                    detail={
+                        "code": "IDEMPOTENCY_CONFLICT",
+                        "operation_id": request.operation_id,
+                    },
                 )
             if existing["result"] is not None:
-                return existing["result"]
+                return existing["result"], None
             if existing["status"] == "FAILED":
                 raise HTTPException(
                     status_code=409,
                     detail={"code": "OPERATION_FAILED", "operation_id": request.operation_id},
                 )
             job = conn.execute(
-                "SELECT * FROM jobs WHERE operation_id = %s",
-                (existing["operation_id"],),
+                "SELECT *, now() AS database_now FROM jobs WHERE operation_id = %s FOR UPDATE",
+                (request.operation_id,),
             ).fetchone()
-            attempt = conn.execute(
+            if (
+                job["status"] in {"LEASED", "RUNNING"}
+                and job["lease_expires_at"] is not None
+                and job["lease_expires_at"] > job["database_now"]
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "OPERATION_IN_PROGRESS",
+                        "operation_id": request.operation_id,
+                    },
+                )
+            if job["next_eligible_at"] > job["database_now"]:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "OPERATION_BACKOFF_ACTIVE",
+                        "operation_id": request.operation_id,
+                    },
+                )
+            latest = conn.execute(
                 """
-                SELECT * FROM attempts WHERE job_id = %s
-                ORDER BY attempt_number DESC LIMIT 1
+                SELECT * FROM attempts
+                WHERE job_id = %s
+                ORDER BY attempt_number DESC
+                LIMIT 1
+                FOR UPDATE
                 """,
                 (job["job_id"],),
             ).fetchone()
+            if latest and latest["status"] == "RUNNING":
+                conn.execute(
+                    """
+                    UPDATE attempts
+                    SET status = 'STALE_RESULT',
+                        outcome = 'STALE_RESULT',
+                        failure_class = 'LOST_LEASE',
+                        completed_at = now()
+                    WHERE attempt_id = %s
+                    """,
+                    (latest["attempt_id"],),
+                )
+            attempt_number = (latest["attempt_number"] if latest else 0) + 1
             job_id = job["job_id"]
-            if existing["status"] == "RETRYABLE":
-                attempt_number = attempt["attempt_number"] + 1
-                if attempt_number > job["max_attempts"]:
-                    conn.execute(
-                        "UPDATE operations SET status = 'FAILED' WHERE operation_id = %s",
-                        (request.operation_id,),
-                    )
-                    conn.execute(
-                        "UPDATE jobs SET status = 'INFRA_FAILED' WHERE job_id = %s",
-                        (job_id,),
-                    )
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "code": "OPERATION_RETRIES_EXHAUSTED",
-                            "operation_id": request.operation_id,
-                        },
-                    )
-                attempt_id = make_id("attempt")
-                fencing_token = attempt_number
-                conn.execute(
-                    """
-                    INSERT INTO attempts(
-                      attempt_id, job_id, attempt_number, fencing_token, status, cost
-                    ) VALUES (%s, %s, %s, %s, 'RUNNING', %s)
-                    """,
-                    (
-                        attempt_id,
-                        job_id,
-                        attempt_number,
-                        fencing_token,
-                        Jsonb({"cpu_seconds": 0.02, "retry_cost": 0.01}),
-                    ),
-                )
-                conn.execute(
-                    """
-                    UPDATE jobs SET status = 'RUNNING', attempt_count = %s,
-                      fencing_token = %s, updated_at = now() WHERE job_id = %s
-                    """,
-                    (attempt_number, fencing_token, job_id),
-                )
-                conn.execute(
-                    """
-                    UPDATE operations SET status = 'RUNNING', updated_at = now()
-                    WHERE operation_id = %s
-                    """,
-                    (request.operation_id,),
-                )
-            else:
-                attempt_id = attempt["attempt_id"]
-                attempt_number = attempt["attempt_number"]
-                fencing_token = attempt["fencing_token"]
+            max_attempts = job["max_attempts"]
+            fencing_token = job["fencing_token"] + 1
         else:
             job_id = make_id("job")
+            max_attempts = ACTIVITY_MAX_ATTEMPTS
             conn.execute(
                 """
                 INSERT INTO operations(
-                  operation_id, idempotency_key, request_digest, operation_type, status, request
-                ) VALUES (%s, %s, %s, %s, 'RUNNING', %s)
+                  operation_id, idempotency_key, request_digest,
+                  operation_type, status, request
+                ) VALUES (%s, %s, %s, %s, 'AUTHORIZED', %s)
                 """,
                 (
                     request.operation_id,
@@ -318,157 +357,425 @@ def _run_operation(
             )
             conn.execute(
                 """
-                INSERT INTO jobs(job_id, operation_id, profile, status, max_attempts)
-                VALUES (%s, %s, %s, 'RUNNING', 3)
+                INSERT INTO jobs(
+                  job_id, operation_id, profile, status, max_attempts,
+                  retry_policy_id, deadline_at
+                ) VALUES (
+                  %s, %s, %s, 'QUEUED', %s,
+                  'bounded-exponential@1', now() + interval '10 minutes'
+                )
                 """,
-                (job_id, request.operation_id, profile),
+                (job_id, request.operation_id, profile, max_attempts),
             )
-
             if simulate_infra_retry:
-                failed_attempt_id = make_id("attempt")
                 conn.execute(
                     """
                     INSERT INTO attempts(
-                      attempt_id, job_id, attempt_number, fencing_token, status, outcome, failure,
-                      cost, completed_at
-                    ) VALUES (%s, %s, 1, 1, 'INFRA_FAILED', 'INFRA_FAILED', %s, %s, now())
+                      attempt_id, job_id, attempt_number, fencing_token,
+                      status, outcome, failure, failure_class, cost,
+                      usage, completed_at
+                    ) VALUES (
+                      %s, %s, 1, 1, 'INFRA_FAILED', 'INFRA_FAILED',
+                      %s, 'PLATFORM_TRANSIENT', %s, %s, now()
+                    )
                     """,
                     (
-                        failed_attempt_id,
+                        make_id("attempt"),
                         job_id,
-                        Jsonb({"code": "FIXTURE_WORKER_LOST", "retryable": True}),
-                        Jsonb({"cpu_seconds": 0.01, "retry_cost": 0.01}),
+                        Jsonb(
+                            {
+                                "code": "FIXTURE_WORKER_LOST",
+                                "failure_class": "PLATFORM_TRANSIENT",
+                                "retryable": True,
+                            }
+                        ),
+                        Jsonb({"kind": "MEASURED", "wall_seconds": 0}),
+                        Jsonb({}),
                     ),
                 )
-                conn.execute("UPDATE jobs SET attempt_count = 1 WHERE job_id = %s", (job_id,))
-
             attempt_number = 2 if simulate_infra_retry else 1
             fencing_token = attempt_number
-            attempt_id = make_id("attempt")
-            conn.execute(
-                """
-                INSERT INTO attempts(
-                  attempt_id, job_id, attempt_number, fencing_token, status, cost
-                ) VALUES (%s, %s, %s, %s, 'RUNNING', %s)
-                """,
-                (
-                    attempt_id,
-                    job_id,
-                    attempt_number,
-                    fencing_token,
-                    Jsonb({"cpu_seconds": 0.02, "retry_cost": 0}),
-                ),
-            )
+
+        if attempt_number > max_attempts:
             conn.execute(
                 """
                 UPDATE jobs
-                SET attempt_count = %s, fencing_token = %s, updated_at = now()
+                SET status = 'INFRA_FAILED',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = now()
                 WHERE job_id = %s
                 """,
-                (attempt_number, fencing_token, job_id),
+                (job_id,),
             )
-
-    try:
-        with connection() as conn:
-            locked = conn.execute(
+            conn.execute(
                 """
-                SELECT status, result FROM operations
-                WHERE operation_id = %s FOR UPDATE
+                UPDATE operations SET status = 'FAILED', updated_at = now()
+                WHERE operation_id = %s
                 """,
                 (request.operation_id,),
-            ).fetchone()
-            if locked["result"] is not None:
-                return locked["result"]
-            if locked["status"] == "FAILED":
-                raise HTTPException(
-                    status_code=409,
-                    detail={"code": "OPERATION_FAILED", "operation_id": request.operation_id},
-                )
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "OPERATION_RETRIES_EXHAUSTED",
+                    "operation_id": request.operation_id,
+                },
+            )
 
-            result = worker(conn)
-            if result.get("verification_run_id") and result.get("steps"):
-                for step in result["steps"]:
-                    conn.execute(
-                        """
-                        INSERT INTO accepted_step_results(
-                          accepted_step_result_id, operation_id, verification_run_id, step_id,
-                          result_digest, result
-                        ) VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (verification_run_id, step_id) DO NOTHING
-                        """,
-                        (
-                            make_id("accepted_step"),
-                            request.operation_id,
-                            result["verification_run_id"],
-                            step["step_id"],
-                            canonical_digest(step),
-                            Jsonb(step),
-                        ),
-                    )
+        lease_owner = make_id("activity_claim")
+        attempt_id = make_id("attempt")
+        conn.execute(
+            """
+            INSERT INTO attempts(
+              attempt_id, job_id, attempt_number, fencing_token,
+              status, lease_owner, cost, usage
+            ) VALUES (%s, %s, %s, %s, 'RUNNING', %s, %s, %s)
+            """,
+            (
+                attempt_id,
+                job_id,
+                attempt_number,
+                fencing_token,
+                lease_owner,
+                Jsonb({"kind": "PENDING_MEASUREMENT"}),
+                Jsonb({}),
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'RUNNING',
+                attempt_count = %s,
+                lease_owner = %s,
+                lease_expires_at = now() + (%s * interval '1 second'),
+                fencing_token = %s,
+                updated_at = now()
+            WHERE job_id = %s
+            """,
+            (
+                attempt_number,
+                lease_owner,
+                ACTIVITY_LEASE_SECONDS,
+                fencing_token,
+                job_id,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE operations SET status = 'RUNNING', updated_at = now()
+            WHERE operation_id = %s
+            """,
+            (request.operation_id,),
+        )
+        return (
+            None,
+            ActivityClaim(
+                job_id=job_id,
+                attempt_id=attempt_id,
+                attempt_number=attempt_number,
+                lease_owner=lease_owner,
+                fencing_token=fencing_token,
+                max_attempts=max_attempts,
+            ),
+        )
 
-            result["operation"] = {
-                "operation_id": request.operation_id,
-                "job_id": job_id,
-                "attempt_count": attempt_number,
-                "fencing_token": fencing_token,
-                "duplicate": False,
-            }
-            result_digest = canonical_digest(result)
-            conn.execute(
-                """
-                UPDATE attempts SET status = 'SUCCEEDED', outcome = 'SUCCEEDED',
-                  completed_at = now() WHERE attempt_id = %s
-                """,
-                (attempt_id,),
+
+def _assert_step_result(
+    conn: Any,
+    *,
+    operation_id: str,
+    verification_run_id: str,
+    step: dict[str, Any],
+) -> None:
+    result_digest = canonical_digest(step)
+    existing = conn.execute(
+        """
+        SELECT operation_id, result_digest, result
+        FROM accepted_step_results
+        WHERE verification_run_id = %s AND step_id = %s
+        FOR UPDATE
+        """,
+        (verification_run_id, step["step_id"]),
+    ).fetchone()
+    if existing:
+        if (
+            existing["operation_id"] != operation_id
+            or existing["result_digest"] != result_digest
+            or existing["result"] != step
+        ):
+            raise RuntimeError("accepted verification step replay conflicts with immutable result")
+        return
+    conn.execute(
+        """
+        INSERT INTO accepted_step_results(
+          accepted_step_result_id, operation_id, verification_run_id,
+          step_id, result_digest, result
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            make_id("accepted_step"),
+            operation_id,
+            verification_run_id,
+            step["step_id"],
+            result_digest,
+            Jsonb(step),
+        ),
+    )
+
+
+def _accept_activity_result(
+    conn: Any,
+    *,
+    request: OperationEnvelope,
+    claim: ActivityClaim,
+    result: dict[str, Any],
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    current = conn.execute(
+        """
+        SELECT j.status, j.lease_owner, j.lease_expires_at,
+          j.fencing_token, o.result, now() AS database_now
+        FROM jobs j
+        JOIN operations o ON o.operation_id = j.operation_id
+        WHERE j.job_id = %s
+        FOR UPDATE OF j, o
+        """,
+        (claim.job_id,),
+    ).fetchone()
+    if current["result"] is not None:
+        if canonical_digest(current["result"]) != canonical_digest(result):
+            raise RuntimeError("operation replay produced a divergent accepted result")
+        return current["result"]
+    if (
+        current["status"] != "RUNNING"
+        or current["lease_owner"] != claim.lease_owner
+        or current["fencing_token"] != claim.fencing_token
+        or current["lease_expires_at"] <= current["database_now"]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "STALE_ACTIVITY_RESULT", "operation_id": request.operation_id},
+        )
+    if result.get("verification_run_id") and result.get("steps"):
+        for step in result["steps"]:
+            _assert_step_result(
+                conn,
+                operation_id=request.operation_id,
+                verification_run_id=result["verification_run_id"],
+                step=step,
             )
-            conn.execute(
-                """
-                UPDATE jobs SET status = 'SUCCEEDED', result = %s, updated_at = now()
-                WHERE job_id = %s
-                """,
-                (Jsonb(result), job_id),
-            )
-            conn.execute(
-                """
-                UPDATE operations SET status = 'SUCCEEDED', result = %s, result_digest = %s,
-                  updated_at = now() WHERE operation_id = %s
-                """,
-                (Jsonb(result), result_digest, request.operation_id),
-            )
-            return result
-    except Exception as exc:
-        # Worker mutations rolled back. Persist the failure separately so a
-        # rejected operation cannot remain permanently RUNNING.
-        retryable = _retryable_worker_exception(exc)
-        can_retry = retryable and attempt_number < 3
-        attempt_status = "INFRA_FAILED" if retryable else "VERIFIER_FAILED"
-        with connection() as conn:
-            conn.execute(
-                """
-                UPDATE attempts SET status = %s, outcome = %s,
-                  failure = %s, completed_at = now() WHERE attempt_id = %s
-                """,
-                (
-                    attempt_status,
-                    attempt_status,
-                    Jsonb(
-                        {
-                            "code": type(exc).__name__,
-                            "message": str(exc),
-                            "retryable": can_retry,
-                        }
-                    ),
-                    attempt_id,
+    result["operation"] = {
+        "operation_id": request.operation_id,
+        "job_id": claim.job_id,
+        "attempt_count": claim.attempt_number,
+        "fencing_token": claim.fencing_token,
+        "duplicate": False,
+    }
+    result_digest = canonical_digest(result)
+    usage = {
+        "kind": "MEASURED_PROCESS_WALL",
+        "wall_seconds": round(elapsed_seconds, 6),
+    }
+    updated = conn.execute(
+        """
+        UPDATE attempts
+        SET status = 'SUCCEEDED',
+            outcome = 'SUCCEEDED',
+            cost = %s,
+            usage = %s,
+            completed_at = now()
+        WHERE attempt_id = %s
+          AND lease_owner = %s
+          AND fencing_token = %s
+          AND status = 'RUNNING'
+        """,
+        (
+            Jsonb({"kind": "MEASURED_PROCESS_WALL", "wall_seconds": usage["wall_seconds"]}),
+            Jsonb(usage),
+            claim.attempt_id,
+            claim.lease_owner,
+            claim.fencing_token,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise RuntimeError("activity attempt lost its acceptance fence")
+    conn.execute(
+        """
+        UPDATE jobs
+        SET status = 'SUCCEEDED',
+            result = %s,
+            result_digest = %s,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            updated_at = now()
+        WHERE job_id = %s
+        """,
+        (Jsonb(result), result_digest, claim.job_id),
+    )
+    conn.execute(
+        """
+        UPDATE operations
+        SET status = 'SUCCEEDED',
+            result = %s,
+            result_digest = %s,
+            updated_at = now()
+        WHERE operation_id = %s
+        """,
+        (Jsonb(result), result_digest, request.operation_id),
+    )
+    return result
+
+
+def _record_activity_failure(
+    *,
+    request: OperationEnvelope,
+    claim: ActivityClaim,
+    exc: Exception,
+    elapsed_seconds: float,
+) -> bool:
+    retryable = _retryable_worker_exception(exc) and not isinstance(exc, HTTPException)
+    can_retry = retryable and claim.attempt_number < claim.max_attempts
+    failure = _operation_failure(exc, retryable=can_retry)
+    attempt_status = (
+        "INFRA_FAILED"
+        if retryable
+        else "CALLER_FAILED"
+        if isinstance(exc, HTTPException)
+        else "PLATFORM_FAILED"
+    )
+    with connection() as conn:
+        current = conn.execute(
+            """
+            SELECT status, lease_owner, fencing_token
+            FROM jobs WHERE job_id = %s FOR UPDATE
+            """,
+            (claim.job_id,),
+        ).fetchone()
+        if (
+            not current
+            or current["status"] != "RUNNING"
+            or current["lease_owner"] != claim.lease_owner
+            or current["fencing_token"] != claim.fencing_token
+        ):
+            return False
+        conn.execute(
+            """
+            UPDATE attempts
+            SET status = %s,
+                outcome = %s,
+                failure = %s,
+                failure_class = %s,
+                cost = %s,
+                usage = %s,
+                completed_at = now()
+            WHERE attempt_id = %s
+              AND lease_owner = %s
+              AND fencing_token = %s
+            """,
+            (
+                attempt_status,
+                attempt_status,
+                Jsonb(failure),
+                failure["failure_class"],
+                Jsonb(
+                    {
+                        "kind": "MEASURED_PROCESS_WALL",
+                        "wall_seconds": round(elapsed_seconds, 6),
+                    }
                 ),
+                Jsonb(
+                    {
+                        "kind": "MEASURED_PROCESS_WALL",
+                        "wall_seconds": round(elapsed_seconds, 6),
+                    }
+                ),
+                claim.attempt_id,
+                claim.lease_owner,
+                claim.fencing_token,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE jobs
+            SET status = %s,
+                next_eligible_at = CASE
+                  WHEN %s THEN now() + (
+                    power(2, LEAST(%s - 1, 6)) * interval '250 milliseconds'
+                  )
+                  ELSE next_eligible_at
+                END,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = now()
+            WHERE job_id = %s
+            """,
+            (
+                "QUEUED" if can_retry else attempt_status,
+                can_retry,
+                claim.attempt_number,
+                claim.job_id,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE operations SET status = %s, updated_at = now()
+            WHERE operation_id = %s
+            """,
+            ("RETRYABLE" if can_retry else "FAILED", request.operation_id),
+        )
+    return can_retry
+
+
+def _run_operation(
+    request: OperationEnvelope,
+    operation_type: str,
+    profile: str,
+    worker: Callable[[Any], dict[str, Any]],
+    *,
+    simulate_infra_retry: bool = False,
+    detached: bool = False,
+) -> dict[str, Any]:
+    operation_input = _validate_request_digest(request, operation_type)
+    accepted, claim = _prepare_operation(
+        request,
+        operation_type=operation_type,
+        profile=profile,
+        operation_input=operation_input,
+        simulate_infra_retry=simulate_infra_retry,
+    )
+    if accepted is not None:
+        return accepted
+    if claim is None:
+        raise RuntimeError("operation preparation returned neither result nor claim")
+    started = time.monotonic()
+    try:
+        if detached:
+            result = worker(None)
+            with connection() as conn:
+                return _accept_activity_result(
+                    conn,
+                    request=request,
+                    claim=claim,
+                    result=result,
+                    elapsed_seconds=time.monotonic() - started,
+                )
+        with connection() as conn:
+            result = worker(conn)
+            return _accept_activity_result(
+                conn,
+                request=request,
+                claim=claim,
+                result=result,
+                elapsed_seconds=time.monotonic() - started,
             )
-            conn.execute(
-                "UPDATE jobs SET status = %s WHERE job_id = %s",
-                ("QUEUED" if can_retry else attempt_status, job_id),
-            )
-            conn.execute(
-                "UPDATE operations SET status = %s, updated_at = now() WHERE operation_id = %s",
-                ("RETRYABLE" if can_retry else "FAILED", request.operation_id),
-            )
+    except Exception as exc:
+        can_retry = _record_activity_failure(
+            request=request,
+            claim=claim,
+            exc=exc,
+            elapsed_seconds=time.monotonic() - started,
+        )
         if can_retry:
             raise HTTPException(
                 status_code=503,
@@ -500,13 +807,23 @@ def health() -> dict[str, Any]:
 
 @app.get("/v1/profiles")
 def profiles() -> dict[str, Any]:
+    with connection() as conn:
+        active = conn.execute(
+            """
+            SELECT count(*) AS count FROM jobs
+            WHERE status IN ('LEASED', 'RUNNING')
+            """
+        ).fetchone()["count"]
     return {
         "execution_provider": "ComposeExecutionProvider",
         "profiles": WORKLOAD_PROFILES,
         "judge_providers": sorted(JUDGE_PROVIDERS),
         "capacity": {
-            "sandbox-cpu": {"total": 4, "available": 4},
-            "render-cpu": {"total": 2, "available": 2},
+            "fixture-worker": {
+                "total": EXECUTION_CONCURRENCY,
+                "active": active,
+                "available": max(0, EXECUTION_CONCURRENCY - active),
+            },
             "external-model-api": {"total": 0, "available": 0},
         },
     }
@@ -519,8 +836,7 @@ def create_session(request: CreateSessionRequest) -> dict[str, Any]:
         session_id = make_id("session")
         cursor_id = make_id("cursor")
         runtime_instance_id = make_id("runtime")
-        session_root = f"/var/lib/equinox/sessions/{session_id}"
-        Path(session_root).mkdir(parents=True, exist_ok=True)
+        session_root = f"logical-fixture://sessions/{session_id}"
         conn.execute(
             """
             INSERT INTO sessions(
@@ -774,8 +1090,7 @@ def fork_snapshot(request: ForkRequest) -> dict[str, Any]:
             session_id = make_id("session")
             cursor_id = make_id("cursor")
             runtime_instance_id = make_id("runtime")
-            session_root = f"/var/lib/equinox/sessions/{session_id}"
-            Path(session_root).mkdir(parents=True, exist_ok=True)
+            session_root = f"logical-fixture://sessions/{session_id}"
             derived_rng = canonical_digest(
                 {"parent": snapshot["rng_state"], "derivation": child.rng_derivation}
             )
@@ -1143,24 +1458,26 @@ def verify_transition(request: VerifyTransitionRequest) -> dict[str, Any]:
         "cad.proof-bundle@1",
         worker,
         simulate_infra_retry=request.simulate_infra_retry,
+        detached=True,
     )
 
 
 @app.post("/v1/verification-runs/rejudge")
 def rejudge(request: RejudgeRequest) -> dict[str, Any]:
     def worker(_conn: Any) -> dict[str, Any]:
-        original = _conn.execute(
-            """
-            SELECT result
-            FROM operations
-            WHERE operation_type = 'verify_transition'
-              AND status = 'SUCCEEDED'
-              AND result->'proof_bundle'->>'digest' = %s
-            ORDER BY created_at
-            LIMIT 1
-            """,
-            (request.proof_bundle_digest,),
-        ).fetchone()
+        with connection() as conn:
+            original = conn.execute(
+                """
+                SELECT result
+                FROM operations
+                WHERE operation_type = 'verify_transition'
+                  AND status = 'SUCCEEDED'
+                  AND result->'proof_bundle'->>'digest' = %s
+                ORDER BY created_at
+                LIMIT 1
+                """,
+                (request.proof_bundle_digest,),
+            ).fetchone()
         if not original:
             raise HTTPException(
                 status_code=404,
@@ -1196,14 +1513,14 @@ def rejudge(request: RejudgeRequest) -> dict[str, Any]:
                 "candidate-render",
                 "geometry-report",
             ],
-                "metrics": {},
-                "failure": None,
-                "cost": {
-                    "judge_tokens": sum(
-                        judge_result["usage"][key] for key in ("input_tokens", "output_tokens")
-                    ),
-                    "credits": judge_result["usage"]["cost"],
-                },
+            "metrics": {},
+            "failure": None,
+            "cost": {
+                "judge_tokens": sum(
+                    judge_result["usage"][key] for key in ("input_tokens", "output_tokens")
+                ),
+                "credits": judge_result["usage"]["cost"],
+            },
         }
         return {
             "verification_run_id": request.verification_run_id,
@@ -1223,7 +1540,13 @@ def rejudge(request: RejudgeRequest) -> dict[str, Any]:
             "geometry_steps_rerun": 0,
         }
 
-    return _run_operation(request, "rejudge", "judge.multimodal-rubric@1", worker)
+    return _run_operation(
+        request,
+        "rejudge",
+        "judge.multimodal-rubric@1",
+        worker,
+        detached=True,
+    )
 
 
 @app.post("/v1/verification-runs/group")
@@ -1353,7 +1676,13 @@ def judge_group(request: GroupJudgeRequest) -> dict[str, Any]:
             ],
         }
 
-    return _run_operation(request, "group_judge", "judge.branch-group@1", worker)
+    return _run_operation(
+        request,
+        "group_judge",
+        "judge.branch-group@1",
+        worker,
+        detached=True,
+    )
 
 
 @app.post("/v1/sessions/cancel")
@@ -1403,9 +1732,11 @@ def capacity() -> dict[str, Any]:
         ).fetchone()["count"]
     return {
         "resource_classes": {
-            "sandbox-cpu": {"capacity": 4, "active": active},
-            "render-cpu": {"capacity": 2, "active": 0},
-            "model-gpu": {"capacity": 0, "active": 0},
+            "fixture-worker": {
+                "capacity": EXECUTION_CONCURRENCY,
+                "active": active,
+                "available": max(0, EXECUTION_CONCURRENCY - active),
+            },
             "external-model-api": {"capacity": 0, "active": 0},
         },
         "live_sessions": sessions,

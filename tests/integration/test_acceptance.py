@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import psycopg
 import pytest
 from equinox_core import canonical_digest
+from fastapi import HTTPException
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
+from services.execution.app.main import (
+    ActivityClaim,
+    CreateSessionRequest,
+    _accept_activity_result,
+    _assert_step_result,
+)
 from services.orchestrator.app.database import connection
 from services.orchestrator.app.science import accept_operation_result
 from services.orchestrator.app.workflow import (
@@ -376,6 +387,149 @@ def test_duplicate_operation_is_single_job_and_conflict_is_rejected() -> None:
 
 
 @pytest.mark.integration
+def test_concurrent_duplicate_delivery_accepts_one_activity_result() -> None:
+    suffix = uuid.uuid4().hex
+    operation_input = {
+        "task_revision": "mounting-plate@sha256:fixture-v1",
+        "scientific_state_id": f"state_concurrent_{suffix}",
+        "lease_owner": "test:concurrent",
+        "rng_state": "seed:1229",
+    }
+    operation_id = f"op_concurrent_{suffix}"
+    payload = {
+        "operation_id": operation_id,
+        "idempotency_key": operation_id,
+        "request_digest": canonical_digest(
+            {"operation_type": "create_session", "input": operation_input}
+        ),
+        "expected_version": 0,
+        "correlation_id": f"run_test_{suffix}",
+        **operation_input,
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(
+            pool.map(
+                lambda _: httpx.post(f"{EXECUTION}/v1/sessions", json=payload, timeout=10),
+                range(2),
+            )
+        )
+
+    assert 200 in {response.status_code for response in responses}
+    assert {response.status_code for response in responses} <= {200, 409}
+    with psycopg.connect(OPS_DSN) as conn:
+        job_id = conn.execute(
+            "SELECT job_id FROM jobs WHERE operation_id = %s", (operation_id,)
+        ).fetchone()[0]
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM attempts WHERE job_id = %s AND status = 'SUCCEEDED'",
+                (job_id,),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+@pytest.mark.integration
+def test_expired_activity_lease_and_divergent_step_replay_are_rejected() -> None:
+    suffix = uuid.uuid4().hex
+    operation_id = f"op_stale_{suffix}"
+    job_id = f"job_stale_{suffix}"
+    attempt_id = f"attempt_stale_{suffix}"
+    lease_owner = f"claim_stale_{suffix}"
+    operation_input = {
+        "task_revision": "mounting-plate@sha256:fixture-v1",
+        "scientific_state_id": f"state_stale_{suffix}",
+        "lease_owner": "test:stale",
+        "rng_state": "seed:1231",
+    }
+    request = CreateSessionRequest(
+        operation_id=operation_id,
+        idempotency_key=operation_id,
+        request_digest=canonical_digest(
+            {"operation_type": "create_session", "input": operation_input}
+        ),
+        expected_version=0,
+        correlation_id=f"run_test_{suffix}",
+        **operation_input,
+    )
+    claim = ActivityClaim(
+        job_id=job_id,
+        attempt_id=attempt_id,
+        attempt_number=1,
+        lease_owner=lease_owner,
+        fencing_token=1,
+        max_attempts=3,
+    )
+    with psycopg.connect(OPS_DSN, row_factory=dict_row) as conn:
+        conn.execute(
+            """
+            INSERT INTO operations(
+              operation_id, idempotency_key, request_digest,
+              operation_type, status, request
+            ) VALUES (%s, %s, %s, 'create_session', 'RUNNING', %s)
+            """,
+            (operation_id, operation_id, request.request_digest, Jsonb(operation_input)),
+        )
+        conn.execute(
+            """
+            INSERT INTO jobs(
+              job_id, operation_id, profile, status, max_attempts, attempt_count,
+              lease_owner, lease_expires_at, fencing_token
+            ) VALUES (%s, %s, 'cad.session@1', 'RUNNING', 3, 1, %s, %s, 1)
+            """,
+            (
+                job_id,
+                operation_id,
+                lease_owner,
+                datetime.now(UTC) - timedelta(seconds=1),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO attempts(
+              attempt_id, job_id, attempt_number, fencing_token,
+              status, lease_owner, cost, usage
+            ) VALUES (%s, %s, 1, 1, 'RUNNING', %s, %s, %s)
+            """,
+            (
+                attempt_id,
+                job_id,
+                lease_owner,
+                Jsonb({"kind": "PENDING_MEASUREMENT"}),
+                Jsonb({}),
+            ),
+        )
+        with pytest.raises(HTTPException) as stale:
+            _accept_activity_result(
+                conn,
+                request=request,
+                claim=claim,
+                result={"cursor_id": "must-not-be-accepted"},
+                elapsed_seconds=0.1,
+            )
+        assert stale.value.detail["code"] == "STALE_ACTIVITY_RESULT"
+        conn.rollback()
+
+        accepted = conn.execute(
+            """
+            SELECT operation_id, verification_run_id, result
+            FROM accepted_step_results
+            ORDER BY created_at
+            LIMIT 1
+            """
+        ).fetchone()
+        divergent = {**accepted["result"], "status": "DIVERGENT_REPLAY"}
+        with pytest.raises(RuntimeError, match="immutable result"):
+            _assert_step_result(
+                conn,
+                operation_id=accepted["operation_id"],
+                verification_run_id=accepted["verification_run_id"],
+                step=divergent,
+            )
+
+
+@pytest.mark.integration
 def test_scientific_acceptance_and_commit_replays_are_idempotent(
     completed_runs: dict[str, dict[str, Any]],
 ) -> None:
@@ -494,10 +648,8 @@ def test_migrations_are_recorded_in_both_authority_schemas() -> None:
             FROM schema_migrations ORDER BY version
             """
         ).fetchall()
-        assert [row[0] for row in operations] == [1, 2]
-        assert all(
-            row[1] and row[2].startswith("sha256:") and not row[3] for row in operations
-        )
+        assert [row[0] for row in operations] == [1, 2, 3]
+        assert all(row[1] and row[2].startswith("sha256:") and not row[3] for row in operations)
 
 
 @pytest.mark.integration
