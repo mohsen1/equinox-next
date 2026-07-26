@@ -16,13 +16,13 @@ typed contracts and conformance evidence.
 ## Product purpose
 
 Equinox Next is a branchable execution and evidence-based verification platform for
-expensive, stateful, long-horizon reinforcement-learning environments. The local
-contract-proof milestone proves the complete CAD lineage and recovery contracts without
-cloud credentials, RunPod access, a GPU, or a real model provider.
+stateful, long-horizon reinforcement-learning environments. Its active research profile
+tests whether restoring several policy continuations from the same meaningful state makes
+post-training more efficient and attributable.
 
-Success means a researcher can reconstruct the exact state, action, proof bundle,
-deterministic checks, model assessment, named rewards, eligibility decision, and
-materialized examples behind one committed policy update.
+Success means a researcher can reconstruct the shared prefix, checkpoint, four restored
+continuations, every action and verifier result, sibling-relative reward, and exact
+materialized examples behind one policy update.
 
 ## Positioning
 
@@ -34,25 +34,32 @@ and trainer-owned optimization separate.
 ## Operating context
 
 Researchers work from a run list into collection batches, iterations, rollout trees,
-proof bundles, and verification DAGs. The first environment is bounded multi-turn CAD
-reconstruction with canonical renders and deterministic geometry reports. PostgreSQL is
-the scientific metadata authority and S3-compatible object storage holds large immutable
-artifacts.
+proof bundles, and verification DAGs. The active environment is multi-step
+micro-repository repair with structured tools and deterministic tests. Task complexity
+changes file count, fault count, dependency depth, and action horizon. CAD remains the
+local contract fixture. PostgreSQL is the scientific metadata authority and
+S3-compatible object storage holds large immutable artifacts.
 
 ## Capabilities and constraints
 
 - The orchestrator alone accepts scientific state and lineage.
 - The execution service owns operational jobs, attempts, leases, runtime cursors, and
   immutable outputs.
-- Local configuration resolves `MockRunPodProvider` and `MockJudgeProvider` only.
+- The credential-free local profile still resolves `MockRunPodProvider` and
+  `MockJudgeProvider` only.
+- Bounded real RunPod experiments are explicit operator actions outside that provider
+  registry and must be observable before launch.
+- Research branch width is static at `K=4`; task complexity adapts independently.
+- Repository actions use a structured protocol. The first proof uses a deterministic
+  simulator and never executes candidate-controlled code.
 - An LLM judge result is stochastic evidence, never ground truth or a reward.
 - Logical state, runtime cursor, environment snapshot, and decision checkpoint are
   separate types.
 - Collection precedes optimization; a committed iteration pins immutable inputs and
   advances policy by compare-and-swap.
 - All application processes run through Docker Compose.
-- The current release target is local contract proof, not CAD research beta or
-  production v1.
+- RunPool sandbox execution is the next isolation integration, not part of the first
+  repository-repair proof.
 
 ## Brand commitments
 
@@ -62,11 +69,14 @@ flat layers, exact alignment, restrained color, and no decorative statistics or 
 
 ## Evidence on hand
 
-The canonical specification is `docs/equinox-next.md`. The previous Equinox repository
-contains CAD execution, renderer, geometry-verifier, append-only lineage, and React Flow
-interaction patterns that can be adapted after contract review. No customer claims,
-benchmark results, production-isolation evidence, or human-aligned judge calibration
-evidence exists for this local milestone.
+The local CAD contract flow proves branch lineage, immutable evidence, retry semantics,
+recovery, and cancellation. A bounded Qwen2.5-Coder-1.5B RunPod experiment proves real
+LoRA training, static four-sample groups, adaptive levels, replay, artifact retention,
+live status ingestion, and teardown. That workload was single-action: it does not yet
+prove restored mid-trajectory branching or long-horizon credit assignment.
+
+No customer claims, production-isolation evidence, or human-aligned judge calibration
+evidence exists.
 
 ## Product principles
 

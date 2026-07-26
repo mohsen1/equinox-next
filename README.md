@@ -1,9 +1,13 @@
 # Equinox Next
 
-Equinox Next is a local contract proof for branchable CAD reinforcement learning. It runs
-entirely in Docker Compose, uses deterministic CAD fixtures, and resolves only
-`MockRunPodProvider` and `MockJudgeProvider`. The Compose profile never contacts RunPod
-or a real judge.
+Equinox Next is a branchable environment and observability platform for long-horizon
+reinforcement learning. The active research profile is multi-step micro-repository repair:
+a policy diagnoses a task, Equinox snapshots the repository and transcript, and four
+isolated continuations compete from the same state.
+
+The local Compose profile remains credential-free and uses deterministic CAD fixtures,
+`MockRunPodProvider`, and `MockJudgeProvider`. Real GPU research is an explicit, bounded
+operator workflow outside that provider registry.
 
 ## Start here
 
@@ -21,7 +25,7 @@ Ports default to `3100` for the dashboard, `8180` for the API, and `9001` for th
 console. Override the first two with `EQUINOX_DASHBOARD_PORT` and `EQUINOX_API_PORT`.
 No cloud credentials are accepted or required.
 
-## Run the bounded RunPod research proof
+## Run bounded RunPod research
 
 `scripts/runpod-rl-proof` is an explicit operator command outside the local provider
 registry. By default it creates one RTX 3090 community worker from RunPod's current
@@ -34,29 +38,23 @@ or active hourly spend.
 ./scripts/runpod-rl-proof
 ```
 
-The remote workload runs a seeded PyTorch REINFORCE ladder for a synthetic, deterministically
-verifiable repair plan. Every update samples static K=4 sibling trajectories. Evaluation
-windows promote the horizon only after the current level reaches the configured mastery
-threshold. One worker runs small, medium, and large cases with maximum horizons of 8, 24,
-and 64 actions. A passing proof requires CUDA execution, increasing horizons, curriculum
-promotion in every case, at least 50 million sampled action decisions, a reward gain of
-at least 0.20 per case, and final step reward of at least 0.85 per case. After RunPod no
-longer lists the worker, the command writes a sanitized receipt under
-`var/research-proofs/` and records it on the System page.
+The current model-repair workload fine-tunes Qwen2.5-Coder-1.5B-Instruct with LoRA. It
+uses static four-sample groups, deterministic verification, adaptive levels, replay, live
+progress ingestion, retained adapters, and verified teardown. The completed proof is
+training-path evidence: its answers are single actions and do not yet establish restored
+mid-trajectory branching.
 
-This proves authenticated scheduling, bounded GPU execution, multi-turn policy
-optimization at increasing action horizons, adaptive curriculum metrics, receipt
-ingestion, and teardown. The repair plan is synthetic and its per-action verifier signal
-is deliberately simple; it does not prove long-horizon credit assignment by a
-large-model policy, CAD reconstruction quality, RunPool sandbox execution, or a
-production RunPod provider adapter.
+The next workload replaces those independent answers with a structured multi-step
+repository environment. It collects a shared diagnostic prefix without gradient, saves
+an exact logical checkpoint, restores four continuations, and applies sibling-relative
+credit only after the branch. The dashboard observer is a launch prerequisite.
 
-The dashboard also exposes typed contracts for SQLite data repair, filesystem and CLI
-debugging, and micro-repository code repair. Those environments include adaptive
-difficulty configuration but remain launch-gated until a RunPool sandbox adapter is
-connected. Branch-aware runs keep a static width of four.
+Repository complexity adapts file count, fault count, dependency depth, and horizon.
+Branch width remains static at four. The first proof uses a deterministic in-memory
+repository simulator; arbitrary model-generated code and shell commands are not executed.
+A conformant RunPool sandbox is the next environment integration.
 
-## Inspect the proof
+## Inspect trajectories
 
 From `/runs`, open **Local branch-aware CAD proof**, then select **Trace** and open its
 trajectory. The explorer shows one shared three-action prefix, one logical snapshot and
@@ -73,6 +71,11 @@ proof bundle, a real verification DAG record, judge attempt provenance, metric
 observations, and named reward signals. The committed iteration input lists the exact
 trees, proofs, verification runs, judge results, rewards, eligibility decisions, and
 materializer digest used for the policy update.
+
+Real research runs appear in the same run list while progress is ingested. Their
+trajectory view exposes captured model responses and branch samples. The repository
+profile extends that view with one shared-prefix lane, a checkpoint, and four multi-step
+continuation lanes so each action and verifier result is selectable.
 
 ## Rejudge stored evidence
 
@@ -122,9 +125,9 @@ records in separate schemas and roles; MinIO stores immutable artifact bytes. Op
 inputs and digests make restart replay and duplicate delivery inspectable. Snapshot
 fidelity is honestly reported as `logical_restore`, not process or kernel restoration.
 
-This slice proves the production contracts with deterministic fixtures. It does not claim
+The CAD slice proves the platform contracts with deterministic fixtures. It does not claim
 that the mock judge is human-aligned, run a real CAD kernel, or provide production
-container isolation. Those boundaries and their triggers are recorded in
+container isolation. The repository research profile tests learning behavior without
+changing those claims. Boundaries and triggers are recorded in
 [PLAN.md](PLAN.md), [the execution-boundary ADR](docs/adr/0001-local-docker-execution-boundary.md),
-and [the judge-integrity ADR](docs/adr/0002-local-judge-integrity.md). The next production
-integration is a calibrated strong multimodal judge in a separate CAD research profile.
+and [the judge-integrity ADR](docs/adr/0002-local-judge-integrity.md).

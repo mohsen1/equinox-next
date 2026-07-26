@@ -1,16 +1,36 @@
-# Goal: build the Equinox Next local CAD contract proof
+# Goal: prove branch-aware post-training on long-horizon software repair
 
-You are the implementation agent for Equinox Next. Build the **local contract-proof
-milestone** described by the canonical [Equinox Next specification](equinox-next.md).
-Read that document in full before planning or writing code.
+Equinox Next is a branchable environment and observability platform for reinforcement
+learning over stateful, verifiable tasks. The active research milestone is a real
+multi-step micro-repository repair loop.
 
-Keep working across coherent, reviewable increments until the local acceptance flow passes
-from a clean checkout or an external blocker requires the user. Do not stop after
-scaffolding, a design mock, a static demo, or a happy-path API.
+The milestone must:
 
-The local milestone proves the contracts for a future research profile that uses a real
-multi-turn policy and a strong multimodal LLM judge. It must not contact RunPod or a real
-model provider.
+1. Give a model structured repository tools and a deterministic verifier.
+2. Collect a genuine shared action prefix, snapshot the repository and transcript, and
+   restore four isolated continuations from that checkpoint.
+3. Apply sibling-relative credit only to post-checkpoint actions.
+4. Keep branch width static at `K=4`.
+5. Adapt task complexity from measured performance while replaying earlier levels.
+6. Persist enough step, state, branch, reward, and optimizer lineage to explain a policy
+   update from the dashboard.
+7. Run as a bounded, explicitly requested RunPod experiment with live local observation,
+   artifact retention, and verified teardown.
+8. Support a later matched-budget comparison against faithful independent-prefix GRPO.
+
+The first proof uses a safe deterministic repository simulator. Candidate actions must
+not execute arbitrary generated code or shell commands. A RunPool-backed sandbox is the
+next trust-boundary integration, not a precondition for testing branch-aware credit.
+
+Do not use AWS. Do not increase model size or GPU count until shared-prefix branching is
+observable and produces useful learning signal.
+
+The canonical [Equinox Next specification](docs/equinox-next.md) and the acceptance
+requirements below remain the contract for the completed local CAD fixture. The active
+research profile extends that fixture; it does not reinterpret or weaken its accepted
+evidence.
+
+## Completed local contract baseline
 
 ## Mission
 
