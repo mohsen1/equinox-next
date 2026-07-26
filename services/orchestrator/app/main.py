@@ -152,6 +152,11 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "teacher_fallback_rate": result.get("teacher_fallback_rate"),
         "policy_update_count": result.get("policy_update_count"),
         "teacher_update_count": result.get("teacher_update_count"),
+        "checkpoint_rate": level_result.get("checkpoint_rate", result.get("checkpoint_rate")),
+        "total_sampled_actions": result.get("total_sampled_actions"),
+        "multi_step": result.get("multi_step"),
+        "restored_continuations": result.get("restored_continuations"),
+        "restored_branching_observed": result.get("restored_branching_observed"),
     }
     return {key: value for key, value in values.items() if value is not None}
 
@@ -162,13 +167,29 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
     history = result.get("history")
     promotions = result.get("promotions")
     branch_snapshots = result.get("branch_snapshots")
+    latest_branch_snapshot = result.get("latest_branch_snapshot")
+    persisted_branch_snapshots = (
+        [item for item in branch_snapshots if isinstance(item, dict)]
+        if isinstance(branch_snapshots, list)
+        else []
+    )
+    if not persisted_branch_snapshots and isinstance(latest_branch_snapshot, dict):
+        persisted_branch_snapshots = [latest_branch_snapshot]
     return {
-        "schema_version": 1,
+        "schema_version": 2 if result.get("multi_step") else 1,
         "branch_width": result.get("branch_width"),
         "complexity_strategy": result.get("complexity_strategy"),
-        "maximum_level": result.get("maximum_complexity_level"),
-        "reached_level": result.get("reached_complexity_level"),
-        "updates_completed": result.get("updates_completed"),
+        "multi_step": result.get("multi_step", False),
+        "restored_continuations": result.get("restored_continuations", False),
+        "prefix_gradient": result.get("prefix_gradient"),
+        "replay_enabled": result.get("replay_enabled"),
+        "environment_revision": result.get("environment_revision"),
+        "verifier_revision": result.get("verifier_revision"),
+        "action_protocol_revision": result.get("action_protocol_revision"),
+        "snapshot_fidelity": result.get("snapshot_fidelity"),
+        "maximum_level": result.get("maximum_complexity_level", result.get("maximum_level")),
+        "reached_level": result.get("reached_complexity_level", result.get("current_level")),
+        "updates_completed": result.get("updates_completed", result.get("update")),
         "initial_exact_rate": result.get("initial_reward"),
         "final_exact_rate": result.get("final_reward"),
         "exact_gain": result.get("reward_gain"),
@@ -183,11 +204,7 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
             if isinstance(promotions, list)
             else []
         ),
-        "branch_snapshots": (
-            [item for item in branch_snapshots if isinstance(item, dict)]
-            if isinstance(branch_snapshots, list)
-            else []
-        ),
+        "branch_snapshots": persisted_branch_snapshots,
         "initial_by_level": initial_by_level if isinstance(initial_by_level, dict) else {},
         "final_by_level": final_by_level if isinstance(final_by_level, dict) else {},
         "policy_update_count": result.get("policy_update_count"),
@@ -195,6 +212,8 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "informative_group_rate": result.get("informative_group_rate"),
         "teacher_fallback_rate": result.get("teacher_fallback_rate"),
         "total_sampled_completions": result.get("total_sampled_completions"),
+        "total_sampled_actions": result.get("total_sampled_actions"),
+        "total_post_branch_actions": result.get("total_post_branch_actions"),
     }
 
 
@@ -1633,10 +1652,13 @@ def get_research_compute_trajectory(execution_id: str) -> dict[str, Any]:
         )
     execution = dict(item)
     proof_result = execution.pop("proof_result")
+    trajectory_source = (
+        proof_result if isinstance(proof_result, dict) else execution.get("progress")
+    )
     return {
         "execution": execution,
         "trajectory": (
-            research_trajectory(proof_result) if isinstance(proof_result, dict) else None
+            research_trajectory(trajectory_source) if isinstance(trajectory_source, dict) else None
         ),
     }
 

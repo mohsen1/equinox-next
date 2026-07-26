@@ -147,3 +147,44 @@ def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
         }
     ]
     assert trajectory["policy_update_count"] == 7
+
+
+def test_research_trajectory_projects_live_multi_step_branch_lineage() -> None:
+    latest_branch = {
+        "schema_version": 2,
+        "snapshot_id": "update-2-snapshot-a",
+        "shared_prefix": {"steps": [{"step_id": "prefix-0"}, {"step_id": "prefix-1"}]},
+        "checkpoint": {
+            "checkpoint_id": "snapshot-a",
+            "fidelity": "logical_restore",
+            "static_branch_width": 4,
+        },
+        "siblings": [
+            {
+                "index": index,
+                "steps": [
+                    {"step_id": f"sibling-{index}-2"},
+                    {"step_id": f"sibling-{index}-3"},
+                ],
+            }
+            for index in range(4)
+        ],
+    }
+
+    trajectory = research_trajectory(
+        {
+            "schema_version": 2,
+            "branch_width": 4,
+            "complexity_strategy": "adaptive",
+            "multi_step": True,
+            "restored_continuations": True,
+            "latest_branch_snapshot": latest_branch,
+            "total_sampled_actions": 34,
+        }
+    )
+
+    assert trajectory["schema_version"] == 2
+    assert trajectory["multi_step"] is True
+    assert trajectory["restored_continuations"] is True
+    assert trajectory["branch_snapshots"] == [latest_branch]
+    assert trajectory["total_sampled_actions"] == 34

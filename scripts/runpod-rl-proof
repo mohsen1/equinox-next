@@ -3,6 +3,7 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 experiment="${EQUINOX_RUNPOD_EXPERIMENT:-sequence-ladder}"
+support_file=""
 case "$experiment" in
   sequence-ladder)
     workload_file="branching_sequence_ladder.py"
@@ -12,6 +13,7 @@ case "$experiment" in
     default_gpu_id="NVIDIA GeForce RTX 3090"
     default_target_runtime_seconds="420"
     default_maximum_lifetime_minutes="15"
+    default_maximum_updates="1200"
     ;;
   model-repair)
     workload_file="model_repair_grpo.py"
@@ -21,13 +23,26 @@ case "$experiment" in
     default_gpu_id="NVIDIA GeForce RTX 3090"
     default_target_runtime_seconds="2700"
     default_maximum_lifetime_minutes="60"
+    default_maximum_updates="1200"
+    ;;
+  repository-repair)
+    workload_file="repository_repair_grpo.py"
+    support_file="repository_repair_env.py"
+    workload_id="repository-repair-restored-continuation-post-training"
+    execution_name="Repository repair post-training"
+    model_id="Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    default_gpu_id="NVIDIA A40"
+    default_target_runtime_seconds="2700"
+    default_maximum_lifetime_minutes="60"
+    default_maximum_updates="80"
     ;;
   *)
-    echo "EQUINOX_RUNPOD_EXPERIMENT must be sequence-ladder or model-repair." >&2
+    echo "EQUINOX_RUNPOD_EXPERIMENT must be sequence-ladder, model-repair, or repository-repair." >&2
     exit 1
     ;;
 esac
 workload_path="$repository_root/research/runpod/$workload_file"
+support_path="$repository_root/research/runpod/$support_file"
 remote_runner_path="$repository_root/research/runpod/remote_runner.sh"
 receipt_directory="$repository_root/var/research-proofs"
 api_root="${EQUINOX_API_ROOT:-http://127.0.0.1:8180}"
@@ -49,6 +64,9 @@ command -v base64 >/dev/null
 command -v python3 >/dev/null
 test -f "$workload_path"
 test -f "$remote_runner_path"
+if [[ -n "$support_file" ]]; then
+  test -f "$support_path"
+fi
 template_response="$(runpodctl template get "$template_id")"
 image="$(jq -r '.imageName // empty' <<<"$template_response")"
 if [[ -z "$image" ]]; then
@@ -81,7 +99,12 @@ if ((target_runtime_seconds + boot_timeout_seconds + 120 > maximum_lifetime_minu
 fi
 workload_source_b64="$(base64 <"$workload_path" | tr -d '\n')"
 remote_runner_source_b64="$(base64 <"$remote_runner_path" | tr -d '\n')"
-docker_args="bash -lc \"echo $workload_source_b64 | base64 -d > /tmp/$workload_file; echo $remote_runner_source_b64 | base64 -d > /tmp/remote_runner.sh; EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds bash /tmp/remote_runner.sh\""
+support_install=""
+if [[ -n "$support_file" ]]; then
+  support_source_b64="$(base64 <"$support_path" | tr -d '\n')"
+  support_install="echo $support_source_b64 | base64 -d > /tmp/$support_file;"
+fi
+docker_args="bash -lc \"echo $workload_source_b64 | base64 -d > /tmp/$workload_file; $support_install echo $remote_runner_source_b64 | base64 -d > /tmp/remote_runner.sh; EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds bash /tmp/remote_runner.sh\""
 
 mkdir -p "$receipt_directory"
 proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')"
@@ -107,12 +130,14 @@ execution_registered=false
 terminal_published=false
 failure_message="The operator harness exited before the proof was persisted."
 last_progress="$(
-  jq -cn '{
-    phase: "requesting_capacity",
-    message: "Requesting one bounded RunPod worker.",
-    maximum_level: 3,
-    maximum_updates: 1200
-  }'
+  jq -cn \
+    --argjson maximum_updates "$default_maximum_updates" \
+    '{
+      phase: "requesting_capacity",
+      message: "Requesting one bounded RunPod worker.",
+      maximum_level: 3,
+      maximum_updates: $maximum_updates
+    }'
 )"
 resource_profile="$(
   jq -cn \
@@ -330,12 +355,14 @@ resource_profile="$(
     }'
 )"
 last_progress="$(
-  jq -cn '{
-    phase: "waiting_for_capacity",
-    message: "Pod created; waiting for a live container endpoint.",
-    maximum_level: 3,
-    maximum_updates: 1200
-  }'
+  jq -cn \
+    --argjson maximum_updates "$default_maximum_updates" \
+    '{
+      phase: "waiting_for_capacity",
+      message: "Pod created; waiting for a live container endpoint.",
+      maximum_level: 3,
+      maximum_updates: $maximum_updates
+    }'
 )"
 publish_execution "PROVISIONING" "$last_progress"
 
@@ -367,12 +394,13 @@ for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
       jq -cn \
         --arg message "Pod created; waiting for a live container endpoint." \
         --argjson elapsed_seconds "$elapsed_wait" \
+        --argjson maximum_updates "$default_maximum_updates" \
         '{
           phase: "waiting_for_capacity",
           message: $message,
           elapsed_seconds: $elapsed_seconds,
           maximum_level: 3,
-          maximum_updates: 1200
+          maximum_updates: $maximum_updates
         }'
     )"
     publish_execution "PROVISIONING" "$last_progress"
@@ -428,7 +456,7 @@ if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
 fi
 result_path="$receipt_directory/$proof_id.result.json"
 jq . <<<"$metrics" >"$result_path"
-if [[ "$experiment" == "model-repair" ]]; then
+if [[ "$experiment" == "model-repair" || "$experiment" == "repository-repair" ]]; then
   adapter_path="$receipt_directory/$proof_id.adapter.tgz"
   adapter_pending_path="$adapter_path.pending"
   curl --fail --silent --show-error --max-time 120 \
@@ -459,7 +487,7 @@ if [[ "$experiment" == "sequence-ladder" ]]; then
     and .promotion_count >= 5
     and .reward_gain >= 0.20
   '
-else
+elif [[ "$experiment" == "model-repair" ]]; then
   proof_assertion='
     .device == "cuda"
     and .experiment_completed == true
@@ -495,6 +523,52 @@ else
     ] | sort)
     and (.hypothesis_passed | type) == "boolean"
   '
+else
+  proof_assertion='
+    .device == "cuda"
+    and .experiment_completed == true
+    and .post_training_completed == true
+    and .adapter_persisted == true
+    and .workload == "repository-repair-restored-continuation-post-training"
+    and .workload_revision == "runpod-repository-repair-grpo@1"
+    and .algorithm == "shared-prefix-sibling-relative-policy-optimization"
+    and .branch_width == 4
+    and .static_branch_width == 4
+    and .multi_step == true
+    and .restored_continuations == true
+    and .prefix_gradient == false
+    and .complexity_strategy == "adaptive"
+    and .replay_enabled == true
+    and .snapshot_fidelity == "logical_restore"
+    and .model_id == "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    and .task_domains == ["micro_repository"]
+    and (.complexity_levels | length) == 4
+    and .complexity_levels[0].repair_horizon < .complexity_levels[3].repair_horizon
+    and .updates_completed >= 1
+    and .optimizer_update_count >= 1
+    and .policy_update_count >= 1
+    and .teacher_update_count >= 1
+    and .total_task_groups >= 1
+    and .replay_task_groups >= 1
+    and .promotion_count >= 1
+    and .evaluation_examples == 4
+    and .total_sampled_actions >= 4
+    and .total_post_branch_actions >= 4
+    and .restored_branching_observed == true
+    and (.branch_snapshots | length) >= 1
+    and (
+      [.branch_snapshots[]
+        | select(
+          .checkpoint != null
+          and .checkpoint.static_branch_width == 4
+          and (.shared_prefix.steps | length) >= 2
+          and (.siblings | length) == 4
+          and ([.siblings[].steps | length] | all(. >= 1))
+        )
+      ] | length
+    ) >= 1
+    and (.hypothesis_passed | type) == "boolean"
+  '
 fi
 if ! jq -e "$proof_assertion" >/dev/null <<<"$metrics"; then
   failure_message="The remote result did not satisfy the declared proof contract."
@@ -515,7 +589,10 @@ last_progress="$(
           current_level: $level,
           promotion_count: ($result.promotion_count // .promotion_count // 0),
           sampled_completions: (
-            $result.total_sampled_completions // .sampled_completions // 0
+            $result.total_sampled_completions
+            // $result.total_sampled_actions
+            // .sampled_completions
+            // 0
           ),
           exact_rate: (
             $result.final_by_level[($level | tostring)].exact_rate
@@ -585,7 +662,12 @@ jq -n \
       task_domains: ($result.task_domains // null),
       maximum_complexity_level: ($result.maximum_complexity_level // null),
       reached_complexity_level: ($result.reached_complexity_level // null),
-      total_sampled_completions: ($result.total_sampled_completions // null)
+      total_sampled_completions: ($result.total_sampled_completions // null),
+      total_sampled_actions: ($result.total_sampled_actions // null),
+      multi_step: ($result.multi_step // null),
+      restored_continuations: ($result.restored_continuations // null),
+      snapshot_fidelity: ($result.snapshot_fidelity // null),
+      replay_enabled: ($result.replay_enabled // null)
     },
     result: $result,
     started_at: $started_at,
