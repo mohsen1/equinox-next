@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repository_root"
+
+api_port="${EQUINOX_API_PORT:-8180}"
+api_root="http://127.0.0.1:${api_port}"
+
+curl --fail --silent --show-error --request POST "${api_root}/internal/seed" >/dev/null
+
+for _ in $(seq 1 180); do
+  if response="$(curl --fail --silent --show-error "${api_root}/v1/runs")"; then
+    summary="$(
+      printf '%s' "$response" | python3 -c '
+import json, sys
+items = json.load(sys.stdin)["items"]
+expected = {
+    "Local independent baseline",
+    "Local branch-aware CAD proof",
+}
+selected = [item for item in items if item["name"] in expected]
+print(" ".join("{}:{}".format(item["algorithm"], item["status"]) for item in selected))
+raise SystemExit(
+    0 if len(selected) == 2 and all(item["status"] == "SUCCEEDED" for item in selected) else 1
+)
+'
+    )" && {
+      echo "Seeded CAD runs completed: ${summary}"
+      echo "Open http://127.0.0.1:${EQUINOX_DASHBOARD_PORT:-3100}/runs"
+      exit 0
+    }
+  fi
+  sleep 1
+done
+
+echo "Timed out waiting for deterministic CAD runs." >&2
+docker compose logs --no-color --tail=120 orchestrator mock-agent execution >&2
+exit 1

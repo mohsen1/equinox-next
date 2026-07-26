@@ -1,0 +1,11 @@
+.git
+.DS_Store
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.pyc
+services/dashboard/node_modules
+services/dashboard/dist
+test-results
+playwright-report
+var

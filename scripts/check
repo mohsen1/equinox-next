@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repository_root"
+
+./scripts/preflight
+docker compose config --quiet
+docker compose build
+docker compose run --rm --build test ruff format --check packages services tests
+docker compose run --rm --build test ruff check packages services tests
+docker compose run --rm test pytest tests/unit
+docker run --rm \
+  -v "${repository_root}/services/dashboard:/app" \
+  -w /app \
+  node:22.17.1-alpine \
+  sh -lc 'npm ci >/dev/null && npm test && npm run typecheck && npm run lint && npm run format && npm run build'
+git diff --check

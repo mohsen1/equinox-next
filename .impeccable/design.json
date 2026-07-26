@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-26T12:00:00+02:00",
+  "title": "Design System: Equinox Next",
+  "extensions": {
+    "colorMeta": {
+      "accent-blue": {
+        "role": "primary",
+        "displayName": "Oxide Blue",
+        "canonical": "#2F6F91",
+        "tonalRamp": ["#E6F0F5", "#9AB9C9", "#2F6F91", "#245A78"]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Drafting Paper",
+        "canonical": "#F4F6F7",
+        "tonalRamp": ["#FFFFFF", "#F4F6F7", "#E9EEF1", "#C8D2D8"]
+      }
+    },
+    "typographyMeta": {
+      "headline": {"displayName": "Headline", "purpose": "Route title and selected object."},
+      "body": {"displayName": "Body", "purpose": "Readable operational prose."},
+      "label": {"displayName": "Machine label", "purpose": "Identifiers, versions, units, and logs."}
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "state",
+        "value": "140ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Focus, selection, and compact disclosure transitions."
+      }
+    ],
+    "breakpoints": [
+      {"name": "compact", "value": "760px"},
+      {"name": "laptop", "value": "1100px"},
+      {"name": "wide", "value": "1440px"}
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The local task's single primary action.",
+      "html": "<button class=\"ds-btn-primary\">Launch run</button>",
+      "css": ".ds-btn-primary{background:#2F6F91;color:#fff;border:1px solid #2F6F91;border-radius:4px;padding:10px 14px;font:600 14px ui-sans-serif,sans-serif}.ds-btn-primary:hover{background:#245A78}.ds-btn-primary:focus-visible{outline:2px solid #2F6F91;outline-offset:2px}"
+    },
+    {
+      "name": "Evidence panel",
+      "kind": "card",
+      "description": "A flat bounded region for proof and verification data.",
+      "html": "<section class=\"ds-evidence\"><strong>Geometry report</strong><p>6 checks accepted</p></section>",
+      "css": ".ds-evidence{background:#fff;color:#17242C;border:1px solid #C8D2D8;border-radius:6px;padding:16px;font:14px/1.5 ui-sans-serif,sans-serif}.ds-evidence strong{display:block;margin-bottom:8px}"
+    },
+    {
+      "name": "Status label",
+      "kind": "chip",
+      "description": "Names a typed scientific or operational outcome.",
+      "html": "<span class=\"ds-status\">Accepted</span>",
+      "css": ".ds-status{display:inline-flex;align-items:center;border:1px solid #80B8A1;background:#E7F3EE;color:#17583F;border-radius:999px;padding:3px 8px;font:600 12px/1.2 ui-sans-serif,sans-serif}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Verification Drafting Table",
+    "overview": "A flat, calibrated research workspace where lineage, evidence, uncertainty, and recovery state remain legible at operating density.",
+    "keyCharacteristics": [
+      "Flat rule-defined layers",
+      "One oxide-blue product accent",
+      "Synchronized graph, proof, and inspector views",
+      "Mono only for machine-shaped content"
+    ],
+    "rules": [
+      {"name": "One accent", "body": "Blue identifies interaction; semantic hues identify outcomes.", "section": "colors"},
+      {"name": "Flat authority", "body": "Use rules and tonal steps, never shadows.", "section": "elevation"}
+    ],
+    "dos": ["Do distinguish deterministic evidence from model assessment."],
+    "donts": ["Don't collapse failure classes or manufacture judge-derived zeroes."]
+  }
+}

@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repository_root"
+export EQUINOX_FIXTURE_STEP_DELAY_MS="${EQUINOX_FIXTURE_STEP_DELAY_MS:-250}"
+
+api_base="http://127.0.0.1:${EQUINOX_API_PORT:-8180}"
+
+launch_branch_run() {
+  name="$1"
+  curl --fail --silent --show-error \
+    --request POST "${api_base}/v1/runs" \
+    --header 'Content-Type: application/json' \
+    --data "{\"name\":\"${name}\",\"algorithm\":\"bpo_local_metric\",\"branch\":{\"width\":4,\"decision_after_actions\":3,\"rng_mode\":\"split_stream\"},\"seed\":43}" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])'
+}
+
+wait_for_status() {
+  run_id="$1"
+  expected="$2"
+  for _ in $(seq 1 240); do
+    status="$(
+      curl --fail --silent "${api_base}/v1/runs/${run_id}" 2>/dev/null |
+        python3 -c 'import json,sys; print(json.load(sys.stdin)["run"]["status"])' 2>/dev/null ||
+        true
+    )"
+    case ",${expected}," in
+      *,"${status}",*) return 0 ;;
+    esac
+    sleep 0.25
+  done
+  printf 'run %s did not reach [%s]\n' "$run_id" "$expected" >&2
+  return 1
+}
+
+wait_for_transition() {
+  run_id="$1"
+  for _ in $(seq 1 120); do
+    count="$(
+      docker compose exec -T postgres psql -U postgres -d equinox -Atc "
+        SELECT count(*)
+        FROM scientific.transitions t
+        JOIN scientific.rollout_trees rt USING (rollout_tree_id)
+        JOIN scientific.collection_batches cb USING (collection_batch_id)
+        JOIN scientific.run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+        WHERE ra.run_id = '${run_id}';
+      "
+    )"
+    if [ "$count" -gt 0 ]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'run %s did not accept a transition\n' "$run_id" >&2
+  return 1
+}
+
+./scripts/preflight
+docker compose down --volumes --remove-orphans
+docker compose up -d --build --wait
+./scripts/seed
+docker compose run --rm --build test pytest
+docker run --rm \
+  -v "${repository_root}/services/dashboard:/app" \
+  -w /app \
+  node:22.17.1-alpine \
+  sh -lc 'npm ci >/dev/null && npm test'
+
+before="$(
+  curl --fail --silent "${api_base}/v1/runs" |
+    python3 -c 'import json,sys; print(sum(x["verification_run_count"] for x in json.load(sys.stdin)["items"]))'
+)"
+docker compose restart postgres minio execution orchestrator mock-agent dashboard
+docker compose up -d --wait
+after="$(
+  curl --fail --silent "${api_base}/v1/runs" |
+    python3 -c 'import json,sys; d=json.load(sys.stdin)["items"]; assert all(x["status"]=="SUCCEEDED" for x in d); print(sum(x["verification_run_count"] for x in d))'
+)"
+test "$before" = "$after"
+
+restart_run_id="$(launch_branch_run "Active restart contract proof")"
+wait_for_status "$restart_run_id" "RUNNING"
+wait_for_transition "$restart_run_id"
+docker compose restart orchestrator
+docker compose up -d --wait
+wait_for_status "$restart_run_id" "SUCCEEDED"
+curl --fail --silent "${api_base}/v1/runs/${restart_run_id}" |
+  python3 -c '
+import json,sys
+run=json.load(sys.stdin)
+assert run["run"]["status"] == "SUCCEEDED"
+assert len(run["attempts"]) == 1
+'
+curl --fail --silent "${api_base}/v1/runs/${restart_run_id}/iterations" |
+  python3 -c '
+import json,sys
+items=json.load(sys.stdin)["items"]
+assert len(items) == 1
+'
+
+reproduce_payload="$(
+  curl --fail --silent --show-error \
+    --request POST "${api_base}/v1/runs/${restart_run_id}/reproduce"
+)"
+reproduce_run_id="$(
+  printf '%s' "$reproduce_payload" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])'
+)"
+curl --fail --silent "${api_base}/v1/runs/${reproduce_run_id}" |
+  python3 -c "import json,sys; assert json.load(sys.stdin)['run']['source_run_id'] == '${restart_run_id}'"
+wait_for_status "$reproduce_run_id" "SUCCEEDED"
+
+cancel_run_id="$(launch_branch_run "Active cancellation contract proof")"
+wait_for_status "$cancel_run_id" "RUNNING"
+curl --fail --silent --show-error \
+  --request POST "${api_base}/v1/runs/${cancel_run_id}/cancel" \
+  --header 'Content-Type: application/json' \
+  --data '{"mode":"terminate","operation_id":"acceptance-cancel-1"}' |
+  python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] in ("CANCEL_REQUESTED","CANCELED")'
+docker compose restart orchestrator
+docker compose up -d --wait
+wait_for_status "$cancel_run_id" "CANCELED"
+curl --fail --silent "${api_base}/v1/runs/${cancel_run_id}" |
+  python3 -c '
+import json,sys
+run=json.load(sys.stdin)["run"]
+assert run["status"] == "CANCELED"
+assert run["cleanup_status"] == "SUCCEEDED"
+'
+unreleased="$(
+  docker compose exec -T postgres psql -U postgres -d equinox -Atc "
+    SELECT count(*)
+    FROM scientific.compute_allocations ca
+    JOIN scientific.run_attempts ra ON ra.attempt_id = ca.run_attempt_id
+    WHERE ra.run_id = '${cancel_run_id}'
+      AND (ca.desired_state <> 'RELEASED' OR ca.observed_state <> 'RELEASED');
+  "
+)"
+test "$unreleased" = "0"
+
+residue="$(
+  docker compose exec -T postgres psql -U postgres -d equinox -Atc "
+    SELECT concat_ws(',',
+      (SELECT count(*) FROM operational.sessions WHERE status = 'READY'),
+      (SELECT count(*) FROM operational.runtime_cursors WHERE observed_status = 'READY'),
+      (SELECT count(*) FROM operational.jobs
+        WHERE status IN ('SUBMITTED', 'LEASED', 'RUNNING')),
+      (SELECT count(*) FROM operational.operations
+        WHERE status IN ('RUNNING', 'RETRYABLE')),
+      (SELECT count(*) FROM operational.snapshots WHERE ephemeral = true),
+      (SELECT count(*) FROM scientific.operations
+        WHERE status IN ('AUTHORIZED', 'RETRYABLE'))
+    );
+  "
+)"
+test "$residue" = "0,0,0,0,0,0"
+
+echo "Acceptance passed. Dashboard: http://127.0.0.1:${EQUINOX_DASHBOARD_PORT:-3100}"

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "copied_at": "2026-07-26T12:00:00+02:00",
+  "source_path": "/Users/mohsen/code/equinox/equinox-next.md",
+  "source_sha256": "d3796a5c5f06bb83d56f222769170dc9c3994ab48e7139a37488faf86fe87944",
+  "source_git_commit": "169be9ff17cb51cbbbccdab84bb0b44174cb84eb",
+  "source_worktree_dirty": true,
+  "repository_copy": "docs/equinox-next.md",
+  "note": "The digest covers the external source bytes, not this sidecar or the repository copy."
+}

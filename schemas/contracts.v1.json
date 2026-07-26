@@ -1,0 +1,523 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://equinox.local/schemas/contracts.v1.json",
+  "title": "Equinox Next local contract proof",
+  "type": "object",
+  "$defs": {
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "digest", "role", "media_type", "visibility", "trust_class"],
+      "properties": {
+        "artifact_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/Digest"},
+        "role": {"type": "string", "minLength": 1},
+        "ordinal": {"type": "integer", "minimum": 0, "default": 0},
+        "media_type": {"type": "string", "minLength": 1},
+        "viewer_hint": {"type": ["string", "null"]},
+        "visibility": {"enum": ["PUBLIC", "POLICY", "OPERATOR", "HIDDEN"]},
+        "trust_class": {"enum": ["CANDIDATE", "PUBLIC_TASK", "REFERENCE", "HIDDEN", "TRUSTED"]}
+      }
+    },
+    "State": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state_id",
+        "rollout_tree_id",
+        "environment_version",
+        "task_revision",
+        "logical_state",
+        "observation",
+        "semantic_status",
+        "sequence"
+      ],
+      "properties": {
+        "state_id": {"type": "string"},
+        "rollout_tree_id": {"type": "string"},
+        "parent_transition_id": {"type": ["string", "null"]},
+        "environment_version": {"const": "cad.reconstruction@1.0.0"},
+        "task_revision": {"type": "string"},
+        "logical_state": {"$ref": "#/$defs/ArtifactRef"},
+        "observation": {"$ref": "#/$defs/ArtifactRef"},
+        "semantic_status": {"enum": ["ACTIVE", "TERMINATED", "TRUNCATED"]},
+        "sequence": {"type": "integer", "minimum": 0}
+      }
+    },
+    "RuntimeCursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cursor_id",
+        "session_id",
+        "runtime_instance_id",
+        "current_state_id",
+        "lease_owner",
+        "lease_expires_at",
+        "fencing_token",
+        "observed_status"
+      ],
+      "properties": {
+        "cursor_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "runtime_instance_id": {"type": "string"},
+        "current_state_id": {"type": "string"},
+        "lease_owner": {"type": "string"},
+        "lease_expires_at": {"type": "string", "format": "date-time"},
+        "fencing_token": {"type": "integer", "minimum": 1},
+        "rng_derivation": {"type": "string"},
+        "observed_status": {"enum": ["READY", "BUSY", "CANCELED", "CLOSED", "LOST"]}
+      }
+    },
+    "EnvironmentSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "source_state_id",
+        "environment_version",
+        "task_revision",
+        "logical_state",
+        "logical_state_digest",
+        "requested_fidelity",
+        "obtained_fidelity",
+        "fidelity_probe_passed",
+        "rng_state"
+      ],
+      "properties": {
+        "snapshot_id": {"type": "string"},
+        "source_state_id": {"type": "string"},
+        "environment_version": {"type": "string"},
+        "task_revision": {"type": "string"},
+        "logical_state": {"$ref": "#/$defs/ArtifactRef"},
+        "logical_state_digest": {"$ref": "#/$defs/Digest"},
+        "requested_fidelity": {
+          "enum": ["logical_restore", "filesystem_restore", "process_restore", "full_runtime_restore"]
+        },
+        "obtained_fidelity": {"const": "logical_restore"},
+        "fidelity_probe_passed": {"const": true},
+        "rng_state": {"type": "string"},
+        "runtime_snapshot_handle": {"type": "null"}
+      }
+    },
+    "DecisionCheckpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint_id",
+        "environment_snapshot_id",
+        "source_state_id",
+        "rollout_tree_id",
+        "policy_context",
+        "behavior_policy_version_id",
+        "policy_rng_state",
+        "turns_remaining",
+        "branch_strategy",
+        "budget_reservation_id"
+      ],
+      "properties": {
+        "checkpoint_id": {"type": "string"},
+        "environment_snapshot_id": {"type": "string"},
+        "source_state_id": {"type": "string"},
+        "rollout_tree_id": {"type": "string"},
+        "policy_context": {"$ref": "#/$defs/ArtifactRef"},
+        "behavior_policy_version_id": {"type": "string"},
+        "policy_rng_state": {"type": "string"},
+        "tokenizer_revision": {"const": "mock-tokenizer@1"},
+        "prompt_template_revision": {"const": "cad-policy@1"},
+        "tool_schema_revision": {"const": "cad-actions@1"},
+        "turns_remaining": {"type": "integer", "minimum": 1},
+        "branch_strategy": {"const": "fixed-boundary@1"},
+        "budget_reservation_id": {"type": "string"}
+      }
+    },
+    "CollectionBatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collection_batch_id",
+        "run_attempt_id",
+        "behavior_policy_version_id",
+        "verification_plan_id",
+        "judge_spec_id",
+        "reward_pipeline_id",
+        "status"
+      ],
+      "properties": {
+        "collection_batch_id": {"type": "string"},
+        "run_attempt_id": {"type": "string"},
+        "behavior_policy_version_id": {"type": "string"},
+        "verification_plan_id": {"type": "string"},
+        "judge_spec_id": {"type": "string"},
+        "reward_pipeline_id": {"type": "string"},
+        "status": {
+          "enum": ["PLANNED", "COLLECTING", "VERIFYING", "READY_FOR_MATERIALIZATION", "CLOSED"]
+        }
+      }
+    },
+    "EligibilityDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_id", "rollout_tree_id", "status", "reason_code", "version"],
+      "properties": {
+        "decision_id": {"type": "string"},
+        "rollout_tree_id": {"type": "string"},
+        "branch_member_id": {"type": ["string", "null"]},
+        "status": {"enum": ["ADMITTED", "EXCLUDED"]},
+        "reason_code": {"type": "string"},
+        "version": {"const": "local-eligibility@1"}
+      }
+    },
+    "IterationInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_id",
+        "digest",
+        "rollout_tree_ids",
+        "eligibility_decision_ids",
+        "verification_run_ids",
+        "judge_result_ids",
+        "reward_signal_ids",
+        "materializer_version"
+      ],
+      "properties": {
+        "manifest_id": {"type": "string"},
+        "digest": {"$ref": "#/$defs/Digest"},
+        "rollout_tree_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "proof_bundle_ids": {"type": "array", "items": {"type": "string"}},
+        "eligibility_decision_ids": {"type": "array", "items": {"type": "string"}},
+        "verification_run_ids": {"type": "array", "items": {"type": "string"}},
+        "judge_result_ids": {"type": "array", "items": {"type": "string"}},
+        "reward_signal_ids": {"type": "array", "items": {"type": "string"}},
+        "materializer_version": {"const": "branch-jsonl@1"},
+        "weights": {"type": "object", "additionalProperties": {"type": "number"}}
+      }
+    },
+    "VerificationStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step_id",
+        "step_type",
+        "profile",
+        "dependencies",
+        "input_roles",
+        "output_roles",
+        "trust_class",
+        "outcome_rules"
+      ],
+      "properties": {
+        "step_id": {"type": "string"},
+        "step_type": {
+          "enum": [
+            "deterministic_check",
+            "evidence_producer",
+            "sandbox_execution",
+            "browser_scenario",
+            "llm_judge",
+            "deterministic_aggregation"
+          ]
+        },
+        "profile": {"type": "string"},
+        "dependencies": {"type": "array", "items": {"type": "string"}},
+        "input_roles": {"type": "array", "items": {"type": "string"}},
+        "output_roles": {"type": "array", "items": {"type": "string"}},
+        "trust_class": {
+          "enum": ["PUBLIC_CANDIDATE", "TRUSTED_EVIDENCE", "HIDDEN_TEST", "ISOLATED_JUDGE"]
+        },
+        "timeout_seconds": {"type": "integer", "minimum": 1, "default": 30},
+        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 4, "default": 2},
+        "cacheable": {"type": "boolean", "default": false},
+        "outcome_rules": {
+          "type": "object",
+          "required": ["candidate_failure", "verifier_failure", "abstention", "integrity"],
+          "properties": {
+            "candidate_failure": {"enum": ["accept_negative_metric", "exclude"]},
+            "verifier_failure": {"const": "retry_then_exclude"},
+            "abstention": {"enum": ["exclude_signal", "exclude_subject"]},
+            "integrity": {"const": "exclude_and_flag"}
+          }
+        }
+      }
+    },
+    "VerificationPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verification_plan_id", "version", "subject_type", "steps"],
+      "properties": {
+        "verification_plan_id": {"type": "string"},
+        "version": {"type": "integer", "const": 1},
+        "subject_type": {"enum": ["TRANSITION", "BRANCH_GROUP", "ROLLOUT", "SUBMISSION"]},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/VerificationStep"}, "minItems": 1}
+      }
+    },
+    "ProofBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proof_bundle_id",
+        "subject_type",
+        "subject_id",
+        "task_reference",
+        "source_render",
+        "candidate_render",
+        "action_summary",
+        "geometry_report",
+        "renderer",
+        "ordered_artifact_digests",
+        "digest"
+      ],
+      "properties": {
+        "proof_bundle_id": {"type": "string"},
+        "subject_type": {"enum": ["TRANSITION", "BRANCH_MEMBER"]},
+        "subject_id": {"type": "string"},
+        "task_reference": {"$ref": "#/$defs/ArtifactRef"},
+        "source_render": {"$ref": "#/$defs/ArtifactRef"},
+        "candidate_render": {"$ref": "#/$defs/ArtifactRef"},
+        "action_summary": {"$ref": "#/$defs/ArtifactRef"},
+        "geometry_report": {"$ref": "#/$defs/ArtifactRef"},
+        "renderer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "camera", "material", "lighting", "resolution", "views"],
+          "properties": {
+            "version": {"const": "cad-fixture-renderer@1"},
+            "camera": {"const": "isometric-orthographic@1"},
+            "material": {"const": "drafting-blue@1"},
+            "lighting": {"const": "three-point-neutral@1"},
+            "resolution": {"const": [640, 480]},
+            "views": {"const": ["isometric", "top", "front"]}
+          }
+        },
+        "ordered_artifact_digests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Digest"},
+          "minItems": 5
+        },
+        "digest": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "JudgeSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "judge_spec_id",
+        "provider",
+        "model_revision",
+        "prompt_template_digest",
+        "rubric_version",
+        "output_schema",
+        "mode",
+        "criteria",
+        "sampling",
+        "presentation",
+        "abstention",
+        "calibration_status",
+        "integrity_profile",
+        "allowed_evidence_roles"
+      ],
+      "properties": {
+        "judge_spec_id": {"type": "string"},
+        "provider": {"const": "MockJudgeProvider"},
+        "model_revision": {"type": "string", "pattern": "^mock-judge-"},
+        "prompt_template_digest": {"$ref": "#/$defs/Digest"},
+        "rubric_version": {"type": "string"},
+        "output_schema": {"const": "judge-result.v1"},
+        "mode": {"enum": ["POINTWISE", "GROUP"]},
+        "criteria": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "sampling": {
+          "type": "object",
+          "required": ["temperature", "samples", "sample_index"],
+          "properties": {
+            "temperature": {"const": 0},
+            "samples": {"type": "integer", "minimum": 1, "maximum": 2},
+            "sample_index": {"type": "integer", "minimum": 0}
+          }
+        },
+        "presentation": {
+          "type": "object",
+          "required": ["blind_identity", "randomize_order"],
+          "properties": {
+            "blind_identity": {"const": true},
+            "randomize_order": {"type": "boolean"}
+          }
+        },
+        "abstention": {
+          "type": "object",
+          "required": ["allowed", "minimum_confidence", "disagreement_threshold"],
+          "properties": {
+            "allowed": {"const": true},
+            "minimum_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "disagreement_threshold": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "calibration_status": {"const": "MOCK_CONTRACT_ONLY"},
+        "integrity_profile": {"const": "untrusted-multimodal-input@1"},
+        "allowed_evidence_roles": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "task-reference",
+              "source-render",
+              "candidate-render",
+              "action-summary",
+              "geometry-report",
+              "sibling-render"
+            ]
+          }
+        }
+      }
+    },
+    "CriterionAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criterion", "score", "confidence", "evidence_roles"],
+      "properties": {
+        "criterion": {"type": "string"},
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_roles": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "JudgeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "judge_result_id",
+        "judge_spec_id",
+        "proof_bundle_digest",
+        "outcome",
+        "assessments",
+        "confidence",
+        "abstained",
+        "disagreement",
+        "integrity_flags",
+        "explanation",
+        "provider_model_identity",
+        "raw_output_artifact",
+        "parsed_output_artifact",
+        "usage"
+      ],
+      "properties": {
+        "judge_result_id": {"type": "string"},
+        "judge_spec_id": {"type": "string"},
+        "proof_bundle_digest": {"$ref": "#/$defs/Digest"},
+        "outcome": {
+          "enum": [
+            "SUCCEEDED",
+            "ABSTAINED",
+            "INVALID_RESULT",
+            "INFRA_FAILED",
+            "INTEGRITY_VIOLATION",
+            "DISAGREEMENT"
+          ]
+        },
+        "assessments": {"type": "array", "items": {"$ref": "#/$defs/CriterionAssessment"}},
+        "preferences": {"type": "array", "items": {"type": "string"}},
+        "ranking": {"type": "array", "items": {"type": "string"}},
+        "tie": {"type": "boolean", "default": false},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "abstained": {"type": "boolean"},
+        "abstention_reason": {"type": ["string", "null"]},
+        "disagreement": {"type": "boolean"},
+        "integrity_flags": {"type": "array", "items": {"type": "string"}},
+        "explanation": {"type": "string", "maxLength": 500},
+        "provider_model_identity": {"type": "string"},
+        "raw_output_artifact": {"$ref": "#/$defs/ArtifactRef"},
+        "parsed_output_artifact": {"$ref": "#/$defs/ArtifactRef"},
+        "usage": {
+          "type": "object",
+          "required": ["input_tokens", "output_tokens", "images", "latency_ms", "cost"],
+          "properties": {
+            "input_tokens": {"type": "integer", "minimum": 0},
+            "output_tokens": {"type": "integer", "minimum": 0},
+            "images": {"type": "integer", "minimum": 0},
+            "latency_ms": {"type": "integer", "minimum": 0},
+            "cost": {"type": "number", "minimum": 0}
+          }
+        }
+      }
+    },
+    "MetricObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric_observation_id",
+        "subject_type",
+        "subject_id",
+        "descriptor",
+        "value",
+        "unit",
+        "source_step_run_id",
+        "accepted"
+      ],
+      "properties": {
+        "metric_observation_id": {"type": "string"},
+        "subject_type": {"type": "string"},
+        "subject_id": {"type": "string"},
+        "descriptor": {"type": "string"},
+        "value": {"type": ["number", "boolean"]},
+        "unit": {"enum": ["ratio", "boolean", "millimeter", "count", "seconds", "credits"]},
+        "source_step_run_id": {"type": "string"},
+        "judge_result_id": {"type": ["string", "null"]},
+        "accepted": {"const": true}
+      }
+    },
+    "RewardSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reward_signal_id",
+        "subject_type",
+        "subject_id",
+        "name",
+        "value",
+        "reward_pipeline_id",
+        "metric_observation_ids"
+      ],
+      "properties": {
+        "reward_signal_id": {"type": "string"},
+        "subject_type": {"type": "string"},
+        "subject_id": {"type": "string"},
+        "name": {
+          "enum": [
+            "geometry_valid",
+            "constraint_compliance",
+            "reference_alignment",
+            "progress_from_source_state",
+            "regression_penalty",
+            "terminal_quality",
+            "sibling_preference",
+            "execution_cost"
+          ]
+        },
+        "value": {"type": "number"},
+        "reward_pipeline_id": {"const": "cad-local-rewards@1"},
+        "metric_observation_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+      }
+    },
+    "OperationEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "idempotency_key",
+        "request_digest",
+        "expected_version",
+        "correlation_id"
+      ],
+      "properties": {
+        "operation_id": {"type": "string"},
+        "idempotency_key": {"type": "string"},
+        "request_digest": {"$ref": "#/$defs/Digest"},
+        "expected_version": {"type": "integer", "minimum": 0},
+        "correlation_id": {"type": "string"}
+      }
+    }
+  }
+}

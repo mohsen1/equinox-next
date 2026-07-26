@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repository_root"
+
+./scripts/preflight
+docker compose up -d --build --wait
+
+dashboard_port="${EQUINOX_DASHBOARD_PORT:-3100}"
+api_port="${EQUINOX_API_PORT:-8180}"
+echo "Equinox Next is ready: http://127.0.0.1:${dashboard_port}"
+echo "API and OpenAPI: http://127.0.0.1:${api_port}/docs"
+echo "Next: ./scripts/seed"

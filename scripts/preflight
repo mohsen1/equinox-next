@@ -1,0 +1,67 @@
+#!/bin/sh
+set -eu
+
+failures=0
+
+pass() {
+  printf 'ok  %s\n' "$1"
+}
+
+fail() {
+  printf 'err %s\n' "$1" >&2
+  failures=$((failures + 1))
+}
+
+require_command() {
+  if command -v "$1" >/dev/null 2>&1; then
+    pass "$1 is installed"
+  else
+    fail "$1 is required"
+  fi
+}
+
+require_file() {
+  if [ -f "$1" ]; then
+    pass "$2"
+  else
+    fail "$2 ($1)"
+  fi
+}
+
+require_command docker
+require_command git
+
+if command -v docker >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then
+    pass "Docker daemon is reachable"
+  else
+    fail "Docker daemon is not reachable"
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    pass "Docker Compose is available"
+  else
+    fail "Docker Compose is required"
+  fi
+fi
+
+architecture=$(uname -m)
+case "$architecture" in
+  arm64|aarch64|x86_64|amd64)
+    pass "supported host architecture: $architecture"
+    ;;
+  *)
+    fail "unsupported host architecture: $architecture"
+    ;;
+esac
+
+require_file \
+  "docs/equinox-next.md" \
+  "vendored canonical specification is available"
+
+if [ "$failures" -ne 0 ]; then
+  printf '\npreflight failed with %s error(s)\n' "$failures" >&2
+  exit 1
+fi
+
+printf '\npreflight passed\n'

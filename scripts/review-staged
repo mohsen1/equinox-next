@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+
+if ! command -v claude >/dev/null 2>&1; then
+  printf 'Claude Code is required for the staged review.\n' >&2
+  exit 2
+fi
+
+claude_help=$(claude --help 2>&1)
+if ! printf '%s\n' "$claude_help" | grep -q "'fable'" ||
+  ! printf '%s\n' "$claude_help" | grep -q "'claude-fable-5'"; then
+  printf 'Claude Code does not advertise the required Fable 5 reviewer.\n' >&2
+  exit 2
+fi
+if ! printf '%s\n' "$claude_help" | grep -q "low, medium, high"; then
+  printf 'Claude Code does not advertise high reasoning effort.\n' >&2
+  exit 2
+fi
+
+if git diff --cached --quiet; then
+  printf 'No staged diff to review.\n' >&2
+  exit 2
+fi
+
+prompt_file=$(mktemp)
+trap 'rm -f "$prompt_file"' EXIT HUP INT TERM
+
+cat >"$prompt_file" <<'EOF'
+Review the staged diff read-only against docs/equinox-next.md and the local
+contract-proof acceptance level. Do not edit files or create a commit.
+Do not delegate, spawn agents, or start background tasks; review directly in
+this process so the complete findings are returned synchronously.
+
+Assess correctness; scientific authority and lineage; data loss, races, fencing,
+retries, idempotency, cancellation, and recovery; state/runtime-cursor and
+snapshot/decision-checkpoint separation; verification DAG and reward provenance;
+judge parsing, abstention, disagreement, calibration, ambiguous attempts, prompt
+injection, reward hacking, hidden data, and external exposure; API/schema
+compatibility; maintainability, reuse, over-engineering, tests, accessibility, and
+Impeccable rules for UI changes.
+
+Return findings only. Each finding must include priority P0-P3, file and line,
+evidence, impact, and a concrete fix. Finish with exact counts for P0, P1, P2, P3.
+If there are no findings, return the four zero counts.
+EOF
+
+CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 claude \
+  --print \
+  --model fable \
+  --effort high \
+  --permission-mode plan \
+  --allowedTools "Bash(git diff:*),Read,Glob,Grep" \
+  --add-dir docs <"$prompt_file"
