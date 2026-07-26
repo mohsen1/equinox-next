@@ -62,6 +62,7 @@ command -v curl >/dev/null
 command -v timeout >/dev/null
 command -v base64 >/dev/null
 command -v python3 >/dev/null
+command -v tar >/dev/null
 test -f "$workload_path"
 test -f "$remote_runner_path"
 if [[ -n "$support_file" ]]; then
@@ -97,14 +98,18 @@ if ((target_runtime_seconds + boot_timeout_seconds + 120 > maximum_lifetime_minu
   echo "The provider lifetime must cover boot + target runtime + a 2-minute cleanup reserve." >&2
   exit 1
 fi
-workload_source_b64="$(base64 <"$workload_path" | tr -d '\n')"
-remote_runner_source_b64="$(base64 <"$remote_runner_path" | tr -d '\n')"
-support_install=""
+bundle_files=("$workload_file" "remote_runner.sh")
 if [[ -n "$support_file" ]]; then
-  support_source_b64="$(base64 <"$support_path" | tr -d '\n')"
-  support_install="echo $support_source_b64 | base64 -d > /tmp/$support_file;"
+  bundle_files+=("$support_file")
 fi
-docker_args="bash -lc \"echo $workload_source_b64 | base64 -d > /tmp/$workload_file; $support_install echo $remote_runner_source_b64 | base64 -d > /tmp/remote_runner.sh; EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds bash /tmp/remote_runner.sh\""
+bundle_source_b64="$(
+  tar -czf - \
+    -C "$repository_root/research/runpod" \
+    "${bundle_files[@]}" |
+    base64 |
+    tr -d '\n'
+)"
+docker_args="bash -lc \"echo $bundle_source_b64 | base64 -d | tar -xzf - -C /tmp; EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds bash /tmp/remote_runner.sh\""
 
 mkdir -p "$receipt_directory"
 proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')"
