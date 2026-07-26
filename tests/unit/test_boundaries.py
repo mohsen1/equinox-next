@@ -120,6 +120,13 @@ def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
                 {"update": 40, "level": 1, "exact_rate": 0.9},
             ],
             "promotions": [{"update": 40, "from_level": 0, "to_level": 1}],
+            "branch_snapshots": [
+                {
+                    "snapshot_id": "update-20-sqlite_repair",
+                    "siblings": [{"index": index} for index in range(4)],
+                },
+                "invalid",
+            ],
             "initial_by_level": {"0": {"exact_rate": 0.4}},
             "final_by_level": {"0": {"exact_rate": 0.9}},
             "policy_update_count": 7,
@@ -133,4 +140,10 @@ def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
         {"update": 40, "level": 1, "exact_rate": 0.9},
     ]
     assert trajectory["promotions"][0]["to_level"] == 1
+    assert trajectory["branch_snapshots"] == [
+        {
+            "snapshot_id": "update-20-sqlite_repair",
+            "siblings": [{"index": index} for index in range(4)],
+        }
+    ]
     assert trajectory["policy_update_count"] == 7

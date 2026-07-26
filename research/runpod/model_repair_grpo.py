@@ -445,6 +445,47 @@ def score_response(task: Task, response: str) -> Verification:
     return Verification(True, False, round(0.05 + 0.35 * similarity, 6), action)
 
 
+def build_branch_snapshot(
+    *,
+    task: Task,
+    responses: list[str],
+    verifications: list[Verification],
+    advantages: list[float],
+    update: int,
+) -> dict[str, Any]:
+    if not (len(responses) == len(verifications) == len(advantages) == BRANCH_WIDTH):
+        raise ValueError("branch snapshot must contain exactly four siblings")
+    best_sibling_index = max(
+        range(BRANCH_WIDTH),
+        key=lambda index: (verifications[index].reward, -index),
+    )
+    learning_signal = any(abs(value) > 1e-7 for value in advantages)
+    return {
+        "snapshot_id": f"update-{update}-{task.domain}",
+        "update": update,
+        "level": task.level,
+        "domain": task.domain,
+        "prompt": task.prompt,
+        "expected_action": task.expected_action,
+        "best_sibling_index": best_sibling_index,
+        "learning_signal": learning_signal,
+        "teacher_fallback": not any(item.passed for item in verifications),
+        "siblings": [
+            {
+                "index": index,
+                "response": responses[index],
+                "action": verification.action,
+                "format_valid": verification.format_valid,
+                "passed": verification.passed,
+                "reward": verification.reward,
+                "advantage": round(advantages[index], 6),
+                "policy_signal": abs(advantages[index]) > 1e-7,
+            }
+            for index, verification in enumerate(verifications)
+        ],
+    }
+
+
 def observation_mastered(observation: dict[str, Any]) -> bool:
     return observation["exact_rate"] >= MASTERY_THRESHOLD and all(
         metrics["exact_rate"] >= PER_DOMAIN_MASTERY_THRESHOLD
@@ -480,6 +521,32 @@ def self_test() -> dict[str, Any]:
     mastered["per_domain"][DOMAINS[0]]["exact_rate"] = PER_DOMAIN_MASTERY_THRESHOLD - 0.01
     if observation_mastered(mastered):
         raise AssertionError("mastery accepted a domain below threshold")
+    snapshot_task = make_tasks(0, 3, SEED)[0]
+    snapshot_verifications = [
+        score_response(snapshot_task, f"ACTION: {snapshot_task.expected_action}"),
+        score_response(snapshot_task, "invalid"),
+        score_response(snapshot_task, "ACTION: invalid"),
+        score_response(snapshot_task, "invalid"),
+    ]
+    snapshot = build_branch_snapshot(
+        task=snapshot_task,
+        responses=[
+            f"ACTION: {snapshot_task.expected_action}",
+            "invalid",
+            "ACTION: invalid",
+            "invalid",
+        ],
+        verifications=snapshot_verifications,
+        advantages=[1.5, -0.5, -0.5, -0.5],
+        update=20,
+    )
+    if (
+        snapshot["best_sibling_index"] != 0
+        or not snapshot["learning_signal"]
+        or snapshot["teacher_fallback"]
+        or len(snapshot["siblings"]) != BRANCH_WIDTH
+    ):
+        raise AssertionError("branch snapshot did not preserve K=4 verifier evidence")
     result = {
         "self_test_passed": True,
         "tasks_checked": checked,
@@ -709,6 +776,7 @@ def run_experiment() -> None:
     level = 0
     promotions: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
+    branch_snapshots: list[dict[str, Any]] = []
     total_sampled_completions = 0
     total_verified_actions = 0
     total_task_groups = 0
@@ -914,6 +982,24 @@ def run_experiment() -> None:
             )
 
         if update % EVALUATION_INTERVAL == 0:
+            advantage_groups = advantages.view(len(tasks), BRANCH_WIDTH)
+            for domain in DOMAINS:
+                prompt_index = next(
+                    index for index, task in enumerate(tasks) if task.domain == domain
+                )
+                start_index = prompt_index * BRANCH_WIDTH
+                branch_snapshots.append(
+                    build_branch_snapshot(
+                        task=tasks[prompt_index],
+                        responses=responses[start_index : start_index + BRANCH_WIDTH],
+                        verifications=verifications[start_index : start_index + BRANCH_WIDTH],
+                        advantages=[
+                            float(value)
+                            for value in advantage_groups[prompt_index].detach().cpu().tolist()
+                        ],
+                        update=update,
+                    )
+                )
             observation = evaluate(
                 level,
                 EVALUATION_EXAMPLES,
@@ -1024,7 +1110,7 @@ def run_experiment() -> None:
         "post_training_completed": True,
         "hypothesis_passed": hypothesis_passed,
         "workload": "model-repair-verifier-guided-post-training",
-        "workload_revision": "runpod-model-repair-grpo@2",
+        "workload_revision": "runpod-model-repair-grpo@3",
         "algorithm": "verifier-guided-group-policy-optimization",
         "branch_width": BRANCH_WIDTH,
         "complexity_strategy": "adaptive",
@@ -1047,6 +1133,7 @@ def run_experiment() -> None:
         "initial_by_level": initial_by_level,
         "final_by_level": final_by_level,
         "history": history,
+        "branch_snapshots": branch_snapshots,
         "updates_completed": updates_completed,
         "optimizer_update_count": optimizer_update_count,
         "policy_update_count": policy_update_count,

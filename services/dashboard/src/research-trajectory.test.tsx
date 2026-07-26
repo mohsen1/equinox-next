@@ -4,6 +4,7 @@ import {
   buildTrajectorySteps,
   TrajectoryOutline,
 } from "./pages/research-trajectory";
+import { BranchOutline, buildBranchFlow } from "./pages/research-branches";
 import type { ResearchTrajectory } from "./types";
 
 const observation = {
@@ -52,6 +53,61 @@ const trajectory: ResearchTrajectory = {
       mastery_windows: 2,
     },
   ],
+  branch_snapshots: [
+    {
+      snapshot_id: "update-20-sqlite_repair",
+      update: 20,
+      level: 0,
+      domain: "sqlite_repair",
+      prompt: "Repair one row.",
+      expected_action: "UPDATE jobs SET state = 'done' WHERE id = 4;",
+      best_sibling_index: 1,
+      learning_signal: true,
+      teacher_fallback: false,
+      siblings: [
+        {
+          index: 0,
+          response: "ACTION: UPDATE jobs SET state = 'done';",
+          action: "UPDATE jobs SET state = 'done';",
+          format_valid: true,
+          passed: false,
+          reward: 0.4,
+          advantage: -1,
+          policy_signal: true,
+        },
+        {
+          index: 1,
+          response: "ACTION: UPDATE jobs SET state = 'done' WHERE id = 4;",
+          action: "UPDATE jobs SET state = 'done' WHERE id = 4;",
+          format_valid: true,
+          passed: true,
+          reward: 1,
+          advantage: 1,
+          policy_signal: true,
+        },
+        {
+          index: 2,
+          response: "invalid",
+          action: null,
+          format_valid: false,
+          passed: false,
+          reward: 0,
+          advantage: -0.5,
+          policy_signal: true,
+        },
+        {
+          index: 3,
+          response: "ACTION: SELECT 1;",
+          action: "SELECT 1;",
+          format_valid: true,
+          passed: false,
+          reward: 0.1,
+          advantage: -0.25,
+          policy_signal: true,
+        },
+      ],
+    },
+  ],
   initial_by_level: { "0": { ...observation, exact_rate: 0.4 } },
   final_by_level: { "0": { ...observation, exact_rate: 0.9 } },
   policy_update_count: 4,
@@ -88,5 +144,34 @@ describe("research trajectory", () => {
     expect(html).toContain("Update 40");
     expect(html).toContain("Level 0 → 1");
     expect(html).toContain('class="selected"');
+  });
+
+  it("maps one persisted task to four real sibling nodes", () => {
+    const snapshot = trajectory.branch_snapshots[0];
+    const flow = buildBranchFlow(snapshot, 1);
+
+    expect(flow.nodes).toHaveLength(5);
+    expect(flow.edges).toHaveLength(4);
+    expect(
+      flow.nodes.find((node) => node.data.siblingIndex === 1)?.data,
+    ).toMatchObject({ passed: true, best: true, reward: 1 });
+    expect(
+      flow.edges.find((edge) => edge.target.endsWith("sibling-1"))?.className,
+    ).toContain("branch-edge-best");
+  });
+
+  it("renders an accessible K=4 branch outline", () => {
+    const html = renderToStaticMarkup(
+      <BranchOutline
+        snapshot={trajectory.branch_snapshots[0]}
+        selectedIndex={1}
+        select={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("<caption>K=4 sibling actions</caption>");
+    expect(html.match(/Sibling [1-4]/g)).toHaveLength(4);
+    expect(html).toContain("Sibling 2 · Best");
+    expect(html).toContain("Passed");
   });
 });

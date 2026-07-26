@@ -1057,6 +1057,18 @@ h3 {
   gap: 20px;
 }
 
+.trajectory-toolbar-main,
+.trajectory-toolbar-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.trajectory-toolbar-controls {
+  flex: none;
+}
+
 .trajectory-result {
   display: flex;
   flex-wrap: wrap;
@@ -1077,6 +1089,30 @@ h3 {
 .trajectory-result span:first-child {
   color: var(--ink);
   font-weight: 650;
+}
+
+.branch-snapshot-select {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.branch-snapshot-select select {
+  min-width: 250px;
+  min-height: 34px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  padding: 5px 30px 5px 9px;
+  color: var(--ink);
+  font: inherit;
+}
+
+.branch-snapshot-select select:focus {
+  border-color: var(--accent);
 }
 
 .research-trajectory-workspace {
@@ -1183,6 +1219,99 @@ h3 {
 
 .research-trajectory-canvas .promotion-edge path {
   stroke: var(--success);
+}
+
+.research-branch-task-node {
+  display: grid;
+  width: 246px;
+  min-height: 92px;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.research-branch-task-node > span,
+.research-branch-task-node > small {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.research-branch-task-node > strong {
+  font-size: 0.9375rem;
+}
+
+.research-branch-sibling-node {
+  display: grid;
+  width: 194px;
+  min-height: 142px;
+  align-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  padding: 11px 12px;
+  text-align: left;
+  transition:
+    border-color var(--transition),
+    background-color var(--transition);
+}
+
+.research-branch-sibling-node:hover {
+  border-color: var(--accent);
+}
+
+.research-branch-sibling-node.passed {
+  border-color: color-mix(in srgb, var(--success) 52%, var(--rule));
+}
+
+.research-branch-sibling-node.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.research-branch-sibling-node > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.research-branch-sibling-node span,
+.research-branch-sibling-node small {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.research-branch-sibling-node em {
+  color: var(--accent-strong);
+  font-size: 0.625rem;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.research-branch-sibling-node code {
+  min-height: 42px;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
+
+.research-branch-sibling-node strong {
+  font-size: 0.875rem;
+}
+
+.research-branch-task-node .react-flow__handle,
+.research-branch-sibling-node .react-flow__handle {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
 }
 
 .research-trajectory-inspector {
@@ -1327,6 +1456,66 @@ h3 {
   font-size: 0.875rem;
 }
 
+.branch-evidence {
+  display: grid;
+  padding: 8px 16px 14px;
+}
+
+.branch-evidence > section,
+.branch-evidence > details {
+  min-width: 0;
+  border-bottom: 1px solid var(--rule);
+  padding: 10px 0;
+}
+
+.branch-evidence > :last-child {
+  border-bottom: 0;
+}
+
+.branch-evidence span,
+.branch-evidence summary {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
+.branch-evidence summary {
+  cursor: pointer;
+}
+
+.branch-evidence code,
+.branch-evidence pre {
+  display: block;
+  max-width: 100%;
+  margin: 5px 0 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.research-branch-empty {
+  display: grid;
+  min-height: 480px;
+  place-content: center;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  padding: 32px;
+  text-align: center;
+}
+
+.research-branch-empty h2 {
+  margin-bottom: 6px;
+}
+
+.research-branch-empty p {
+  max-width: 54ch;
+  margin: 0;
+  color: var(--ink-muted);
+}
+
 .research-trajectory-outline {
   min-height: 690px;
   overflow: auto;
@@ -1337,6 +1526,10 @@ h3 {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8125rem;
+}
+
+.branch-outline table {
+  min-width: 720px;
 }
 
 .research-trajectory-outline caption {
@@ -3133,6 +3326,12 @@ h3 {
     flex-direction: column;
   }
 
+  .trajectory-toolbar-main,
+  .trajectory-toolbar-controls {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
   .research-trajectory-toolbar .segmented {
     align-self: flex-start;
   }
@@ -3168,6 +3367,20 @@ h3 {
 }
 
 @media (max-width: 430px) {
+  .branch-outline table {
+    min-width: 0;
+  }
+
+  .branch-outline th:nth-child(n + 3),
+  .branch-outline td:nth-child(n + 3) {
+    display: none;
+  }
+
+  .branch-outline th:first-child,
+  .branch-outline td:first-child {
+    width: 94px;
+  }
+
   .observer-stage {
     grid-template-columns: 1fr;
   }

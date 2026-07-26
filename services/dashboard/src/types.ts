@@ -143,6 +143,30 @@ export interface ResearchTrajectoryPromotion {
   mastery_windows: number;
 }
 
+export interface ResearchBranchSibling {
+  index: number;
+  response: string;
+  action: string | null;
+  format_valid: boolean;
+  passed: boolean;
+  reward: number;
+  advantage: number;
+  policy_signal: boolean;
+}
+
+export interface ResearchBranchSnapshot {
+  snapshot_id: string;
+  update: number;
+  level: number;
+  domain: string;
+  prompt: string;
+  expected_action: string;
+  best_sibling_index: number;
+  learning_signal: boolean;
+  teacher_fallback: boolean;
+  siblings: ResearchBranchSibling[];
+}
+
 export interface ResearchTrajectory {
   schema_version: 1;
   branch_width: 4;
@@ -156,6 +180,7 @@ export interface ResearchTrajectory {
   stop_reason: string;
   checkpoints: ResearchTrajectoryCheckpoint[];
   promotions: ResearchTrajectoryPromotion[];
+  branch_snapshots: ResearchBranchSnapshot[];
   initial_by_level: Record<string, ResearchLevelObservation>;
   final_by_level: Record<string, ResearchLevelObservation>;
   policy_update_count: number;

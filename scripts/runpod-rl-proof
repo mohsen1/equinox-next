@@ -466,7 +466,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "model-repair-verifier-guided-post-training"
-    and .workload_revision == "runpod-model-repair-grpo@2"
+    and .workload_revision == "runpod-model-repair-grpo@3"
     and .algorithm == "verifier-guided-group-policy-optimization"
     and .branch_width == 4
     and .complexity_strategy == "adaptive"
@@ -482,6 +482,15 @@ else
     and .teacher_update_count >= 1
     and .total_task_groups >= 6
     and .total_sampled_completions >= 4
+    and (.branch_snapshots | length) >= 3
+    and ([.branch_snapshots[].siblings | length] | all(. == 4))
+    and (
+      [.branch_snapshots[].domain] | unique | sort
+    ) == ([
+      "filesystem_cli",
+      "micro_repository",
+      "sqlite_repair"
+    ] | sort)
     and (.hypothesis_passed | type) == "boolean"
   '
 fi

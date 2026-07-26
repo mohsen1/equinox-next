@@ -161,6 +161,7 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
     final_by_level = result.get("final_by_level")
     history = result.get("history")
     promotions = result.get("promotions")
+    branch_snapshots = result.get("branch_snapshots")
     return {
         "schema_version": 1,
         "branch_width": result.get("branch_width"),
@@ -180,6 +181,11 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "promotions": (
             [item for item in promotions if isinstance(item, dict)]
             if isinstance(promotions, list)
+            else []
+        ),
+        "branch_snapshots": (
+            [item for item in branch_snapshots if isinstance(item, dict)]
+            if isinstance(branch_snapshots, list)
             else []
         ),
         "initial_by_level": initial_by_level if isinstance(initial_by_level, dict) else {},
