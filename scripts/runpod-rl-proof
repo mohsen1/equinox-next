@@ -17,7 +17,7 @@ case "$experiment" in
     workload_file="model_repair_grpo.py"
     workload_id="model-repair-verifier-guided-post-training"
     execution_name="Verified repair post-training"
-    model_id="Qwen/Qwen2.5-Coder-0.5B-Instruct"
+    model_id="Qwen/Qwen2.5-Coder-1.5B-Instruct"
     default_gpu_id="NVIDIA GeForce RTX 3090"
     default_target_runtime_seconds="2700"
     default_maximum_lifetime_minutes="60"
@@ -466,11 +466,11 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "model-repair-verifier-guided-post-training"
-    and .workload_revision == "runpod-model-repair-grpo@3"
+    and .workload_revision == "runpod-model-repair-grpo@4"
     and .algorithm == "verifier-guided-group-policy-optimization"
     and .branch_width == 4
     and .complexity_strategy == "adaptive"
-    and .model_id == "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+    and .model_id == "Qwen/Qwen2.5-Coder-1.5B-Instruct"
     and (.task_domains | sort) == ([
       "filesystem_cli",
       "micro_repository",
@@ -481,6 +481,8 @@ else
     and .policy_update_count >= 1
     and .teacher_update_count >= 1
     and .total_task_groups >= 6
+    and .replay_task_groups >= 3
+    and .evaluation_examples == 60
     and .total_sampled_completions >= 4
     and (.branch_snapshots | length) >= 3
     and ([.branch_snapshots[].siblings | length] | all(. == 4))

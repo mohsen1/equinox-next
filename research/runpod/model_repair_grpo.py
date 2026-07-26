@@ -28,8 +28,8 @@ from typing import Any
 
 SEED = 41
 BRANCH_WIDTH = 4
-MODEL_ID = "Qwen/Qwen2.5-Coder-0.5B-Instruct"
-MODEL_REVISION = "ea3f2471cf1b1f0db85067f1ef93848e38e88c25"
+MODEL_ID = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+MODEL_REVISION = "2e1fd397ee46e1388853d2af2c993145b0f1098a"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -41,9 +41,10 @@ MASTERY_THRESHOLD = 0.75
 PER_DOMAIN_MASTERY_THRESHOLD = 0.60
 MASTERY_WINDOWS = 2
 EVALUATION_INTERVAL = 20
-EVALUATION_EXAMPLES = 30
+EVALUATION_EXAMPLES = 60
 EVALUATION_SEED_BASE = 20_000
 TRAINING_BATCH_SIZE = 6
+REPLAY_TASKS_PER_LEVEL = 3
 TRAINING_MICROBATCH_SIZE = 2
 MAX_UPDATES = 1_200
 MAX_NEW_TOKENS = 56
@@ -780,6 +781,7 @@ def run_experiment() -> None:
     total_sampled_completions = 0
     total_verified_actions = 0
     total_task_groups = 0
+    replay_task_groups = 0
     informative_task_groups = 0
     teacher_fallback_examples = 0
     policy_update_count = 0
@@ -812,11 +814,22 @@ def run_experiment() -> None:
         if time.monotonic() - started >= target_seconds:
             stop_reason = "target_runtime"
             break
-        tasks = make_tasks(
+        current_level_tasks = make_tasks(
             level,
             TRAINING_BATCH_SIZE,
             SEED * 100_000 + update,
         )
+        replay_tasks = [
+            task
+            for replay_level in range(level)
+            for task in make_tasks(
+                replay_level,
+                REPLAY_TASKS_PER_LEVEL,
+                SEED * 1_000_000 + update * 100 + replay_level,
+            )
+        ]
+        tasks = current_level_tasks + replay_tasks
+        random.Random(SEED * 10_000 + update).shuffle(tasks)
         sequences, prompt_attention, input_width, responses = generate(
             tasks,
             samples=BRANCH_WIDTH,
@@ -957,6 +970,7 @@ def run_experiment() -> None:
         total_sampled_completions += len(verifications)
         total_verified_actions += sum(item.passed for item in verifications)
         total_task_groups += len(tasks)
+        replay_task_groups += len(replay_tasks)
         informative_task_groups += int(informative_groups.sum().item())
         teacher_fallback_examples += len(teacher_tasks)
         informative_group_rate = informative_task_groups / total_task_groups
@@ -985,7 +999,9 @@ def run_experiment() -> None:
             advantage_groups = advantages.view(len(tasks), BRANCH_WIDTH)
             for domain in DOMAINS:
                 prompt_index = next(
-                    index for index, task in enumerate(tasks) if task.domain == domain
+                    index
+                    for index, task in enumerate(tasks)
+                    if task.domain == domain and task.level == level
                 )
                 start_index = prompt_index * BRANCH_WIDTH
                 branch_snapshots.append(
@@ -1098,9 +1114,10 @@ def run_experiment() -> None:
     final_reward = sum(item["exact_rate"] for item in final_by_level.values()) / len(final_by_level)
     reward_gain = final_reward - initial_reward
     reached_level_result = final_by_level[str(level)]
-    hypothesis_passed = (
-        len(promotions) >= 2 and reward_gain >= 0.20 and observation_mastered(reached_level_result)
+    retention_passed = all(
+        observation_mastered(observation) for observation in final_by_level.values()
     )
+    hypothesis_passed = len(promotions) >= 2 and reward_gain >= 0.20 and retention_passed
     adapter_path = os.environ.get("EQUINOX_ADAPTER_PATH")
     if adapter_path:
         model.save_pretrained(adapter_path, safe_serialization=True)
@@ -1110,7 +1127,7 @@ def run_experiment() -> None:
         "post_training_completed": True,
         "hypothesis_passed": hypothesis_passed,
         "workload": "model-repair-verifier-guided-post-training",
-        "workload_revision": "runpod-model-repair-grpo@3",
+        "workload_revision": "runpod-model-repair-grpo@4",
         "algorithm": "verifier-guided-group-policy-optimization",
         "branch_width": BRANCH_WIDTH,
         "complexity_strategy": "adaptive",
@@ -1124,6 +1141,9 @@ def run_experiment() -> None:
         "per_domain_mastery_threshold": PER_DOMAIN_MASTERY_THRESHOLD,
         "mastery_windows": MASTERY_WINDOWS,
         "maximum_complexity_level": MAXIMUM_COMPLEXITY_LEVEL,
+        "evaluation_examples": EVALUATION_EXAMPLES,
+        "training_batch_size": TRAINING_BATCH_SIZE,
+        "replay_tasks_per_level": REPLAY_TASKS_PER_LEVEL,
         "reached_complexity_level": level,
         "promotion_count": len(promotions),
         "promotions": promotions,
@@ -1141,6 +1161,7 @@ def run_experiment() -> None:
         "informative_task_groups": informative_task_groups,
         "teacher_fallback_examples": teacher_fallback_examples,
         "total_task_groups": total_task_groups,
+        "replay_task_groups": replay_task_groups,
         "informative_group_rate": round(informative_group_rate, 6),
         "teacher_fallback_rate": round(teacher_fallback_rate, 6),
         "teacher_loss_weight": TEACHER_LOSS_WEIGHT,
@@ -1154,6 +1175,7 @@ def run_experiment() -> None:
         "cuda_version": torch.version.cuda,
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "adapter_persisted": bool(adapter_path),
+        "retention_passed": retention_passed,
     }
     emit_progress(
         "finalizing",
