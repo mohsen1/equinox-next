@@ -51,6 +51,8 @@ describe("AppShell", () => {
     expect(container.textContent).not.toContain(
       "External compute disconnected",
     );
+    expect(container.querySelector('a[href="/proofs"]')).not.toBeNull();
+    expect(document.documentElement.dataset.theme).toBeUndefined();
   });
 });
 

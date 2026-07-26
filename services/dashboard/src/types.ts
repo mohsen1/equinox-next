@@ -69,6 +69,8 @@ export interface ResearchComputeExecution {
     maximum_hourly_cost_usd?: number;
     [key: string]: unknown;
   };
+  allocated_gpu?: string | null;
+  cost?: EstimatedComputeCost;
   progress: {
     phase?: string;
     message?: string;
@@ -102,6 +104,76 @@ export interface ResearchComputeExecution {
   updated_at: string;
   completed_at: string | null;
   teardown_confirmed: boolean;
+}
+
+export interface EstimatedComputeCost {
+  total_usd: number | null;
+  estimated: boolean;
+  hourly_rate_usd: number | null;
+  elapsed_seconds: number | null;
+}
+
+export interface ResearchProofSummary {
+  proof_id: string;
+  execution_id: string | null;
+  run_name: string | null;
+  completed_at: string;
+  learning: {
+    initial_reward?: number | null;
+    final_reward?: number | null;
+    reward_gain?: number | null;
+    hypothesis_passed?: boolean | null;
+  };
+  hardware: {
+    provider: string;
+    gpu: string | null;
+    image?: string | null;
+    cloud_type?: string | null;
+    hourly_rate_usd: number | null;
+  };
+  cost: EstimatedComputeCost;
+  teardown_confirmed: boolean;
+}
+
+export interface ResearchProofDetail extends ResearchProofSummary {
+  started_at: string;
+  runtime_seconds: number | null;
+  provider: {
+    name: string;
+    handle: string;
+    cli_version: string;
+  };
+  workload: {
+    id?: string | null;
+    revision?: string | null;
+    algorithm?: string | null;
+    model_id?: string | null;
+    model_revision?: string | null;
+    branch_width?: number | null;
+    complexity_strategy?: string | null;
+    task_domains?: string[] | null;
+    snapshot_fidelity?: string | null;
+    multi_step?: boolean | null;
+    restored_continuations?: boolean | null;
+  };
+  curriculum: {
+    promotion_count?: number | null;
+    promotions?: Array<{
+      update?: number;
+      from_level?: number;
+      to_level?: number;
+      exact_rate?: number;
+    }> | null;
+    reached_level?: number | null;
+    maximum_level?: number | null;
+    updates_completed?: number | null;
+    stop_reason?: string | null;
+    retention_passed?: boolean | null;
+  };
+  evidence: {
+    receipt_digest: string;
+    teardown_confirmed: boolean;
+  };
 }
 
 export interface ResearchLevelObservation {

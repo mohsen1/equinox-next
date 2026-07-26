@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -215,6 +216,133 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "total_sampled_actions": result.get("total_sampled_actions"),
         "total_post_branch_actions": result.get("total_post_branch_actions"),
     }
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def estimated_compute_cost(
+    hourly_rate_usd: Any,
+    elapsed_seconds: Any,
+) -> dict[str, Any]:
+    rate = _number(hourly_rate_usd)
+    elapsed = _number(elapsed_seconds)
+    total = round(rate * elapsed / 3600, 6) if rate is not None and elapsed is not None else None
+    return {
+        "total_usd": total,
+        "estimated": total is not None,
+        "hourly_rate_usd": rate,
+        "elapsed_seconds": elapsed,
+    }
+
+
+def research_execution_response(item: dict[str, Any]) -> dict[str, Any]:
+    response = dict(item)
+    resource_profile = (
+        item["resource_profile"] if isinstance(item.get("resource_profile"), dict) else {}
+    )
+    progress = item["progress"] if isinstance(item.get("progress"), dict) else {}
+    gpu = (
+        progress.get("gpu_name") or resource_profile.get("gpu_id")
+        if item.get("provider_handle")
+        else None
+    )
+    response["allocated_gpu"] = gpu if isinstance(gpu, str) and gpu else None
+    response["cost"] = estimated_compute_cost(
+        resource_profile.get("hourly_cost_usd"),
+        progress.get("elapsed_seconds"),
+    )
+    return response
+
+
+def research_proof_response(
+    item: dict[str, Any],
+    *,
+    detail: bool,
+) -> dict[str, Any]:
+    resource_profile = (
+        item["resource_profile"] if isinstance(item.get("resource_profile"), dict) else {}
+    )
+    workload = item["workload"] if isinstance(item.get("workload"), dict) else {}
+    result = item["result"] if isinstance(item.get("result"), dict) else {}
+    elapsed = result.get("elapsed_seconds")
+    gpu = result.get("gpu_name") or resource_profile.get("gpu_id")
+
+    response: dict[str, Any] = {
+        "proof_id": item["proof_id"],
+        "execution_id": item.get("execution_id"),
+        "run_name": item.get("execution_name"),
+        "completed_at": item["completed_at"],
+        "learning": {
+            "initial_reward": result.get("initial_reward"),
+            "final_reward": result.get("final_reward"),
+            "reward_gain": result.get("reward_gain"),
+            "hypothesis_passed": result.get("hypothesis_passed"),
+        },
+        "hardware": {
+            "provider": item["provider_name"],
+            "gpu": gpu if isinstance(gpu, str) and gpu else None,
+            "image": resource_profile.get("image"),
+            "cloud_type": resource_profile.get("cloud_type"),
+            "hourly_rate_usd": _number(resource_profile.get("hourly_cost_usd")),
+        },
+        "cost": estimated_compute_cost(
+            resource_profile.get("hourly_cost_usd"),
+            elapsed,
+        ),
+        "teardown_confirmed": item["teardown_confirmed"],
+    }
+    if not detail:
+        return response
+
+    response.update(
+        {
+            "started_at": item["started_at"],
+            "runtime_seconds": _number(elapsed),
+            "provider": {
+                "name": item["provider_name"],
+                "handle": item["provider_handle"],
+                "cli_version": item["provider_cli_version"],
+            },
+            "workload": {
+                "id": workload.get("id"),
+                "revision": workload.get("revision"),
+                "algorithm": workload.get("algorithm"),
+                "model_id": workload.get("model_id") or result.get("model_id"),
+                "model_revision": workload.get("model_revision") or result.get("model_revision"),
+                "branch_width": workload.get("static_branch_width"),
+                "complexity_strategy": workload.get("complexity_strategy"),
+                "task_domains": workload.get("task_domains"),
+                "snapshot_fidelity": workload.get("snapshot_fidelity"),
+                "multi_step": workload.get("multi_step"),
+                "restored_continuations": workload.get("restored_continuations"),
+            },
+            "curriculum": {
+                "promotion_count": result.get("promotion_count"),
+                "promotions": result.get("promotions"),
+                "reached_level": result.get(
+                    "reached_complexity_level",
+                    workload.get("reached_complexity_level"),
+                ),
+                "maximum_level": result.get(
+                    "maximum_complexity_level",
+                    workload.get("maximum_complexity_level"),
+                ),
+                "updates_completed": result.get("updates_completed"),
+                "stop_reason": result.get("stop_reason"),
+                "retention_passed": result.get("retention_passed"),
+            },
+            "evidence": {
+                "receipt_digest": item["receipt_digest"],
+                "teardown_confirmed": item["teardown_confirmed"],
+            },
+        }
+    )
+    return response
 
 
 def _wait_for_dependencies() -> None:
@@ -602,7 +730,7 @@ def list_runs() -> dict[str, Any]:
         }
     return {
         "items": data,
-        "research_items": research_items,
+        "research_items": [research_execution_response(item) for item in research_items],
         "next_cursor": None,
     }
 
@@ -953,7 +1081,7 @@ def collection_batches(run_id: str) -> dict[str, Any]:
                 (run_id,),
             )
         )
-    return {"items": items}
+    return {"items": [research_execution_response(item) for item in items]}
 
 
 @app.get("/v1/runs/{run_id}/iterations")
@@ -1630,7 +1758,7 @@ def get_research_compute_execution(execution_id: str) -> dict[str, Any]:
             status_code=404,
             detail={"code": "RESEARCH_EXECUTION_NOT_FOUND"},
         )
-    return item
+    return research_execution_response(item)
 
 
 @app.get("/v1/research-compute-executions/{execution_id}/trajectory")
@@ -1827,6 +1955,43 @@ def resources() -> dict[str, Any]:
         },
         "external_capacity": 0,
     }
+
+
+@app.get("/v1/proofs")
+def list_research_compute_proofs() -> dict[str, Any]:
+    with connection() as conn:
+        items = list(
+            conn.execute(
+                """
+                SELECT p.*, e.execution_id, e.name AS execution_name
+                FROM research_compute_proofs p
+                LEFT JOIN research_compute_executions e ON e.proof_id = p.proof_id
+                ORDER BY p.completed_at DESC
+                LIMIT 100
+                """
+            )
+        )
+    return {"items": [research_proof_response(item, detail=False) for item in items]}
+
+
+@app.get("/v1/proofs/{proof_id}")
+def get_research_compute_proof(proof_id: str) -> dict[str, Any]:
+    with connection() as conn:
+        item = conn.execute(
+            """
+            SELECT p.*, e.execution_id, e.name AS execution_name
+            FROM research_compute_proofs p
+            LEFT JOIN research_compute_executions e ON e.proof_id = p.proof_id
+            WHERE p.proof_id = %s
+            """,
+            (proof_id,),
+        ).fetchone()
+    if not item:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "RESEARCH_PROOF_NOT_FOUND"},
+        )
+    return research_proof_response(item, detail=True)
 
 
 @app.post("/internal/research-compute-proofs", status_code=201)

@@ -9,7 +9,7 @@ import { AppShell } from "./components";
 import { EnvironmentsPage } from "./pages/environments";
 import { ResearchTrajectoryPage } from "./pages/research-trajectory";
 import { ResearchRunPage, RunsPage } from "./pages/workspace";
-import { ResourcesPage } from "./pages/resources";
+import { ProofDetailPage, ProofsPage } from "./pages/proofs";
 import { Navigate, Route, Routes } from "./router";
 
 export function App() {
@@ -27,7 +27,9 @@ export function App() {
           element={<ResearchTrajectoryPage />}
         />
         <Route path="/environments" element={<EnvironmentsPage />} />
-        <Route path="/resources" element={<ResourcesPage />} />
+        <Route path="/proofs" element={<ProofsPage />} />
+        <Route path="/proofs/:proofId" element={<ProofDetailPage />} />
+        <Route path="/resources" element={<Navigate to="/proofs" replace />} />
         <Route path="*" element={<Navigate to="/runs" replace />} />
       </Routes>
     </AppShell>

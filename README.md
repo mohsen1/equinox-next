@@ -25,29 +25,30 @@ Ports default to `3100` for the dashboard, `8180` for the API, and `9001` for th
 console. Override the first two with `EQUINOX_DASHBOARD_PORT` and `EQUINOX_API_PORT`.
 No cloud credentials are accepted or required.
 
+The dashboard exposes `/healthz` for nginx liveness and `/readyz` for API/database
+readiness. Runs and Proofs preserve the last successful response during a transient API
+failure and recover through polling. The exact contracts and failure check are in
+[the Runs and Proofs workspace guide](docs/runs-and-proofs-workspace.md).
+
 ## Run bounded RunPod research
 
 `scripts/runpod-rl-proof` is an explicit operator command outside the local provider
-registry. By default it creates one RTX 3090 community worker from RunPod's current
-official PyTorch 2.8 image, rejects an hourly rate above
-$0.50, sets a provider-side 15-minute termination deadline, and deletes the worker after
-the workload finishes. The command refuses to start when the account already has a pod
-or active hourly spend.
+registry. The repository-repair profile creates one A40 worker from RunPod's pinned
+PyTorch 2.8 image, rejects an hourly rate above $0.50, targets 45 minutes of training,
+sets a provider-side 60-minute termination deadline, and deletes the worker after the
+workload finishes. The command refuses to start when the account already has a pod or
+active hourly spend.
 
 ```bash
-./scripts/runpod-rl-proof
+EQUINOX_RUNPOD_EXPERIMENT=repository-repair ./scripts/runpod-rl-proof
 ```
 
-The current model-repair workload fine-tunes Qwen2.5-Coder-1.5B-Instruct with LoRA. It
-uses static four-sample groups, deterministic verification, adaptive levels, replay, live
-progress ingestion, retained adapters, and verified teardown. The completed proof is
-training-path evidence: its answers are single actions and do not yet establish restored
-mid-trajectory branching.
-
-The next workload replaces those independent answers with a structured multi-step
-repository environment. It collects a shared diagnostic prefix without gradient, saves
-an exact logical checkpoint, restores four continuations, and applies sibling-relative
-credit only after the branch. The dashboard observer is a launch prerequisite.
+The repository-repair workload fine-tunes Qwen2.5-Coder-1.5B-Instruct with LoRA. It
+collects a shared diagnostic prefix without gradient, saves an exact logical checkpoint,
+restores four continuations, and applies sibling-relative credit only after the branch.
+It also uses deterministic verification, adaptive levels, replay, live progress
+ingestion, retained adapters, and verified teardown. The dashboard observer is a launch
+prerequisite.
 
 Repository complexity adapts file count, fault count, dependency depth, and horizon.
 Branch width remains static at four. The first proof uses a deterministic in-memory
@@ -76,6 +77,10 @@ Real research runs appear in the same run list while progress is ingested. Their
 trajectory view exposes captured model responses and branch samples. The repository
 profile extends that view with one shared-prefix lane, a checkpoint, and four multi-step
 continuation lanes so each action and verifier result is selectable.
+
+Completed RunPod evidence appears under `/proofs`. Each proof links back to its originating
+run and trajectory and records learning outcome, hardware, estimated total cost,
+curriculum progression, receipt digest, provider handle, and teardown confirmation.
 
 ## Rejudge stored evidence
 

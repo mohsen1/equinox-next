@@ -282,7 +282,12 @@ export function ResearchTrajectoryPage() {
         actions={run ? <StatusBadge status={run.status} /> : undefined}
       />
       <ResearchRunTabs executionId={executionId} active="trajectory" />
-      <AsyncState loading={response.loading} error={response.error}>
+      <AsyncState
+        loading={response.loading}
+        error={response.error}
+        stale={Boolean(response.data && response.error)}
+        onRetry={response.retry}
+      >
         {run && !trajectory ? (
           <div className="content workspace-content">
             <div className="empty-state">

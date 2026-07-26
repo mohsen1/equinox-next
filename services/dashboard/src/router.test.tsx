@@ -37,4 +37,26 @@ describe("BrowserRouter", () => {
     expect(window.location.pathname).toBe("/runs");
     expect(container.querySelector("main")?.textContent).toBe("Runs ready");
   });
+
+  it("redirects the legacy resources route to Proofs", async () => {
+    window.history.replaceState(null, "", "/resources");
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <BrowserRouter>
+          <Routes>
+            <Route
+              path="/resources"
+              element={<Navigate to="/proofs" replace />}
+            />
+            <Route path="/proofs" element={<main>Proofs ready</main>} />
+          </Routes>
+        </BrowserRouter>,
+      );
+    });
+
+    expect(window.location.pathname).toBe("/proofs");
+    expect(container.querySelector("main")?.textContent).toBe("Proofs ready");
+  });
 });

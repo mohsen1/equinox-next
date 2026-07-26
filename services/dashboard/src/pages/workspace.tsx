@@ -7,6 +7,7 @@
  */
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { api, useApi } from "../api";
+import { formatEstimatedCost, formatRelativeTime } from "../format";
 import {
   AsyncState,
   displayRunName,
@@ -54,29 +55,28 @@ export function RunsPage() {
     runs.data?.research_items.filter(
       (run) => run.execution_id !== "runpod-proof-ui-rehearsal",
     ) ?? [];
-  const activeCount = visibleRuns.filter(
-    (run) => !TERMINAL.has(run.status),
-  ).length;
-  const totalCount = visibleRuns.length;
 
   return (
     <>
-      <PageHeader
-        title="Runs"
-        description={
-          runs.data
-            ? `${activeCount} active · ${totalCount} total`
-            : "Your experiment queue"
-        }
-      />
+      <PageHeader title="Runs" />
       <div className="content workspace-content">
         <AsyncState
           loading={runs.loading}
           error={runs.error}
+          stale={Boolean(runs.data && runs.error)}
+          onRetry={runs.retry}
           empty={!visibleRuns.length}
         >
           {visibleRuns.length ? (
             <section className="run-queue" aria-label="Training runs">
+              <div className="run-list-header" aria-hidden="true">
+                <span>Run</span>
+                <span>Status</span>
+                <span>Progress</span>
+                <span>GPU</span>
+                <span>Total cost</span>
+                <span>Updated</span>
+              </div>
               <div className="run-list">
                 {visibleRuns.map((run) => (
                   <ResearchRunRow key={run.execution_id} run={run} />
@@ -114,7 +114,10 @@ function ResearchRunRow({ run }: { run: ResearchComputeExecution }) {
     >
       <span className="run-main">
         <strong>{run.name}</strong>
-        <span>{shortModelName(run.model_id)} · RunPod</span>
+        <span>
+          {shortModelName(run.model_id)} · adaptive complexity · K=
+          {run.branch_width}
+        </span>
       </span>
       <StatusBadge status={run.status} />
       <span className="run-progress">
@@ -123,15 +126,22 @@ function ResearchRunRow({ run }: { run: ResearchComputeExecution }) {
         </span>
         <span>{progressLabel}</span>
       </span>
-      <span className="run-complexity">
-        Adaptive · K={run.branch_width}
+      <span className="run-gpu">
+        {run.allocated_gpu ?? "Awaiting allocation"}
         <small>
           {level !== null
-            ? `level ${level}${maximumLevel !== null ? ` of ${maximumLevel}` : ""}`
-            : "awaiting first evaluation"}
+            ? `Level ${level}${maximumLevel !== null ? ` of ${maximumLevel}` : ""}`
+            : "No evaluation yet"}
         </small>
       </span>
-      <time dateTime={run.updated_at}>{formatDate(run.updated_at)}</time>
+      <span className="run-cost">{formatEstimatedCost(run.cost)}</span>
+      <time
+        dateTime={run.updated_at}
+        aria-label={formatDate(run.updated_at)}
+        title={formatDate(run.updated_at)}
+      >
+        {formatRelativeTime(run.updated_at)}
+      </time>
     </Link>
   );
 }
@@ -178,7 +188,12 @@ export function ResearchRunPage() {
       />
       <ResearchRunTabs executionId={executionId} active="overview" />
       <div className="content workspace-content">
-        <AsyncState loading={execution.loading} error={execution.error}>
+        <AsyncState
+          loading={execution.loading}
+          error={execution.error}
+          stale={Boolean(execution.data && execution.error)}
+          onRetry={execution.retry}
+        >
           {run ? (
             <div className="research-observer">
               {error ? (

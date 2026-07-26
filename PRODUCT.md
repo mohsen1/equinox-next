@@ -71,9 +71,11 @@ flat layers, exact alignment, restrained color, and no decorative statistics or 
 
 The local CAD contract flow proves branch lineage, immutable evidence, retry semantics,
 recovery, and cancellation. A bounded Qwen2.5-Coder-1.5B RunPod experiment proves real
-LoRA training, static four-sample groups, adaptive levels, replay, artifact retention,
-live status ingestion, and teardown. That workload was single-action: it does not yet
-prove restored mid-trajectory branching or long-horizon credit assignment.
+LoRA training over a multi-step repository simulator, one shared diagnostic prefix,
+logical snapshot restore into four continuations, sibling-relative policy updates,
+adaptive levels, replay, artifact retention, live status ingestion, and teardown. It is
+a deterministic integration proof, not a matched-budget claim that branching outperforms
+teacher-only or independent collection.
 
 No customer claims, production-isolation evidence, or human-aligned judge calibration
 evidence exists.

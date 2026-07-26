@@ -6,7 +6,7 @@ import type { ArtifactRef } from "./types";
 const NAV_ITEMS = [
   { to: "/runs", label: "Runs" },
   { to: "/environments", label: "Environments" },
-  { to: "/resources", label: "Proofs" },
+  { to: "/proofs", label: "Proofs" },
 ];
 
 export function AppShell({ children }: PropsWithChildren) {
@@ -89,6 +89,7 @@ function statusTone(status: string): string {
       "CONTINUED",
       "VERIFIED",
       "PROMOTED",
+      "RELEASED",
     ].includes(status)
   )
     return "positive";
@@ -243,11 +244,15 @@ export function AsyncState({
   loading = false,
   error = null,
   empty,
+  stale = false,
+  onRetry,
   children,
 }: PropsWithChildren<{
   loading?: boolean;
   error?: Error | null;
   empty?: boolean;
+  stale?: boolean;
+  onRetry?: () => void;
 }>) {
   if (loading) {
     return (
@@ -258,17 +263,17 @@ export function AsyncState({
       </div>
     );
   }
-  if (error) {
+  if (error && !stale) {
     return (
       <div className="state-panel error-state" role="alert">
-        <strong>Evidence could not be loaded</strong>
+        <strong>Data could not be loaded</strong>
         <p>{error.message}</p>
         <button
           type="button"
           className="button secondary"
-          onClick={() => location.reload()}
+          onClick={onRetry ?? (() => location.reload())}
         >
-          Retry
+          Try again
         </button>
       </div>
     );
@@ -284,7 +289,26 @@ export function AsyncState({
       </div>
     );
   }
-  return children;
+  return (
+    <>
+      {error ? (
+        <div className="stale-data-notice" role="status">
+          <span>
+            <strong>Live updates paused.</strong> Showing the last successful
+            response.
+          </span>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={onRetry ?? (() => location.reload())}
+          >
+            Try again
+          </button>
+        </div>
+      ) : null}
+      {children}
+    </>
+  );
 }
 
 export function KeyValue({
