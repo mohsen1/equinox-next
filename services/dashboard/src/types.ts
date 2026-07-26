@@ -88,6 +88,11 @@ export interface ResearchComputeExecution {
     reward_gain?: number;
     hypothesis_passed?: boolean;
     adapter_persisted?: boolean;
+    post_training_completed?: boolean;
+    informative_group_rate?: number;
+    teacher_fallback_rate?: number;
+    policy_update_count?: number;
+    teacher_update_count?: number;
     error?: string;
     [key: string]: unknown;
   };

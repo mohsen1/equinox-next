@@ -157,6 +157,8 @@ export function ResearchRunPage() {
   const finalExactRate = numberValue(progress.final_exact_rate);
   const rewardGain = numberValue(progress.reward_gain);
   const promotionCount = numberValue(progress.promotion_count);
+  const informativeGroupRate = numberValue(progress.informative_group_rate);
+  const teacherFallbackRate = numberValue(progress.teacher_fallback_rate);
   const stopReason = stringValue(progress.stop_reason);
   const hypothesisPassed = booleanValue(progress.hypothesis_passed);
   const adapterPersisted = booleanValue(progress.adapter_persisted);
@@ -248,6 +250,22 @@ export function ResearchRunPage() {
                             ? `${(exactRate * 100).toFixed(1)}%`
                             : "Awaiting evaluation",
                       },
+                      ...(informativeGroupRate !== null
+                        ? [
+                            {
+                              label: "RL signal",
+                              value: `${(informativeGroupRate * 100).toFixed(1)}%`,
+                            },
+                          ]
+                        : []),
+                      ...(teacherFallbackRate !== null
+                        ? [
+                            {
+                              label: "Teacher fallback",
+                              value: `${(teacherFallbackRate * 100).toFixed(1)}%`,
+                            },
+                          ]
+                        : []),
                       {
                         label: "Completions",
                         value:

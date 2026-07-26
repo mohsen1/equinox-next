@@ -82,6 +82,11 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
             "reward_gain": 0.0,
             "hypothesis_passed": False,
             "adapter_persisted": True,
+            "post_training_completed": True,
+            "informative_group_rate": 0.2,
+            "teacher_fallback_rate": 0.7,
+            "policy_update_count": 10,
+            "teacher_update_count": 25,
             "elapsed_seconds": 1804.33,
             "stop_reason": "target_runtime",
             "final_by_level": {"1": {"exact_rate": 0.333333}},
@@ -92,3 +97,6 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
     assert progress["exact_rate"] == 0.333333
     assert progress["hypothesis_passed"] is False
     assert progress["adapter_persisted"] is True
+    assert progress["post_training_completed"] is True
+    assert progress["informative_group_rate"] == 0.2
+    assert progress["teacher_fallback_rate"] == 0.7

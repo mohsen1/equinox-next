@@ -147,6 +147,11 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "stop_reason": result.get("stop_reason"),
         "hypothesis_passed": result.get("hypothesis_passed"),
         "adapter_persisted": result.get("adapter_persisted"),
+        "post_training_completed": result.get("post_training_completed"),
+        "informative_group_rate": result.get("informative_group_rate"),
+        "teacher_fallback_rate": result.get("teacher_fallback_rate"),
+        "policy_update_count": result.get("policy_update_count"),
+        "teacher_update_count": result.get("teacher_update_count"),
     }
     return {key: value for key, value in values.items() if value is not None}
 

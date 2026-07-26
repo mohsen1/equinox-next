@@ -15,12 +15,12 @@ case "$experiment" in
     ;;
   model-repair)
     workload_file="model_repair_grpo.py"
-    workload_id="model-repair-group-policy-optimization"
-    execution_name="Verified repair policy learning"
+    workload_id="model-repair-verifier-guided-post-training"
+    execution_name="Verified repair post-training"
     model_id="Qwen/Qwen2.5-Coder-0.5B-Instruct"
-    default_gpu_id="NVIDIA GeForce RTX 4090"
-    default_target_runtime_seconds="3300"
-    default_maximum_lifetime_minutes="75"
+    default_gpu_id="NVIDIA GeForce RTX 3090"
+    default_target_runtime_seconds="2700"
+    default_maximum_lifetime_minutes="60"
     ;;
   *)
     echo "EQUINOX_RUNPOD_EXPERIMENT must be sequence-ladder or model-repair." >&2
@@ -463,7 +463,11 @@ else
   proof_assertion='
     .device == "cuda"
     and .experiment_completed == true
-    and .workload == "model-repair-group-policy-optimization"
+    and .post_training_completed == true
+    and .adapter_persisted == true
+    and .workload == "model-repair-verifier-guided-post-training"
+    and .workload_revision == "runpod-model-repair-grpo@2"
+    and .algorithm == "verifier-guided-group-policy-optimization"
     and .branch_width == 4
     and .complexity_strategy == "adaptive"
     and .model_id == "Qwen/Qwen2.5-Coder-0.5B-Instruct"
@@ -473,6 +477,10 @@ else
       "sqlite_repair"
     ] | sort)
     and .updates_completed >= 1
+    and .optimizer_update_count >= 1
+    and .policy_update_count >= 1
+    and .teacher_update_count >= 1
+    and .total_task_groups >= 6
     and .total_sampled_completions >= 4
     and (.hypothesis_passed | type) == "boolean"
   '
