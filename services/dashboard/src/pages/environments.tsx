@@ -24,21 +24,12 @@ export function EnvironmentsPage() {
 
   return (
     <>
-      <PageHeader
-        title="Environments"
-        description="Stateful task designs with deterministic verification and adaptive difficulty."
-      />
+      <PageHeader title="Environments" />
       <div className="content workspace-content">
         <AsyncState loading={catalog.loading} error={catalog.error}>
           {catalog.data ? (
             <div className="environment-workspace">
               <section className="environment-index" aria-label="Environments">
-                <header className="quiet-heading">
-                  <div>
-                    <h2>Catalog</h2>
-                    <p>{environments.length} verified environments</p>
-                  </div>
-                </header>
                 <div>
                   {environments.map((item) => (
                     <button
@@ -79,7 +70,6 @@ function EnvironmentDetail({
 }) {
   return (
     <article className="environment-detail">
-      <span className="summary-kicker">{environment.short_name}</span>
       <h2>{environment.name}</h2>
       <p className="environment-lede">{environment.summary}</p>
       <dl className="environment-contract">
@@ -115,12 +105,6 @@ function EnvironmentDetail({
           ))}
         </div>
       </section>
-      <footer>
-        <div>
-          <StatusBadge status="VERIFIED" />
-          <span>Executed on RunPod with deterministic task verification.</span>
-        </div>
-      </footer>
     </article>
   );
 }

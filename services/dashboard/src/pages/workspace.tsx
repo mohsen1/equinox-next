@@ -75,19 +75,7 @@ export function RunsPage() {
           empty={!visibleRuns.length}
         >
           {visibleRuns.length ? (
-            <section
-              className="run-queue research-run-queue"
-              aria-label="Training runs"
-            >
-              <header className="quiet-heading">
-                <div>
-                  <h2>Training runs</h2>
-                  <p>
-                    RunPod executions with live learning progress and verified
-                    teardown.
-                  </p>
-                </div>
-              </header>
+            <section className="run-queue" aria-label="Training runs">
               <div className="run-list">
                 {visibleRuns.map((run) => (
                   <ResearchRunRow key={run.execution_id} run={run} />

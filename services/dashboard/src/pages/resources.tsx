@@ -1,11 +1,5 @@
 import { useApi } from "../api";
-import {
-  AsyncState,
-  MachineId,
-  PageHeader,
-  Section,
-  StatusBadge,
-} from "../components";
+import { AsyncState, MachineId, PageHeader, StatusBadge } from "../components";
 
 interface ResourcesResponse {
   allocations: Array<Record<string, any>>;
@@ -61,10 +55,7 @@ export function ResourcesPage() {
   );
   return (
     <>
-      <PageHeader
-        title="Proofs"
-        description="Immutable receipts from completed external training runs."
-      />
+      <PageHeader title="Proofs" />
       <div className="content workspace-content">
         <AsyncState
           loading={loading}
@@ -72,7 +63,7 @@ export function ResourcesPage() {
           empty={!data?.research_compute_proofs.length}
         >
           {data ? (
-            <Section title="Training receipts">
+            <section className="section" aria-label="Training proofs">
               <div className="table-wrap">
                 <table className="data-table research-proofs-table">
                   <thead>
@@ -166,7 +157,7 @@ export function ResourcesPage() {
                   </tbody>
                 </table>
               </div>
-            </Section>
+            </section>
           ) : null}
         </AsyncState>
       </div>
