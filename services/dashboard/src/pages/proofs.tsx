@@ -17,11 +17,20 @@ import {
   formatReward,
   formatSignedReward,
 } from "../format";
+import {
+  decodeProofDetail,
+  decodeProofsResponse,
+  type ProofsResponse,
+} from "../contracts";
 import { Link, useParams } from "../router";
 import type { ResearchProofDetail, ResearchProofSummary } from "../types";
 
 export function ProofsPage() {
-  const proofs = useApi<{ items: ResearchProofSummary[] }>("/v1/proofs", 5_000);
+  const proofs = useApi<ProofsResponse>(
+    "/v1/proofs",
+    5_000,
+    decodeProofsResponse,
+  );
   const items = proofs.data?.items ?? [];
 
   return (
@@ -97,6 +106,7 @@ export function ProofDetailPage() {
   const proof = useApi<ResearchProofDetail>(
     `/v1/proofs/${encodeURIComponent(proofId)}`,
     5_000,
+    decodeProofDetail,
   );
   const item = proof.data;
 
@@ -171,12 +181,12 @@ function ProofEvidence({ proof }: { proof: ResearchProofDetail }) {
               value: formatSignedReward(proof.learning.reward_gain),
             },
             {
-              label: "Hypothesis",
+              label: "Claim",
               value:
-                proof.learning.hypothesis_passed === true
-                  ? "Supported"
-                  : proof.learning.hypothesis_passed === false
-                    ? "Not supported"
+                proof.learning.claim_strength === "EXPLORATORY_SINGLE_SEED"
+                  ? "Exploratory · one seed"
+                  : proof.learning.claim_strength
+                    ? friendlyStatus(proof.learning.claim_strength)
                     : "Not recorded",
             },
           ]}
@@ -207,6 +217,10 @@ function ProofEvidence({ proof }: { proof: ResearchProofDetail }) {
               {
                 label: "Algorithm",
                 value: proof.workload.algorithm ?? "Unavailable",
+              },
+              {
+                label: "Objective",
+                value: proof.workload.objective ?? "Unavailable",
               },
               {
                 label: "Branching",

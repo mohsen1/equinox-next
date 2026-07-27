@@ -3,18 +3,19 @@ name: equinox-next
 x-python-service: &python-service
   restart: unless-stopped
   init: true
-  environment: &shared-environment
-    S3_ENDPOINT: http://minio:9000
-    S3_BUCKET: equinox-artifacts
-    S3_ACCESS_KEY: equinox
-    S3_SECRET_KEY: equinox-local-only
-  depends_on:
-    postgres:
-      condition: service_healthy
-    minio:
-      condition: service_healthy
-  networks:
-    - control
+  read_only: true
+  tmpfs:
+    - /tmp:mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+x-artifact-environment: &artifact-environment
+  S3_ENDPOINT: http://minio:9000
+  S3_BUCKET: equinox-artifacts
+  S3_ACCESS_KEY: equinox
+  S3_SECRET_KEY: equinox-local-only
 
 services:
   postgres:
@@ -31,7 +32,7 @@ services:
       timeout: 3s
       retries: 30
     networks:
-      - control
+      - data
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
@@ -42,15 +43,13 @@ services:
       MINIO_ROOT_PASSWORD: equinox-local-only
     volumes:
       - minio-data:/data
-    ports:
-      - "127.0.0.1:9001:9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 3s
       timeout: 3s
       retries: 30
     networks:
-      - control
+      - data
 
   execution:
     <<: *python-service
@@ -58,18 +57,23 @@ services:
       context: .
       dockerfile: services/execution/Dockerfile
     environment:
-      <<: *shared-environment
+      <<: *artifact-environment
       DATABASE_URL: postgresql://equinox_ops:ops-local-only@postgres:5432/equinox
-      SESSION_ROOT: /var/lib/equinox/sessions
-    volumes:
-      - execution-sessions:/var/lib/equinox/sessions
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - control
+      - data
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz')",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/readyz')",
         ]
       interval: 3s
       timeout: 3s
@@ -81,10 +85,12 @@ services:
       context: .
       dockerfile: services/orchestrator/Dockerfile
     environment:
-      <<: *shared-environment
+      <<: *artifact-environment
       DATABASE_URL: postgresql://equinox_science:science-local-only@postgres:5432/equinox
       EXECUTION_URL: http://execution:8081
       WORKFLOW_STEP_DELAY_MS: ${EQUINOX_FIXTURE_STEP_DELAY_MS:-120}
+      EQUINOX_INTERNAL_TOKEN: ${EQUINOX_INTERNAL_TOKEN:?Run ./scripts/ensure-local-env}
+      EQUINOX_DEPLOYMENT_MODE: local-only
     depends_on:
       postgres:
         condition: service_healthy
@@ -94,35 +100,38 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${EQUINOX_API_PORT:-8180}:8080"
+    networks:
+      - edge
+      - control
+      - data
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz')",
         ]
       interval: 3s
       timeout: 3s
       retries: 30
 
-  mock-agent:
+  fixture-worker:
     <<: *python-service
     build:
       context: .
       dockerfile: services/orchestrator/Dockerfile
-    command: ["python", "-m", "app.mock_agent"]
+    command: ["python", "-m", "app.fixture_worker"]
     environment:
-      <<: *shared-environment
-      DATABASE_URL: postgresql://equinox_science:science-local-only@postgres:5432/equinox
-      EXECUTION_URL: http://execution:8081
       ORCHESTRATOR_URL: http://orchestrator:8080
-      WORKFLOW_STEP_DELAY_MS: ${EQUINOX_FIXTURE_STEP_DELAY_MS:-120}
+      EQUINOX_INTERNAL_TOKEN: ${EQUINOX_INTERNAL_TOKEN:?Run ./scripts/ensure-local-env}
     depends_on:
       orchestrator:
         condition: service_healthy
       execution:
         condition: service_healthy
+    networks:
+      - control
 
   dashboard:
     build:
@@ -130,13 +139,26 @@ services:
       dockerfile: services/dashboard/Dockerfile
     restart: unless-stopped
     init: true
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       orchestrator:
         condition: service_healthy
     ports:
       - "127.0.0.1:${EQUINOX_DASHBOARD_PORT:-3100}:3000"
     networks:
-      - control
+      - edge
 
   test:
     profiles: ["test"]
@@ -153,17 +175,25 @@ services:
       DATABASE_URL: postgresql://equinox_science:science-local-only@postgres:5432/equinox
       OPERATIONAL_DATABASE_URL: postgresql://equinox_ops:ops-local-only@postgres:5432/equinox
       EXECUTION_URL: http://execution:8081
+      EQUINOX_INTERNAL_TOKEN: ${EQUINOX_INTERNAL_TOKEN:?Run ./scripts/ensure-local-env}
     depends_on:
       dashboard:
         condition: service_healthy
     networks:
+      - edge
       - control
+      - data
 
 networks:
+  edge:
+    driver: bridge
   control:
     driver: bridge
+    internal: true
+  data:
+    driver: bridge
+    internal: true
 
 volumes:
   postgres-data:
   minio-data:
-  execution-sessions:

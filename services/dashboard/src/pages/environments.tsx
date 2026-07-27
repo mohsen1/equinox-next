@@ -1,10 +1,15 @@
 import { useApi } from "../api";
 import { AsyncState, PageHeader, StatusBadge } from "../components";
+import { decodeEnvironmentsResponse } from "../contracts";
 import { useSearchParams } from "../router";
 import type { EnvironmentsResponse, EnvironmentSpec } from "../types";
 
 export function EnvironmentsPage() {
-  const catalog = useApi<EnvironmentsResponse>("/v1/environments");
+  const catalog = useApi<EnvironmentsResponse>(
+    "/v1/environments",
+    0,
+    decodeEnvironmentsResponse,
+  );
   const [searchParams, setSearchParams] = useSearchParams();
   const environments =
     catalog.data?.items.filter(

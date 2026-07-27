@@ -7,7 +7,27 @@ cd "$repository_root"
 api_port="${EQUINOX_API_PORT:-8180}"
 api_root="http://127.0.0.1:${api_port}"
 
-curl --fail --silent --show-error --request POST "${api_root}/internal/seed" >/dev/null
+launch_if_missing() {
+  local name="$1"
+  local algorithm="$2"
+  local width="$3"
+  if curl --fail --silent --show-error "${api_root}/v1/runs" |
+    python3 -c '
+import json, sys
+name = sys.argv[1]
+raise SystemExit(0 if any(item["name"] == name for item in json.load(sys.stdin)["items"]) else 1)
+' "$name"; then
+    return
+  fi
+  curl --fail --silent --show-error \
+    --request POST "${api_root}/v1/runs" \
+    --header 'Content-Type: application/json' \
+    --data "{\"name\":\"${name}\",\"algorithm\":\"${algorithm}\",\"branch\":{\"width\":${width}}}" \
+    >/dev/null
+}
+
+launch_if_missing "Local independent baseline" "independent_rollout_baseline" 1
+launch_if_missing "Local branch-aware CAD proof" "bpo_local_metric" 4
 
 for _ in $(seq 1 180); do
   if response="$(curl --fail --silent --show-error "${api_root}/v1/runs")"; then
@@ -35,5 +55,5 @@ raise SystemExit(
 done
 
 echo "Timed out waiting for deterministic CAD runs." >&2
-docker compose logs --no-color --tail=120 orchestrator mock-agent execution >&2
+docker compose logs --no-color --tail=120 orchestrator fixture-worker execution >&2
 exit 1

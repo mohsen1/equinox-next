@@ -32,12 +32,34 @@ BASE = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8080")
 EXECUTION = os.getenv("EXECUTION_URL", "http://execution:8081")
 SCIENCE_DSN = os.getenv("DATABASE_URL", "")
 OPS_DSN = os.getenv("OPERATIONAL_DATABASE_URL", "")
+INTERNAL_TOKEN = os.getenv("EQUINOX_INTERNAL_TOKEN", "")
 
 
 def api(path: str, *, method: str = "GET", json: dict[str, Any] | None = None) -> Any:
-    response = httpx.request(method, f"{BASE}{path}", json=json, timeout=30)
+    headers = (
+        {"Authorization": f"Bearer {INTERNAL_TOKEN}"} if path.startswith("/internal/") else None
+    )
+    response = httpx.request(
+        method,
+        f"{BASE}{path}",
+        json=json,
+        headers=headers,
+        timeout=30,
+    )
     response.raise_for_status()
     return response.json()
+
+
+@pytest.mark.integration
+def test_internal_api_requires_service_authentication() -> None:
+    response = httpx.post(
+        f"{BASE}/internal/agent/claims",
+        json={"worker_id": "unauthenticated-worker"},
+        timeout=10,
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "INTERNAL_AUTH_REQUIRED"
+    assert response.headers["x-request-id"]
 
 
 @pytest.fixture(scope="module")

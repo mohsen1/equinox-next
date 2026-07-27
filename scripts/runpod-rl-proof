@@ -2,6 +2,14 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$repository_root/scripts/ensure-local-env"
+internal_token="${EQUINOX_INTERNAL_TOKEN:-$(
+  sed -n 's/^EQUINOX_INTERNAL_TOKEN=//p' "$repository_root/.env" | tail -n 1
+)}"
+if [[ ${#internal_token} -lt 32 ]]; then
+  echo "EQUINOX_INTERNAL_TOKEN must contain at least 32 characters." >&2
+  exit 1
+fi
 experiment="${EQUINOX_RUNPOD_EXPERIMENT:-repository-repair}"
 support_file=""
 case "$experiment" in
@@ -192,6 +200,7 @@ publish_execution() {
     }' |
     curl --fail --silent --show-error --max-time 15 \
       -X PUT "$api_root/internal/research-compute-executions/$proof_id" \
+      -H "Authorization: Bearer $internal_token" \
       -H 'Content-Type: application/json' \
       --data-binary @- >/dev/null
 }
@@ -285,6 +294,7 @@ while IFS= read -r stale_execution; do
     }' <<<"$stale_execution" |
     curl --fail --silent --show-error --max-time 15 \
       -X PUT "$api_root/internal/research-compute-executions/$stale_id" \
+      -H "Authorization: Bearer $internal_token" \
       -H 'Content-Type: application/json' \
       --data-binary @- >/dev/null
   echo "Reconciled stale observer record $stale_id; no RunPod worker remained." >&2
@@ -692,6 +702,7 @@ jq -n \
 failure_message="The sanitized proof receipt could not be ingested after teardown."
 curl --fail --silent --show-error \
   -X POST "$api_root/internal/research-compute-proofs" \
+  -H "Authorization: Bearer $internal_token" \
   -H 'Content-Type: application/json' \
   --data-binary "@$receipt_path" |
   jq .

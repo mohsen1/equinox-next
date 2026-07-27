@@ -3,36 +3,44 @@ import { useEffect, useState } from "react";
 const API_ROOT = "/api";
 const LOAD_TIMEOUT_MS = 8_000;
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+export type Decoder<T> = (value: unknown) => T;
+
+export async function api<T>(
+  path: string,
+  init?: RequestInit,
+  decode?: Decoder<T>,
+): Promise<T> {
   let response: Response;
   try {
+    const headers = new Headers(init?.headers);
+    if (init?.body !== undefined && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
     response = await fetch(`${API_ROOT}${path}`, {
       ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...init?.headers,
-      },
+      headers,
     });
   } catch (cause) {
     if (cause instanceof Error && cause.name === "AbortError") throw cause;
     throw new Error("The API is temporarily unavailable.");
   }
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(
-      body?.detail?.message ??
-        body?.detail?.code ??
-        `Request failed: ${response.status}`,
-    );
+    const body: unknown = await response.json().catch(() => null);
+    throw new Error(errorMessage(body, response.status));
   }
-  return response.json() as Promise<T>;
+  const body: unknown = await response.json();
+  return decode ? decode(body) : (body as T);
 }
 
 export function artifactUrl(artifactId: string): string {
   return `${API_ROOT}/v1/artifacts/${artifactId}`;
 }
 
-export function useApi<T>(path: string | null, pollIntervalMs = 0) {
+export function useApi<T>(
+  path: string | null,
+  pollIntervalMs = 0,
+  decode?: Decoder<T>,
+) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(Boolean(path));
@@ -64,7 +72,11 @@ export function useApi<T>(path: string | null, pollIntervalMs = 0) {
       });
 
       try {
-        const next = await api<T>(path!, { signal: requestController.signal });
+        const next = await api<T>(
+          path!,
+          { signal: requestController.signal },
+          decode,
+        );
         setData(next);
         setError(null);
       } catch (cause) {
@@ -99,7 +111,7 @@ export function useApi<T>(path: string | null, pollIntervalMs = 0) {
       lifecycleController.abort();
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [path, pollIntervalMs, retryToken]);
+  }, [path, pollIntervalMs, retryToken, decode]);
 
   return {
     data,
@@ -109,4 +121,30 @@ export function useApi<T>(path: string | null, pollIntervalMs = 0) {
     retry: () => setRetryToken((value) => value + 1),
     setData,
   };
+}
+
+function errorMessage(body: unknown, status: number): string {
+  if (typeof body === "string" && body.trim()) return body;
+  if (!body || typeof body !== "object") return `Request failed: ${status}`;
+  const detail = "detail" in body ? body.detail : body;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) =>
+        item && typeof item === "object" && "msg" in item
+          ? String(item.msg)
+          : null,
+      )
+      .filter((item): item is string => Boolean(item));
+    if (messages.length) return messages.join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    if ("message" in detail && typeof detail.message === "string") {
+      return detail.message;
+    }
+    if ("code" in detail && typeof detail.code === "string") {
+      return detail.code;
+    }
+  }
+  return `Request failed: ${status}`;
 }

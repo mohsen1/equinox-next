@@ -67,7 +67,6 @@ const trajectory: ResearchTrajectory = {
       expected_action: "UPDATE jobs SET state = 'done' WHERE id = 4;",
       best_sibling_index: 1,
       learning_signal: true,
-      teacher_fallback: false,
       siblings: [
         {
           index: 0,
@@ -115,9 +114,7 @@ const trajectory: ResearchTrajectory = {
   initial_by_level: { "0": { ...observation, exact_rate: 0.4 } },
   final_by_level: { "0": { ...observation, exact_rate: 0.9 } },
   policy_update_count: 4,
-  teacher_update_count: 2,
   informative_group_rate: 0.2,
-  teacher_fallback_rate: 0.1,
   total_sampled_completions: 960,
 };
 
@@ -178,7 +175,6 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
   },
   best_sibling_index: 0,
   learning_signal: true,
-  teacher_fallback: false,
   replay: false,
   siblings: Array.from({ length: 4 }, (_, index) => ({
     index,

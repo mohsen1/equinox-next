@@ -71,7 +71,7 @@ before="$(
   curl --fail --silent "${api_base}/v1/runs" |
     python3 -c 'import json,sys; print(sum(x["verification_run_count"] for x in json.load(sys.stdin)["items"]))'
 )"
-docker compose restart postgres minio execution orchestrator mock-agent dashboard
+docker compose restart postgres minio execution orchestrator fixture-worker dashboard
 docker compose up -d --wait
 after="$(
   curl --fail --silent "${api_base}/v1/runs" |

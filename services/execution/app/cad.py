@@ -110,14 +110,9 @@ def geometry_report(state: dict[str, Any]) -> dict[str, Any]:
     boss_volume = (
         math.pi * (float(boss["diameter"]) / 2) ** 2 * float(boss["height"]) if boss else 0
     )
-    bore_volume = (
-        math.pi * (float(bore["diameter"]) / 2) ** 2 * float(bore["depth"]) if bore else 0
-    )
+    bore_volume = math.pi * (float(bore["diameter"]) / 2) ** 2 * float(bore["depth"]) if bore else 0
     hole_volume = (
-        int(holes["count"])
-        * math.pi
-        * (float(holes["diameter"]) / 2) ** 2
-        * dimensions["height"]
+        int(holes["count"]) * math.pi * (float(holes["diameter"]) / 2) ** 2 * dimensions["height"]
         if holes
         else 0
     )
@@ -229,16 +224,14 @@ def render_svg(state: dict[str, Any], *, label: str) -> bytes:
             for index in range(max(0, min(edge_count, 8))):
                 marker_x = top_x + 5 + index * 8
                 top_shapes += (
-                    f'<circle cx="{marker_x:.3f}" cy="{top_y + 5:.3f}" '
-                    'r="1.5" class="feature"/>'
+                    f'<circle cx="{marker_x:.3f}" cy="{top_y + 5:.3f}" r="1.5" class="feature"/>'
                 )
     if boss:
         boss_x = 160 + float(boss["x"]) * 2.2
         boss_y = 192 - float(boss["y"]) * 2.2
         boss_radius = float(boss["diameter"]) * 1.1
         top_shapes += (
-            f'<circle cx="{boss_x:.3f}" cy="{boss_y:.3f}" '
-            f'r="{boss_radius:.3f}" class="feature"/>'
+            f'<circle cx="{boss_x:.3f}" cy="{boss_y:.3f}" r="{boss_radius:.3f}" class="feature"/>'
         )
     if bore:
         radius = min(54, float(bore["diameter"]) * 1.25)
@@ -253,13 +246,17 @@ def render_svg(state: dict[str, Any], *, label: str) -> bytes:
         pitch_x = float(holes["x_pitch"]) * 1.1
         pitch_y = float(holes["y_pitch"]) * 1.1
         hole_radius = float(holes["diameter"]) * 1.15
-        positions = [
-            (
-                160 + pitch_x * math.cos((2 * math.pi * index / count) - math.pi / 2),
-                192 + pitch_y * math.sin((2 * math.pi * index / count) - math.pi / 2),
-            )
-            for index in range(count)
-        ] if count > 0 else []
+        positions = (
+            [
+                (
+                    160 + pitch_x * math.cos((2 * math.pi * index / count) - math.pi / 2),
+                    192 + pitch_y * math.sin((2 * math.pi * index / count) - math.pi / 2),
+                )
+                for index in range(count)
+            ]
+            if count > 0
+            else []
+        )
         for x, y in positions:
             top_shapes += f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{hole_radius:.3f}" class="cut"/>'
 
@@ -270,14 +267,14 @@ def render_svg(state: dict[str, Any], *, label: str) -> bytes:
         iso_scale_y = max(45.0, min(90.0, float(depth)))
         iso_shapes = (
             f'<path d="M330 208 L{330 + iso_scale_x:.3f} {208 - iso_scale_y:.3f} '
-            f'L{330 + iso_scale_x * 2:.3f} 208 L{330 + iso_scale_x:.3f} '
+            f"L{330 + iso_scale_x * 2:.3f} 208 L{330 + iso_scale_x:.3f} "
             f'{208 + iso_scale_y:.3f} Z" class="solid"/>'
             f'<path d="M330 208 L330 {208 + iso_rise:.3f} '
-            f'L{330 + iso_scale_x:.3f} {208 + iso_scale_y + iso_rise:.3f} '
+            f"L{330 + iso_scale_x:.3f} {208 + iso_scale_y + iso_rise:.3f} "
             f'L{330 + iso_scale_x:.3f} {208 + iso_scale_y:.3f} Z" class="side"/>'
             f'<path d="M{330 + iso_scale_x:.3f} {208 + iso_scale_y:.3f} '
-            f'L{330 + iso_scale_x * 2:.3f} 208 L{330 + iso_scale_x * 2:.3f} '
-            f'{208 + iso_rise:.3f} L{330 + iso_scale_x:.3f} '
+            f"L{330 + iso_scale_x * 2:.3f} 208 L{330 + iso_scale_x * 2:.3f} "
+            f"{208 + iso_rise:.3f} L{330 + iso_scale_x:.3f} "
             f'{208 + iso_scale_y + iso_rise:.3f} Z" class="side2"/>'
         )
     if boss:

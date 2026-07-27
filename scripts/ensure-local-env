@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+environment_file="$repository_root/.env"
+
+if [[ -f "$environment_file" ]] && grep -q '^EQUINOX_INTERNAL_TOKEN=' "$environment_file"; then
+  exit 0
+fi
+
+token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+umask 077
+if [[ -s "$environment_file" ]]; then
+  printf '\nEQUINOX_INTERNAL_TOKEN=%s\n' "$token" >>"$environment_file"
+else
+  printf 'EQUINOX_INTERNAL_TOKEN=%s\n' "$token" >"$environment_file"
+fi

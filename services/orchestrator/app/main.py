@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
+import os
+import secrets
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Literal
 
 from equinox_core import canonical_digest, make_id, utc_now
-from fastapi import FastAPI, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -173,9 +177,10 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "adapter_persisted": result.get("adapter_persisted"),
         "post_training_completed": result.get("post_training_completed"),
         "informative_group_rate": result.get("informative_group_rate"),
-        "teacher_fallback_rate": result.get("teacher_fallback_rate"),
         "policy_update_count": result.get("policy_update_count"),
-        "teacher_update_count": result.get("teacher_update_count"),
+        "claim_strength": result.get("claim_strength"),
+        "seed_count": result.get("seed_count", result.get("optimization_seed_count")),
+        "objective": result.get("objective", result.get("objective_id")),
         "checkpoint_rate": level_result.get("checkpoint_rate", result.get("checkpoint_rate")),
         "total_sampled_actions": result.get("total_sampled_actions"),
         "multi_step": result.get("multi_step"),
@@ -232,9 +237,7 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "initial_by_level": initial_by_level if isinstance(initial_by_level, dict) else {},
         "final_by_level": final_by_level if isinstance(final_by_level, dict) else {},
         "policy_update_count": result.get("policy_update_count"),
-        "teacher_update_count": result.get("teacher_update_count"),
         "informative_group_rate": result.get("informative_group_rate"),
-        "teacher_fallback_rate": result.get("teacher_fallback_rate"),
         "total_sampled_completions": result.get("total_sampled_completions"),
         "total_sampled_actions": result.get("total_sampled_actions"),
         "total_post_branch_actions": result.get("total_post_branch_actions"),
@@ -305,6 +308,8 @@ def research_proof_response(
             "final_reward": result.get("final_reward"),
             "reward_gain": result.get("reward_gain"),
             "hypothesis_passed": result.get("hypothesis_passed"),
+            "claim_strength": result.get("claim_strength"),
+            "seed_count": result.get("seed_count", result.get("optimization_seed_count")),
         },
         "hardware": {
             "provider": item["provider_name"],
@@ -335,6 +340,11 @@ def research_proof_response(
                 "id": workload.get("id"),
                 "revision": workload.get("revision"),
                 "algorithm": workload.get("algorithm"),
+                "objective": (
+                    result.get("objective")
+                    or result.get("objective_id")
+                    or workload.get("objective")
+                ),
                 "model_id": workload.get("model_id") or result.get("model_id"),
                 "model_revision": workload.get("model_revision") or result.get("model_revision"),
                 "branch_width": workload.get("static_branch_width"),
@@ -384,6 +394,10 @@ def _wait_for_dependencies() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if os.environ.get("EQUINOX_DEPLOYMENT_MODE") != "local-only":
+        raise RuntimeError(
+            "This build has no user authentication and only supports local-only deployment"
+        )
     _wait_for_dependencies()
     with connection() as conn:
         canceled_run_ids = [
@@ -430,6 +444,48 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Equinox Next orchestrator", version="0.1.0", lifespan=lifespan)
+request_logger = logging.getLogger("equinox.requests")
+INTERNAL_TOKEN = os.environ.get("EQUINOX_INTERNAL_TOKEN", "")
+if len(INTERNAL_TOKEN) < 32:
+    raise RuntimeError("EQUINOX_INTERNAL_TOKEN must contain at least 32 characters")
+
+
+@app.middleware("http")
+async def authenticate_internal_api(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", "")
+    if not request_id or len(request_id) > 128:
+        request_id = uuid.uuid4().hex
+    started = time.monotonic()
+    if request.url.path.startswith("/internal/"):
+        authorization = request.headers.get("authorization", "")
+        supplied = (
+            authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+        )
+        if not supplied or not secrets.compare_digest(supplied, INTERNAL_TOKEN):
+            response = JSONResponse(
+                status_code=401,
+                content={"detail": {"code": "INTERNAL_AUTH_REQUIRED"}},
+            )
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    request_logger.info(
+        json.dumps(
+            {
+                "event": "http_request",
+                "service": "orchestrator",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+            },
+            sort_keys=True,
+        )
+    )
+    return response
 
 
 def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> dict[str, Any]:
@@ -615,8 +671,19 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
 
 @app.get("/healthz")
 def health() -> dict[str, Any]:
+    return readiness()
+
+
+@app.get("/livez")
+def liveness() -> dict[str, str]:
+    return {"status": "alive", "service": "orchestrator"}
+
+
+@app.get("/readyz")
+def readiness() -> dict[str, Any]:
     with connection() as conn:
         conn.execute("SELECT 1")
+    artifact_store.ensure_bucket()
     return {
         "status": "ready",
         "service": "orchestrator",
@@ -680,37 +747,6 @@ def environments() -> dict[str, Any]:
 @app.post("/v1/runs", status_code=202)
 def launch_run(request: LaunchRunRequest) -> dict[str, Any]:
     return _launch(request)
-
-
-@app.post("/internal/seed", status_code=202)
-def seed_demo() -> dict[str, Any]:
-    with connection() as conn:
-        existing = list(
-            conn.execute(
-                """
-                SELECT run_id, algorithm, status FROM runs
-                WHERE name IN ('Local independent baseline', 'Local branch-aware CAD proof')
-                ORDER BY created_at
-                """
-            )
-        )
-    if existing:
-        return {"runs": existing, "existing": True}
-    baseline = _launch(
-        LaunchRunRequest(
-            name="Local independent baseline",
-            algorithm="independent_rollout_baseline",
-            branch=BranchConfig(width=1),
-        )
-    )
-    branch = _launch(
-        LaunchRunRequest(
-            name="Local branch-aware CAD proof",
-            algorithm="bpo_local_metric",
-            branch=BranchConfig(width=4),
-        )
-    )
-    return {"runs": [baseline, branch], "existing": False}
 
 
 @app.get("/v1/runs")
@@ -1862,7 +1898,7 @@ def artifact(artifact_id: str) -> Response:
         "X-Content-Type-Options": "nosniff",
         "Cross-Origin-Resource-Policy": "same-origin",
     }
-    if item["candidate"]:
+    if item["candidate"] or item["media_type"] == "image/svg+xml":
         headers["Content-Security-Policy"] = (
             "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
         )

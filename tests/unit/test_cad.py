@@ -52,9 +52,9 @@ def test_submitted_fixture_requires_every_feature_and_exact_parameters() -> None
     assert report["topology_valid"] is False
 
     wrong_boss = deepcopy(cad.TARGET_STATE)
-    next(feature for feature in wrong_boss["features"] if feature["kind"] == "boss")[
-        "diameter"
-    ] = 35
+    next(feature for feature in wrong_boss["features"] if feature["kind"] == "boss")["diameter"] = (
+        35
+    )
     report = cad.geometry_report(wrong_boss)
     assert report["constraints_passed"] is False
     assert "feature parameters" in report["violations"][-1]

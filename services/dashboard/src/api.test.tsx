@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useApi } from "./api";
+import { api, useApi } from "./api";
 
 function LiveValue() {
   const { data } = useApi<{ sequence: number }>("/v1/live", 1_000);
@@ -100,5 +100,48 @@ describe("useApi polling", () => {
     });
     expect(container.querySelector("output")?.textContent).toBe("3");
     expect(container.textContent).toContain("connected");
+  });
+});
+
+describe("api boundary", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not claim a JSON request body on GET", async () => {
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ ok: true }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api("/v1/live");
+
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Headers;
+    expect(headers.has("Content-Type")).toBe(false);
+  });
+
+  it("rejects a malformed success response through its decoder", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ sequence: "wrong" }),
+      })),
+    );
+
+    await expect(
+      api("/v1/live", undefined, (value) => {
+        if (
+          !value ||
+          typeof value !== "object" ||
+          !("sequence" in value) ||
+          typeof value.sequence !== "number"
+        ) {
+          throw new Error("Invalid API response.");
+        }
+        return value.sequence;
+      }),
+    ).rejects.toThrow("Invalid API response.");
   });
 });

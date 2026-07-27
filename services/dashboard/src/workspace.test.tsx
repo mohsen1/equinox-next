@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProofDetailPage, ProofsPage } from "./pages/proofs";
-import { RunsPage } from "./pages/workspace";
+import { RunsPage } from "./pages/runs";
 import { BrowserRouter, Route, Routes } from "./router";
 
 function response(body: unknown) {
@@ -90,7 +90,7 @@ describe("Runs and Proofs workspaces", () => {
     expect(container.textContent).toContain("Update 12 of 80");
     expect(container.textContent).toContain("NVIDIA A40");
     expect(container.textContent).toContain("$0.11 est.");
-    expect(container.textContent).toContain("adaptive complexity · K=4");
+    expect(container.textContent).toContain("K=4 · adaptive");
     const time = container.querySelector("time");
     expect(time?.textContent).toBe("4 min ago");
     expect(time?.getAttribute("aria-label")).not.toBe(time?.textContent);

@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+./scripts/ensure-local-env
+
 failures=0
 
 pass() {

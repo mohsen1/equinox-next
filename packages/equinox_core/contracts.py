@@ -91,11 +91,7 @@ def validate_proof_bundle(value: dict[str, Any]) -> None:
         raise ContractValidationError(
             "ProofBundle.ordered_artifact_digests: must exactly match the declared evidence roles"
         )
-    content = {
-        key: item
-        for key, item in value.items()
-        if key not in {"proof_bundle_id", "digest"}
-    }
+    content = {key: item for key, item in value.items() if key not in {"proof_bundle_id", "digest"}}
     expected_digest = canonical_digest(content)
     if value["digest"] != expected_digest:
         raise ContractValidationError(

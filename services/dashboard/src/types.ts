@@ -92,9 +92,10 @@ export interface ResearchComputeExecution {
     adapter_persisted?: boolean;
     post_training_completed?: boolean;
     informative_group_rate?: number;
-    teacher_fallback_rate?: number;
     policy_update_count?: number;
-    teacher_update_count?: number;
+    claim_strength?: string;
+    seed_count?: number;
+    objective?: string;
     error?: string;
     [key: string]: unknown;
   };
@@ -123,6 +124,8 @@ export interface ResearchProofSummary {
     final_reward?: number | null;
     reward_gain?: number | null;
     hypothesis_passed?: boolean | null;
+    claim_strength?: string | null;
+    seed_count?: number | null;
   };
   hardware: {
     provider: string;
@@ -147,6 +150,7 @@ export interface ResearchProofDetail extends ResearchProofSummary {
     id?: string | null;
     revision?: string | null;
     algorithm?: string | null;
+    objective?: string | null;
     model_id?: string | null;
     model_revision?: string | null;
     branch_width?: number | null;
@@ -198,12 +202,9 @@ export interface ResearchTrajectoryCheckpoint extends ResearchLevelObservation {
   training_branch_pass_rate?: number;
   loss?: number;
   policy_loss?: number;
-  teacher_loss?: number;
   gradient_norm?: number;
   informative_group_rate?: number;
-  teacher_fallback_rate?: number;
   policy_update_count?: number;
-  teacher_update_count?: number;
   mastery_streak?: number;
   elapsed_seconds?: number;
 }
@@ -287,7 +288,6 @@ export interface ResearchBranchSnapshot {
   expected_action?: string;
   best_sibling_index: number | null;
   learning_signal: boolean;
-  teacher_fallback: boolean;
   excluded?: boolean;
   exclusion_reason?: string | null;
   replay?: boolean;
@@ -319,9 +319,7 @@ export interface ResearchTrajectory {
   initial_by_level: Record<string, ResearchLevelObservation>;
   final_by_level: Record<string, ResearchLevelObservation>;
   policy_update_count?: number;
-  teacher_update_count?: number;
   informative_group_rate?: number;
-  teacher_fallback_rate?: number;
   total_sampled_completions?: number;
   total_sampled_actions?: number;
   total_post_branch_actions?: number;

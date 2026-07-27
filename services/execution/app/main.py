@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -17,7 +19,7 @@ from equinox_core import (
     validate_contract,
     validate_judge_result,
 )
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -173,6 +175,32 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+request_logger = logging.getLogger("equinox.requests")
+
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", "")
+    if not request_id or len(request_id) > 128:
+        request_id = uuid.uuid4().hex
+    started = time.monotonic()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    request_logger.info(
+        json.dumps(
+            {
+                "event": "http_request",
+                "service": "execution",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+            },
+            sort_keys=True,
+        )
+    )
+    return response
 
 
 def _operation_input(request: OperationEnvelope) -> dict[str, Any]:
@@ -794,8 +822,19 @@ def _stored_payload(stored: Any) -> dict[str, Any]:
 
 @app.get("/healthz")
 def health() -> dict[str, Any]:
+    return readiness()
+
+
+@app.get("/livez")
+def liveness() -> dict[str, str]:
+    return {"status": "alive", "service": "execution"}
+
+
+@app.get("/readyz")
+def readiness() -> dict[str, Any]:
     with connection() as conn:
         conn.execute("SELECT 1")
+    artifact_store.ensure_bucket()
     return {
         "status": "ready",
         "service": "execution",

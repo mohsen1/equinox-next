@@ -8,7 +8,7 @@
 import { AppShell } from "./components";
 import { EnvironmentsPage } from "./pages/environments";
 import { ResearchTrajectoryPage } from "./pages/research-trajectory";
-import { ResearchRunPage, RunsPage } from "./pages/workspace";
+import { ResearchRunPage, RunsPage } from "./pages/runs";
 import { ProofDetailPage, ProofsPage } from "./pages/proofs";
 import { Navigate, Route, Routes } from "./router";
 

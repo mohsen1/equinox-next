@@ -18,6 +18,7 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 import { useApi } from "../api";
+import { decodeResearchTrajectoryResponse } from "../contracts";
 import {
   AsyncState,
   friendlyStatus,
@@ -101,8 +102,9 @@ export function ResearchTrajectoryPage() {
   const { executionId = "" } = useParams<{ executionId: string }>();
   const [params, setParams] = useSearchParams();
   const response = useApi<ResearchTrajectoryResponse>(
-    `/v1/research-compute-executions/${executionId}/trajectory`,
+    `/v1/research-compute-executions/${encodeURIComponent(executionId)}/trajectory`,
     2_000,
+    decodeResearchTrajectoryResponse,
   );
   const run = response.data?.execution;
   const trajectory = response.data?.trajectory;
@@ -694,7 +696,9 @@ function TrajectoryInspector({
       <div className="trajectory-selected-step">
         <h2>{step.title}</h2>
         <strong>{formatPercent(step.exactRate)}</strong>
-        <span>held-out exact</span>
+        <span>
+          {step.kind === "checkpoint" ? "validation exact" : "test exact"}
+        </span>
       </div>
       {checkpoint ? (
         <>
@@ -710,20 +714,12 @@ function TrajectoryInspector({
               value={formatOptionalPercent(checkpoint.informative_group_rate)}
             />
             <Fact
-              label="Teacher fallback"
-              value={formatOptionalPercent(checkpoint.teacher_fallback_rate)}
-            />
-            <Fact
               label="Mastery"
               value={`${checkpoint.mastery_streak ?? 0} windows`}
             />
             <Fact
               label="Policy updates"
               value={String(checkpoint.policy_update_count ?? 0)}
-            />
-            <Fact
-              label="Teacher updates"
-              value={String(checkpoint.teacher_update_count ?? 0)}
             />
             <Fact
               label="Gradient norm"
@@ -779,10 +775,6 @@ function TrajectoryInspector({
           <Fact
             label="RL signal"
             value={formatOptionalPercent(trajectory.informative_group_rate)}
-          />
-          <Fact
-            label="Teacher fallback"
-            value={formatOptionalPercent(trajectory.teacher_fallback_rate)}
           />
         </dl>
       ) : null}

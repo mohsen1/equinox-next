@@ -27,9 +27,7 @@ class LocalFixtureComputeProvider:
         return
 
 
-POLICY_COMPUTE_PROVIDERS = {
-    "LocalFixtureComputeProvider": LocalFixtureComputeProvider()
-}
+POLICY_COMPUTE_PROVIDERS = {"LocalFixtureComputeProvider": LocalFixtureComputeProvider()}
 JUDGE_PROVIDER_NAMES = {"DeterministicJudgeFixture"}
 
 

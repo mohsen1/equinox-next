@@ -8,10 +8,14 @@ import httpx
 
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8080")
 WORKER_ID = os.getenv("WORKER_ID", f"fixture-worker:{socket.gethostname()}")
+INTERNAL_TOKEN = os.environ["EQUINOX_INTERNAL_TOKEN"]
 
 
 def main() -> None:
-    with httpx.Client(timeout=300) as client:
+    with httpx.Client(
+        timeout=300,
+        headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+    ) as client:
         while True:
             try:
                 response = client.post(

@@ -236,9 +236,10 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
             "adapter_persisted": True,
             "post_training_completed": True,
             "informative_group_rate": 0.2,
-            "teacher_fallback_rate": 0.7,
             "policy_update_count": 10,
-            "teacher_update_count": 25,
+            "claim_strength": "EXPLORATORY_SINGLE_SEED",
+            "seed_count": 1,
+            "objective": "leave-one-out-group-normalized-reinforce@1",
             "elapsed_seconds": 1804.33,
             "stop_reason": "target_runtime",
             "final_by_level": {"1": {"exact_rate": 0.333333}},
@@ -251,7 +252,8 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
     assert progress["adapter_persisted"] is True
     assert progress["post_training_completed"] is True
     assert progress["informative_group_rate"] == 0.2
-    assert progress["teacher_fallback_rate"] == 0.7
+    assert progress["claim_strength"] == "EXPLORATORY_SINGLE_SEED"
+    assert progress["seed_count"] == 1
 
 
 def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
@@ -281,7 +283,6 @@ def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
             "initial_by_level": {"0": {"exact_rate": 0.4}},
             "final_by_level": {"0": {"exact_rate": 0.9}},
             "policy_update_count": 7,
-            "teacher_update_count": 3,
         }
     )
 
