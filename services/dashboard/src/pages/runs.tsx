@@ -279,7 +279,9 @@ function progressItems(run: ResearchComputeExecution) {
   const informativeGroupRate = numberValue(progress.informative_group_rate);
   const evaluationCompleted = numberValue(progress.evaluation_completed);
   const evaluationTotal = numberValue(progress.evaluation_total);
+  const progressPhase = stringValue(progress.phase);
   const evaluating =
+    progressPhase?.includes("evaluation") === true &&
     evaluationCompleted !== null &&
     evaluationTotal !== null &&
     evaluationTotal > 0;
@@ -290,7 +292,7 @@ function progressItems(run: ResearchComputeExecution) {
       value:
         run.status === "SUCCEEDED"
           ? "Complete"
-          : friendlyStatus(stringValue(progress.phase) ?? run.status),
+          : friendlyStatus(progressPhase ?? run.status),
     },
     {
       label: evaluating ? "Evaluation" : "Updates",

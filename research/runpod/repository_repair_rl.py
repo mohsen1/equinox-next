@@ -1784,6 +1784,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             policy_update_count=policy_update_count,
             latest_branch_snapshot=latest_snapshot,
             elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
+            evaluation_completed=None,
+            evaluation_total=None,
         )
 
         (
