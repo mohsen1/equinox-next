@@ -4,7 +4,7 @@ import io
 import json
 import tarfile
 from http import HTTPStatus
-from http.client import HTTPConnection
+from http.client import HTTPConnection, RemoteDisconnected
 from pathlib import Path
 from threading import Thread
 
@@ -114,6 +114,52 @@ def test_bootstrap_accepts_authenticated_bundle_before_handoff(
 
         assert response.status == HTTPStatus.ACCEPTED
         assert json.loads(response.read()) == {"status": "bundle_installed"}
+    finally:
+        connection.close()
+        thread.join(timeout=2)
+        server.server_close()
+
+    assert server.bundle_ready is True
+    assert {path.name for path in tmp_path.iterdir()} == set(files)
+
+
+def test_bootstrap_hands_off_when_the_proxy_drops_the_acceptance_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = "test-transport-token"
+    workload_file = "branching_sequence_ladder.py"
+    files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+    payload = bundle_payload(files)
+    monkeypatch.setenv("EQUINOX_RESULT_TOKEN", token)
+    monkeypatch.setenv("EQUINOX_REMOTE_WORKDIR", str(tmp_path))
+    monkeypatch.setenv("EQUINOX_WORKLOAD_FILE", workload_file)
+
+    def dropped_response(
+        _: BootstrapHandler,
+        __: HTTPStatus,
+        ___: dict[str, object],
+    ) -> None:
+        raise BrokenPipeError
+
+    monkeypatch.setattr(BootstrapHandler, "_write_json", dropped_response)
+    server = BootstrapServer(("127.0.0.1", 0), BootstrapHandler)
+    thread = Thread(target=server.handle_request)
+    thread.start()
+    connection = HTTPConnection(*server.server_address, timeout=2)
+    try:
+        connection.request(
+            "POST",
+            "/bundle",
+            body=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/gzip",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        with pytest.raises(RemoteDisconnected):
+            connection.getresponse()
     finally:
         connection.close()
         thread.join(timeout=2)

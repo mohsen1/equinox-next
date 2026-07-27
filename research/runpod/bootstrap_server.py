@@ -134,8 +134,8 @@ class BootstrapHandler(BaseHTTPRequestHandler):
                 {"error": "INVALID_BUNDLE"},
             )
             return
-        self._write_json(HTTPStatus.ACCEPTED, {"status": "bundle_installed"})
         self.server.bundle_ready = True
+        self._write_json(HTTPStatus.ACCEPTED, {"status": "bundle_installed"})
 
 
 def main() -> None:
