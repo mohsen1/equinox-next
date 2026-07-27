@@ -65,6 +65,7 @@ dashboard_root="${EQUINOX_DASHBOARD_ROOT:-http://127.0.0.1:3100}"
 gpu_id="${EQUINOX_RUNPOD_GPU:-$default_gpu_id}"
 template_id="${EQUINOX_RUNPOD_TEMPLATE:-runpod-torch-v280}"
 cloud_type="${EQUINOX_RUNPOD_CLOUD_TYPE:-$default_cloud_type}"
+data_center_ids="${EQUINOX_RUNPOD_DATA_CENTER_IDS:-}"
 maximum_hourly_cost="${EQUINOX_RUNPOD_MAX_HOURLY_COST:-0.50}"
 maximum_lifetime_minutes="${EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES:-$default_maximum_lifetime_minutes}"
 boot_timeout_seconds="${EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS:-360}"
@@ -128,6 +129,11 @@ if [[ -z "$image" ]]; then
 fi
 if [[ "$cloud_type" != "COMMUNITY" && "$cloud_type" != "SECURE" ]]; then
   echo "EQUINOX_RUNPOD_CLOUD_TYPE must be COMMUNITY or SECURE." >&2
+  exit 1
+fi
+if [[ -n "$data_center_ids" ]] &&
+  [[ ! "$data_center_ids" =~ ^[A-Z0-9-]+(,[A-Z0-9-]+)*$ ]]; then
+  echo "EQUINOX_RUNPOD_DATA_CENTER_IDS must be a comma-separated list of RunPod datacenter ids." >&2
   exit 1
 fi
 if [[ "$experiment" == "sequence-ladder" ]]; then
@@ -278,6 +284,7 @@ resource_profile="$(
     --arg gpu_id "$gpu_id" \
     --arg image "$image" \
     --arg cloud_type "$cloud_type" \
+    --arg data_center_ids "$data_center_ids" \
     --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
     --argjson maximum_hourly_cost "$maximum_hourly_cost" \
     '{
@@ -285,6 +292,12 @@ resource_profile="$(
       gpu_count: 1,
       image: $image,
       cloud_type: $cloud_type,
+      data_center_ids: (
+        if $data_center_ids == ""
+        then null
+        else ($data_center_ids | split(","))
+        end
+      ),
       persistent_volume_in_gb: $persistent_volume_in_gb,
       maximum_hourly_cost_usd: $maximum_hourly_cost
     }'
@@ -439,22 +452,26 @@ execution_registered=true
 
 echo "Creating one bounded RunPod worker; provider deadline: $terminate_after" >&2
 failure_message="RunPod pod creation failed before a provider handle was returned."
-create_response="$(
-  runpodctl pod create \
-    --name "$pod_name" \
-    --template-id "$template_id" \
-    --gpu-id "$gpu_id" \
-    --gpu-count 1 \
-    --cloud-type "$cloud_type" \
-    --container-disk-in-gb "$container_disk_in_gb" \
-    --volume-in-gb "$persistent_volume_in_gb" \
-    --volume-mount-path "/workspace" \
-    --ports "8000/http" \
-    --ssh=false \
-    --env "$pod_environment" \
-    --docker-args "$docker_args" \
-    --terminate-after "$terminate_after"
-)"
+create_arguments=(
+  pod create
+  --name "$pod_name"
+  --template-id "$template_id"
+  --gpu-id "$gpu_id"
+  --gpu-count 1
+  --cloud-type "$cloud_type"
+  --container-disk-in-gb "$container_disk_in_gb"
+  --volume-in-gb "$persistent_volume_in_gb"
+  --volume-mount-path "/workspace"
+  --ports "8000/http"
+  --ssh=false
+  --env "$pod_environment"
+  --docker-args "$docker_args"
+  --terminate-after "$terminate_after"
+)
+if [[ -n "$data_center_ids" ]]; then
+  create_arguments+=(--data-center-ids "$data_center_ids")
+fi
+create_response="$(runpodctl "${create_arguments[@]}")"
 pod_id="$(jq -r '.id // .pod.id // empty' <<<"$create_response")"
 if [[ ! "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   echo "RunPod did not return a valid pod id." >&2
@@ -483,6 +500,7 @@ resource_profile="$(
     --arg gpu_id "$gpu_id" \
     --arg image "$image" \
     --arg cloud_type "$cloud_type" \
+    --arg data_center_ids "$data_center_ids" \
     --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
     --argjson hourly_cost "$hourly_cost" \
     --argjson maximum_hourly_cost "$maximum_hourly_cost" \
@@ -491,6 +509,12 @@ resource_profile="$(
       gpu_count: 1,
       image: $image,
       cloud_type: $cloud_type,
+      data_center_ids: (
+        if $data_center_ids == ""
+        then null
+        else ($data_center_ids | split(","))
+        end
+      ),
       persistent_volume_in_gb: $persistent_volume_in_gb,
       hourly_cost_usd: $hourly_cost,
       maximum_hourly_cost_usd: $maximum_hourly_cost
@@ -898,6 +922,7 @@ jq -n \
   --arg gpu_id "$gpu_id" \
   --arg image "$image" \
   --arg cloud_type "$cloud_type" \
+  --arg data_center_ids "$data_center_ids" \
   --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
   --argjson hourly_cost "$hourly_cost" \
   --arg started_at "$started_at" \
@@ -913,6 +938,12 @@ jq -n \
       image: $image,
       hourly_cost_usd: $hourly_cost,
       cloud_type: $cloud_type,
+      data_center_ids: (
+        if $data_center_ids == ""
+        then null
+        else ($data_center_ids | split(","))
+        end
+      ),
       persistent_volume_in_gb: $persistent_volume_in_gb
     },
     workload: {
