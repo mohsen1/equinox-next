@@ -605,43 +605,68 @@ last_progress="$(
 publish_execution "PROVISIONING" "$last_progress"
 echo "Container is live; uploading the authenticated workload bundle." >&2
 failure_message="The RunPod worker rejected the authenticated workload bundle."
-bundle_upload_status="$(
-  curl --silent --show-error --max-time 60 \
-    -X POST \
-    -H "$remote_authorization" \
-    -H "Content-Type: application/gzip" \
-    --data-binary "@$bundle_source_path" \
-    --output /dev/null \
-    --write-out "%{http_code}" \
-    "$bundle_upload_url" || true
-)"
-rm -f -- "$bundle_source_path"
-bundle_source_path=""
-if [[ "$bundle_upload_status" != "202" ]]; then
-  echo "Bundle upload returned HTTP $bundle_upload_status; checking for workload handoff." >&2
-fi
-
 workload_transport_ready=false
 failure_message="The bundle upload did not hand off to structured workload progress."
+bundle_upload_attempts=3
 bundle_handoff_attempts=12
-for ((attempt = 1; attempt <= bundle_handoff_attempts; attempt += 1)); do
-  remote_progress="$(
-    curl --fail --silent --show-error --max-time 10 \
-      -H "$remote_authorization" "$progress_url" 2>/dev/null || true
+for ((upload_attempt = 1; upload_attempt <= bundle_upload_attempts; upload_attempt += 1)); do
+  bundle_upload_status="$(
+    curl --silent --show-error --max-time 60 \
+      -X POST \
+      -H "$remote_authorization" \
+      -H "Content-Type: application/gzip" \
+      --data-binary "@$bundle_source_path" \
+      --output /dev/null \
+      --write-out "%{http_code}" \
+      "$bundle_upload_url" || true
   )"
-  if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
-    last_progress="$(
-      jq -cn \
-        --argjson previous "$last_progress" \
-        --argjson current "$remote_progress" \
-        '$previous + $current'
+  if [[ "$bundle_upload_status" != "202" ]]; then
+    echo \
+      "Bundle upload returned HTTP $bundle_upload_status; checking for workload handoff." \
+      >&2
+  fi
+
+  bootstrap_still_waiting=false
+  for ((attempt = 1; attempt <= bundle_handoff_attempts; attempt += 1)); do
+    remote_progress="$(
+      curl --fail --silent --show-error --max-time 10 \
+        -H "$remote_authorization" "$progress_url" 2>/dev/null || true
     )"
-    publish_execution "RUNNING" "$last_progress"
-    workload_transport_ready=true
+    if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
+      last_progress="$(
+        jq -cn \
+          --argjson previous "$last_progress" \
+          --argjson current "$remote_progress" \
+          '$previous + $current'
+      )"
+      publish_execution "RUNNING" "$last_progress"
+      workload_transport_ready=true
+      break
+    fi
+    bootstrap_health="$(
+      curl --fail --silent --show-error --max-time 10 \
+        -H "$remote_authorization" "$bootstrap_health_url" 2>/dev/null || true
+    )"
+    if jq -e '.status == "awaiting_bundle"' >/dev/null 2>&1 \
+      <<<"$bootstrap_health"; then
+      bootstrap_still_waiting=true
+      break
+    fi
+    sleep 5
+  done
+  if [[ "$workload_transport_ready" == true ]]; then
     break
   fi
-  sleep 5
+  if [[ "$bootstrap_still_waiting" != true ]] ||
+    ((upload_attempt == bundle_upload_attempts)); then
+    break
+  fi
+  echo \
+    "Bootstrap still awaits the bundle; retrying authenticated upload ($((upload_attempt + 1))/$bundle_upload_attempts)." \
+    >&2
 done
+rm -f -- "$bundle_source_path"
+bundle_source_path=""
 if [[ "$workload_transport_ready" != true ]]; then
   echo "The uploaded workload did not expose structured progress before timeout." >&2
   exit 1
