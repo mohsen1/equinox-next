@@ -50,6 +50,7 @@ from research.runpod.repository_repair_rl import (
     render_action_prompt,
     resumed_crash_tail_actions_unaccounted,
     retained_final_evaluation_reserve,
+    sampled_reverse_kl_penalty,
     select_representative_collection,
     serialize_branch_group,
     sibling_advantages,
@@ -106,6 +107,13 @@ def test_correctness_contrast_is_required_for_policy_signal() -> None:
     assert correctness_contrast_advantages([0.97, 0.975, 0.975, 0.97]) == [0.0] * 4
     assert correctness_contrast_advantages([0.0, 0.0, 0.0, 0.0]) == [0.0] * 4
     assert correctness_contrast_advantages([0.97, 0.0, 0.0, 0.0])[0] > 0
+
+
+def test_sampled_reverse_kl_penalty_is_zero_at_reference_and_nonnegative() -> None:
+    assert sampled_reverse_kl_penalty(0.0) == 0.0
+    assert sampled_reverse_kl_penalty(-0.2) > 0.0
+    assert sampled_reverse_kl_penalty(0.2) > 0.0
+    assert sampled_reverse_kl_penalty(0.01) == pytest.approx(0.00005, rel=0.02)
 
 
 def test_recent_action_protocol_window_is_group_bounded() -> None:

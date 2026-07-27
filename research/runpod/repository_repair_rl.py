@@ -82,8 +82,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@16"
-OBJECTIVE_ID = "leave-one-out-paired-validation-reinforce@6"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@17"
+OBJECTIVE_ID = "leave-one-out-reference-anchored-reinforce@7"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -105,6 +105,7 @@ ACTION_RESPONSE_PREFIX = '{"tool":'
 SIBLING_SAMPLING_TEMPERATURE = 0.6
 SIBLING_SAMPLING_TOP_P = 0.9
 LEARNING_RATE = 8e-5
+REFERENCE_KL_COEFFICIENT = 0.02
 ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
@@ -449,6 +450,8 @@ def lightweight_validation_history(history: list[dict[str, Any]]) -> list[dict[s
         "mastered",
         "mastery_streak",
         "policy_loss",
+        "reinforce_loss",
+        "reference_kl",
         "gradient_norm",
         "elapsed_seconds",
         "validation_elapsed_seconds",
@@ -703,6 +706,10 @@ def correctness_contrast_advantages(returns: list[float]) -> list[float]:
     if all(solved) or not any(solved):
         return [0.0] * BRANCH_WIDTH
     return sibling_advantages(returns)
+
+
+def sampled_reverse_kl_penalty(log_reference_over_policy: float) -> float:
+    return math.expm1(log_reference_over_policy) - log_reference_over_policy
 
 
 def wilson_interval(successes: int, total: int, *, z_score: float = 1.96) -> list[float]:
@@ -1382,6 +1389,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "mastery_windows": runtime.mastery_windows,
         "minimum_protocol_validity_rate": MINIMUM_PROTOCOL_VALIDITY_RATE,
         "learning_rate": LEARNING_RATE,
+        "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
+        "reference_kl_estimator": "sampled_k3",
+        "reference_policy": "disabled_adapter_base",
         "advantage_standard_deviation_floor": ADVANTAGE_STANDARD_DEVIATION_FLOOR,
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
@@ -1723,10 +1733,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     def train_policy(
         examples: list[WeightedAction],
         denominator: int,
-    ) -> float:
+    ) -> tuple[float, float, float]:
         if not examples:
-            return 0.0
-        loss_value = 0.0
+            return 0.0, 0.0, 0.0
+        reinforce_loss_value = 0.0
+        reference_kl_value = 0.0
+        total_loss_value = 0.0
         for start in range(0, len(examples), TRAINING_MICROBATCH_SIZE):
             batch = examples[start : start + TRAINING_MICROBATCH_SIZE]
             width = max(len(example.generated.input_ids) for example in batch)
@@ -1749,27 +1761,65 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 device=device,
                 dtype=torch.float32,
             )
+            target_ids = input_ids[:, 1:]
+            target_mask = completion_mask[:, 1:]
+            completion_token_count = target_mask.sum(dim=1).clamp_min(1.0)
+            with torch.no_grad(), model.disable_adapter():
+                reference_output = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                )
+                reference_logits = reference_output.logits[:, :-1].float()
+                reference_token_log_probabilities = (
+                    torch.log_softmax(reference_logits, dim=-1)
+                    .gather(-1, target_ids.unsqueeze(-1))
+                    .squeeze(-1)
+                )
+            del reference_output, reference_logits
             output = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 use_cache=False,
             )
             logits = output.logits[:, :-1].float()
-            target_ids = input_ids[:, 1:]
-            target_mask = completion_mask[:, 1:]
             token_log_probabilities = (
                 torch.log_softmax(logits, dim=-1).gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
             )
-            completion_token_count = target_mask.sum(dim=1).clamp_min(1.0)
             sequence_log_probability = (token_log_probabilities * target_mask).sum(
                 dim=1
             ) / completion_token_count
             weight_tensor = torch.tensor(weights, device=device)
-            loss = -(weight_tensor.detach() * sequence_log_probability).sum() / denominator
-            loss.backward()
-            loss_value += float(loss.detach().item())
-            del output, logits, token_log_probabilities
-        return loss_value
+            reinforce_loss = (
+                -(weight_tensor.detach() * sequence_log_probability).sum() / denominator
+            )
+            token_reference_over_policy_log_ratio = torch.where(
+                target_mask.bool(),
+                reference_token_log_probabilities - token_log_probabilities,
+                torch.zeros_like(token_log_probabilities),
+            )
+            token_reference_kl = (
+                torch.expm1(token_reference_over_policy_log_ratio)
+                - token_reference_over_policy_log_ratio
+            )
+            sequence_reference_kl = (token_reference_kl * target_mask).sum(
+                dim=1
+            ) / completion_token_count
+            reference_kl = sequence_reference_kl.sum() / len(examples)
+            total_loss = reinforce_loss + REFERENCE_KL_COEFFICIENT * reference_kl
+            total_loss.backward()
+            reinforce_loss_value += float(reinforce_loss.detach().item())
+            reference_kl_value += float(reference_kl.detach().item())
+            total_loss_value += float(total_loss.detach().item())
+            del (
+                output,
+                logits,
+                token_log_probabilities,
+                reference_token_log_probabilities,
+                token_reference_over_policy_log_ratio,
+                token_reference_kl,
+            )
+        return reinforce_loss_value, reference_kl_value, total_loss_value
 
     def capture_trainable_state() -> dict[str, Any]:
         return {
@@ -2132,7 +2182,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
 
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        policy_loss = train_policy(
+        reinforce_loss, reference_kl, policy_loss = train_policy(
             policy_training_examples,
             max(1, informative_collections * BRANCH_WIDTH),
         )
@@ -2193,6 +2243,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 "adapter_revision": f"update-{update}",
                 "learning_rate": LEARNING_RATE,
                 "policy_loss": round(policy_loss, 6),
+                "reinforce_loss": round(reinforce_loss, 6),
+                "reference_kl": round(reference_kl, 6),
+                "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
                 "gradient_norm": round(float(gradient_norm), 6),
                 "training_examples": len(policy_training_examples),
                 "effective_batch_weight": round(
@@ -2516,6 +2569,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         curriculum_observation["checkpoint_rate_95ci"]
                     ),
                     "policy_loss": round(policy_loss, 6),
+                    "reinforce_loss": round(reinforce_loss, 6),
+                    "reference_kl": round(reference_kl, 6),
                     "gradient_norm": round(float(gradient_norm), 6),
                     "informative_group_rate": round(
                         informative_task_groups / total_task_groups,
@@ -2805,6 +2860,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "optimizer_contract": {
             "learning_rate": LEARNING_RATE,
             "maximum_gradient_norm": 1.0,
+            "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
+            "reference_kl_estimator": "sampled_k3",
+            "reference_policy": "disabled_adapter_base",
             "advantage_standard_deviation_floor": (ADVANTAGE_STANDARD_DEVIATION_FLOOR),
             "sequence_reduction": "mean_completion_token_log_probabilities",
         },

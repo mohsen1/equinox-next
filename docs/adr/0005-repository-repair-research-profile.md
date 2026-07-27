@@ -297,6 +297,22 @@ recovery; sustained drift still stops training. The launcher also deduplicates u
 progress, retries idempotent observer updates, and continues remote monitoring if a live
 progress publish exhausts its retries.
 
+The seed `109` revision-16 run applied five policy updates from ten informative groups
+out of 40. Update 5 tied the `5/8` fixed baseline. Updates 9 and 10 then produced two
+consecutive malformed-action breaches; the final window contained 31 malformed actions
+out of 83, and aggregate protocol validity fell to `94.5141%`. Equinox stopped, restored
+update 0, persisted the adapter and receipt, completed 24 paired test cases with no
+changes, and confirmed provider teardown. Estimated cost was `$0.341041`. This rules out
+a one-window safety artifact and identifies sustained action-language collapse.
+
+Objective v7 is `leave-one-out-reference-anchored-reinforce@7` under workload revision
+`runpod-repository-repair-loo-reinforce@17`. It keeps the v6 correctness-contrast
+objective and adds a `0.02` sampled K3 reverse-KL penalty between the active adapter and
+the disabled-adapter base policy on accepted completion tokens. Every optimizer update
+records the REINFORCE term, sampled KL, coefficient, and combined loss. The base model
+already passes the greedy protocol gate, so this regularizer is intended to preserve its
+action language while sibling-relative rewards modify repair choices.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and
