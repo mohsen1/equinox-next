@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+import hmac
+import io
+import json
+import os
+import shutil
+import tarfile
+import tempfile
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+MAXIMUM_BUNDLE_BYTES = 2 * 1024 * 1024
+COMMON_BUNDLE_FILES = frozenset({"remote_runner.sh", "result_server.py"})
+WORKLOAD_SUPPORT_FILES = {
+    "branching_sequence_ladder.py": frozenset(),
+    "repository_repair_rl.py": frozenset({"repository_repair_env.py"}),
+}
+
+
+def expected_bundle_files(workload_file: str) -> frozenset[str]:
+    try:
+        support_files = WORKLOAD_SUPPORT_FILES[workload_file]
+    except KeyError as error:
+        raise ValueError("Unsupported workload file.") from error
+    return COMMON_BUNDLE_FILES | support_files | {workload_file}
+
+
+def install_bundle(
+    payload: bytes,
+    *,
+    work_directory: Path,
+    workload_file: str,
+) -> None:
+    expected_files = expected_bundle_files(workload_file)
+    staging_directory = Path(tempfile.mkdtemp(prefix=".bundle-", dir=work_directory))
+    try:
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+            members = archive.getmembers()
+            observed_files = {member.name for member in members}
+            if observed_files != expected_files:
+                raise ValueError("Bundle file set did not match the workload allowlist.")
+            for member in members:
+                if not member.isfile() or Path(member.name).name != member.name:
+                    raise ValueError("Bundle members must be regular top-level files.")
+                source = archive.extractfile(member)
+                if source is None:
+                    raise ValueError("Bundle member could not be read.")
+                destination = staging_directory / member.name
+                with destination.open("xb") as handle:
+                    shutil.copyfileobj(source, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+        for filename in sorted(expected_files):
+            os.replace(staging_directory / filename, work_directory / filename)
+        directory_descriptor = os.open(work_directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        shutil.rmtree(staging_directory, ignore_errors=True)
+
+
+class BootstrapServer(HTTPServer):
+    bundle_ready = False
+
+
+class BootstrapHandler(BaseHTTPRequestHandler):
+    server: BootstrapServer
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def _authorized(self) -> bool:
+        expected = f"Bearer {os.environ['EQUINOX_RESULT_TOKEN']}"
+        observed = self.headers.get("Authorization", "")
+        return hmac.compare_digest(observed, expected)
+
+    def _write_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        if self.path != "/bootstrap-health":
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": "NOT_FOUND"})
+            return
+        if not self._authorized():
+            self._write_json(HTTPStatus.UNAUTHORIZED, {"error": "UNAUTHORIZED"})
+            return
+        self._write_json(HTTPStatus.OK, {"status": "awaiting_bundle"})
+
+    def do_POST(self) -> None:
+        if self.path != "/bundle":
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": "NOT_FOUND"})
+            return
+        if not self._authorized():
+            self._write_json(HTTPStatus.UNAUTHORIZED, {"error": "UNAUTHORIZED"})
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            content_length = -1
+        if content_length <= 0 or content_length > MAXIMUM_BUNDLE_BYTES:
+            self._write_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"error": "INVALID_BUNDLE_SIZE"},
+            )
+            return
+        payload = self.rfile.read(content_length)
+        if len(payload) != content_length:
+            self._write_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "INCOMPLETE_BUNDLE"},
+            )
+            return
+        try:
+            install_bundle(
+                payload,
+                work_directory=Path(os.environ["EQUINOX_REMOTE_WORKDIR"]),
+                workload_file=os.environ["EQUINOX_WORKLOAD_FILE"],
+            )
+        except (OSError, tarfile.TarError, ValueError):
+            self._write_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "INVALID_BUNDLE"},
+            )
+            return
+        self._write_json(HTTPStatus.ACCEPTED, {"status": "bundle_installed"})
+        self.server.bundle_ready = True
+
+
+def main() -> None:
+    work_directory = Path(os.environ["EQUINOX_REMOTE_WORKDIR"])
+    work_directory.mkdir(parents=True, exist_ok=True)
+    expected_bundle_files(os.environ["EQUINOX_WORKLOAD_FILE"])
+    if not os.environ.get("EQUINOX_RESULT_TOKEN"):
+        raise SystemExit("EQUINOX_RESULT_TOKEN is required.")
+    port = int(os.environ.get("EQUINOX_BOOTSTRAP_PORT", "8000"))
+    server = BootstrapServer(("0.0.0.0", port), BootstrapHandler)
+    while not server.bundle_ready:
+        server.handle_request()
+    server.server_close()
+    os.execvpe(
+        "bash",
+        ["bash", str(work_directory / "remote_runner.sh")],
+        os.environ,
+    )
+
+
+if __name__ == "__main__":
+    main()
