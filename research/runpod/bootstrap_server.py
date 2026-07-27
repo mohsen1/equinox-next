@@ -7,6 +7,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -86,6 +87,7 @@ class BootstrapHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+        self.wfile.flush()
 
     def do_GET(self) -> None:
         if self.path != "/bootstrap-health":
@@ -147,6 +149,7 @@ def main() -> None:
     while not server.bundle_ready:
         server.handle_request()
     server.server_close()
+    time.sleep(0.5)
     os.execvpe(
         "bash",
         ["bash", str(work_directory / "remote_runner.sh")],

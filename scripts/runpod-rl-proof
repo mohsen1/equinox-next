@@ -605,18 +605,26 @@ last_progress="$(
 publish_execution "PROVISIONING" "$last_progress"
 echo "Container is live; uploading the authenticated workload bundle." >&2
 failure_message="The RunPod worker rejected the authenticated workload bundle."
-curl --fail --silent --show-error --max-time 60 \
-  -X POST \
-  -H "$remote_authorization" \
-  -H "Content-Type: application/gzip" \
-  --data-binary "@$bundle_source_path" \
-  "$bundle_upload_url" >/dev/null
+bundle_upload_status="$(
+  curl --silent --show-error --max-time 60 \
+    -X POST \
+    -H "$remote_authorization" \
+    -H "Content-Type: application/gzip" \
+    --data-binary "@$bundle_source_path" \
+    --output /dev/null \
+    --write-out "%{http_code}" \
+    "$bundle_upload_url" || true
+)"
 rm -f -- "$bundle_source_path"
 bundle_source_path=""
+if [[ "$bundle_upload_status" != "202" ]]; then
+  echo "Bundle upload returned HTTP $bundle_upload_status; checking for workload handoff." >&2
+fi
 
 workload_transport_ready=false
-failure_message="The uploaded workload never exposed structured progress."
-for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
+failure_message="The bundle upload did not hand off to structured workload progress."
+bundle_handoff_attempts=12
+for ((attempt = 1; attempt <= bundle_handoff_attempts; attempt += 1)); do
   remote_progress="$(
     curl --fail --silent --show-error --max-time 10 \
       -H "$remote_authorization" "$progress_url" 2>/dev/null || true
