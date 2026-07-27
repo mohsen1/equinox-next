@@ -35,6 +35,7 @@ from research.runpod.repository_repair_rl import (
     emit_progress,
     evaluation_reward_summary,
     lightweight_validation_history,
+    next_malformed_action_window_streak,
     next_uninformative_group_streak,
     observation_mastered,
     paired_change_summary,
@@ -121,6 +122,26 @@ def test_recent_action_protocol_window_is_group_bounded() -> None:
         "validity_rate": 0.97619,
         "malformed_rate": 0.02381,
     }
+
+
+def test_malformed_action_stop_requires_two_consecutive_bad_windows() -> None:
+    healthy = {
+        "window_complete": True,
+        "malformed_rate": 0.05,
+    }
+    incomplete = {
+        "window_complete": False,
+        "malformed_rate": 0.20,
+    }
+    bad = {
+        "window_complete": True,
+        "malformed_rate": 0.050001,
+    }
+
+    assert next_malformed_action_window_streak(1, healthy) == 0
+    assert next_malformed_action_window_streak(1, incomplete) == 0
+    assert next_malformed_action_window_streak(0, bad) == 1
+    assert next_malformed_action_window_streak(1, bad) == 2
 
 
 def test_uninformative_group_limit_cannot_be_reset_after_it_is_reached() -> None:

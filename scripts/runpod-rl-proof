@@ -813,7 +813,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-loo-reinforce@15"
+    and .workload_revision == "runpod-repository-repair-loo-reinforce@16"
     and .algorithm == "leave-one-out-group-normalized-reinforce"
     and .objective_id == "leave-one-out-paired-validation-reinforce@6"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
@@ -849,6 +849,7 @@ else
     and .training_configuration.maximum_updates == $expected_maximum_updates
     and .training_configuration.maximum_final_evaluation_reserve_seconds == $expected_final_evaluation_reserve
     and .training_configuration.final_evaluation_reserve_source == "retained_checkpoint"
+    and .training_configuration.maximum_consecutive_malformed_windows == 2
     and .training_configuration.sibling_sampling_temperature == 0.6
     and .training_configuration.sibling_sampling_top_p == 0.9
     and .evaluation_interval_method == "wilson-score-95"

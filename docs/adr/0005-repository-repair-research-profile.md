@@ -281,6 +281,22 @@ policy updates even though final evaluation would have restored the faster updat
 adapter. Revision 15 records candidate timing for observability but changes the active
 reserve and ceiling state only when that candidate becomes the retained checkpoint.
 
+The corrected seed `109` revision-15 run confirmed the reserve fix in the live GPU path.
+Its update-5 candidate tied the `5/8` baseline and was rejected; the measured reserve
+remained at 1,303 seconds instead of rising to the configured 1,500-second ceiling, and
+training continued. Four policy updates were applied through update 8. The next
+eight-group protocol window crossed the `5%` malformed-action threshold, so Equinox
+rolled back to update 0. A transient observer PUT then timed out during the final test
+phase; fail-safe teardown removed the pod, but the result was not eligible for proof
+ingestion.
+
+Workload revision `runpod-repository-repair-loo-reinforce@16` keeps the `5%` malformed
+threshold and requires it to be exceeded in two consecutive complete rolling windows
+before rollback. A single noisy update is recorded as a strike and must be followed by
+recovery; sustained drift still stops training. The launcher also deduplicates unchanged
+progress, retries idempotent observer updates, and continues remote monitoring if a live
+progress publish exhausts its retries.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and

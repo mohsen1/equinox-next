@@ -82,7 +82,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@15"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@16"
 OBJECTIVE_ID = "leave-one-out-paired-validation-reinforce@6"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -112,6 +112,7 @@ MINIMUM_PROTOCOL_VALIDITY_RATE = 0.99
 MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS = 12
 MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS = 2
 MAXIMUM_RECENT_MALFORMED_ACTION_RATE = 0.05
+MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS = 2
 PROGRESS_PATH = os.environ.get("EQUINOX_PROGRESS_PATH")
 
 
@@ -375,6 +376,22 @@ def recent_action_protocol_summary(
         ),
         "malformed_rate": (round(malformed_actions / total_actions, 6) if total_actions else None),
     }
+
+
+def next_malformed_action_window_streak(
+    current_streak: int,
+    protocol_summary: dict[str, Any],
+    *,
+    maximum_malformed_rate: float = MAXIMUM_RECENT_MALFORMED_ACTION_RATE,
+) -> int:
+    malformed_rate = protocol_summary.get("malformed_rate")
+    if (
+        protocol_summary.get("window_complete") is not True
+        or malformed_rate is None
+        or float(malformed_rate) <= maximum_malformed_rate
+    ):
+        return 0
+    return current_streak + 1
 
 
 def next_uninformative_group_streak(
@@ -1369,6 +1386,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
+        "maximum_consecutive_malformed_windows": (MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS),
         "shared_prefix_sampling": "greedy",
         "sibling_sampling_temperature": SIBLING_SAMPLING_TEMPERATURE,
         "sibling_sampling_top_p": SIBLING_SAMPLING_TOP_P,
@@ -1906,6 +1924,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     consecutive_regression_windows = (
         int(resume_state.get("consecutive_regression_windows", 0)) if resume_state else 0
     )
+    consecutive_malformed_windows = (
+        int(resume_state.get("consecutive_malformed_windows", 0)) if resume_state else 0
+    )
     training_complete, stop_reason, first_update = training_loop_entry(
         resume_state,
         updates_completed=updates_completed,
@@ -2009,6 +2030,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "total_malformed_actions": total_malformed_actions,
             "consecutive_uninformative_groups": consecutive_uninformative_groups,
             "consecutive_regression_windows": consecutive_regression_windows,
+            "consecutive_malformed_windows": consecutive_malformed_windows,
             "best_validation": best_validation,
             "best_trainable_state": best_trainable_state,
             "rollback_applied": rollback_applied,
@@ -2137,6 +2159,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             recent_action_protocol_groups,
             maximum_groups=runtime.validation_examples,
         )
+        consecutive_malformed_windows = next_malformed_action_window_streak(
+            consecutive_malformed_windows,
+            recent_protocol,
+        )
         uninformative_group_stop = uninformative_group_limit_reached(
             consecutive_uninformative_groups,
             collections,
@@ -2223,6 +2249,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             recent_malformed_action_rate=recent_protocol["malformed_rate"],
             recent_action_protocol_groups=recent_protocol["groups"],
             recent_action_protocol_window_complete=recent_protocol["window_complete"],
+            consecutive_malformed_windows=consecutive_malformed_windows,
             consecutive_uninformative_groups=consecutive_uninformative_groups,
             total_sampled_actions=total_sampled_actions,
             policy_update_count=policy_update_count,
@@ -2279,11 +2306,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         if uninformative_group_stop:
             stop_after_checkpoint = True
             stop_reason = "consecutive_uninformative_groups"
-        if (
-            recent_protocol["window_complete"]
-            and recent_protocol["malformed_rate"] is not None
-            and recent_protocol["malformed_rate"] > MAXIMUM_RECENT_MALFORMED_ACTION_RATE
-        ):
+        if consecutive_malformed_windows >= MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS:
             stop_after_checkpoint = True
             stop_reason = "recent_malformed_action_rate"
         if update % EVALUATION_INTERVAL == 0 and not stop_after_checkpoint:
@@ -2830,6 +2853,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "validation_regression_limit": MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS,
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
+        "maximum_consecutive_malformed_windows": (MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS),
         "initial_reward": round(initial_reward, 6) if initial_reward is not None else None,
         "final_reward": round(final_reward, 6) if final_reward is not None else None,
         "reward_gain": round(reward_gain, 6) if reward_gain is not None else None,
@@ -2869,6 +2893,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         ),
         "consecutive_uninformative_groups": consecutive_uninformative_groups,
         "consecutive_regression_windows": consecutive_regression_windows,
+        "consecutive_malformed_windows": consecutive_malformed_windows,
         "total_post_branch_actions": total_post_branch_actions,
         "stop_reason": stop_reason,
         "target_runtime_seconds": target_seconds,
