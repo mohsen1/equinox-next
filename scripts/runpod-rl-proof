@@ -280,6 +280,7 @@ hourly_cost=""
 execution_registered=false
 terminal_published=false
 failure_message="The operator harness exited before the proof was persisted."
+last_remote_progress=""
 last_progress="$(
   jq -cn \
     --argjson maximum_updates "$maximum_updates" \
@@ -319,39 +320,51 @@ publish_execution() {
   local progress="$2"
   local completed_at="${3:-}"
   local teardown_confirmed="${4:-false}"
-  jq -cn \
-    --arg name "$execution_name" \
-    --arg workload_id "$workload_id" \
-    --arg model_id "$model_id" \
-    --arg status "$status" \
-    --arg provider_handle "$provider_handle" \
-    --argjson resource_profile "$resource_profile" \
-    --argjson progress "$progress" \
-    --arg started_at "$started_at" \
-    --arg completed_at "$completed_at" \
-    --argjson teardown_confirmed "$teardown_confirmed" \
-    '{
-      name: $name,
-      workload_id: $workload_id,
-      model_id: (if $model_id == "" then null else $model_id end),
-      branch_width: 4,
-      complexity_strategy: "adaptive",
-      status: $status,
-      provider_name: "RunPod",
-      provider_handle: (
-        if $provider_handle == "" then null else $provider_handle end
-      ),
-      resource_profile: $resource_profile,
-      progress: $progress,
-      started_at: $started_at,
-      completed_at: (if $completed_at == "" then null else $completed_at end),
-      teardown_confirmed: $teardown_confirmed
-    }' |
-    curl --fail --silent --show-error --max-time 15 \
+  local payload
+  local attempt
+  payload="$(
+    jq -cn \
+      --arg name "$execution_name" \
+      --arg workload_id "$workload_id" \
+      --arg model_id "$model_id" \
+      --arg status "$status" \
+      --arg provider_handle "$provider_handle" \
+      --argjson resource_profile "$resource_profile" \
+      --argjson progress "$progress" \
+      --arg started_at "$started_at" \
+      --arg completed_at "$completed_at" \
+      --argjson teardown_confirmed "$teardown_confirmed" \
+      '{
+        name: $name,
+        workload_id: $workload_id,
+        model_id: (if $model_id == "" then null else $model_id end),
+        branch_width: 4,
+        complexity_strategy: "adaptive",
+        status: $status,
+        provider_name: "RunPod",
+        provider_handle: (
+          if $provider_handle == "" then null else $provider_handle end
+        ),
+        resource_profile: $resource_profile,
+        progress: $progress,
+        started_at: $started_at,
+        completed_at: (if $completed_at == "" then null else $completed_at end),
+        teardown_confirmed: $teardown_confirmed
+      }'
+  )"
+  for attempt in 1 2 3; do
+    if curl --fail --silent --show-error --max-time 15 \
       -X PUT "$api_root/internal/research-compute-executions/$proof_id" \
       -H "Authorization: Bearer $internal_token" \
       -H 'Content-Type: application/json' \
-      --data-binary @- >/dev/null
+      --data-binary "$payload" >/dev/null; then
+      return 0
+    fi
+    if ((attempt < 3)); then
+      sleep 1
+    fi
+  done
+  return 1
 }
 
 pod_is_present() {
@@ -687,14 +700,19 @@ while (( $(date +%s) < result_deadline_epoch )); do
     curl --fail --silent --show-error --max-time 10 \
       -H "$remote_authorization" "$progress_url" 2>/dev/null || true
   )"
-  if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
+  if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress" &&
+    [[ "$remote_progress" != "$last_remote_progress" ]]; then
     last_progress="$(
       jq -cn \
         --argjson previous "$last_progress" \
         --argjson current "$remote_progress" \
         '$previous + $current'
     )"
-    publish_execution "RUNNING" "$last_progress"
+    if publish_execution "RUNNING" "$last_progress"; then
+      last_remote_progress="$remote_progress"
+    else
+      echo "Observer progress publish failed after retries; monitoring continues." >&2
+    fi
   fi
   sleep 5
 done
