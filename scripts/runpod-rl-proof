@@ -770,14 +770,14 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-loo-reinforce@12"
+    and .workload_revision == "runpod-repository-repair-loo-reinforce@13"
     and .algorithm == "leave-one-out-group-normalized-reinforce"
     and .objective_id == "leave-one-out-paired-validation-reinforce@6"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
     and .reward_contract.revision == "correctness-gated-efficiency@1"
     and .reward_contract.incorrect_terminal_reward == 0
     and .reward_contract.efficiency_adjustment_bounds == [-0.05, 0]
-    and .optimizer_contract.learning_rate == 0.00002
+    and .optimizer_contract.learning_rate == 0.00008
     and .optimizer_contract.advantage_standard_deviation_floor == 0.1
     and .teacher_data_used == false
     and .branch_width == 4
@@ -805,6 +805,8 @@ else
     and .replay_tasks_per_level == $expected_replay_tasks_per_level
     and .training_configuration.maximum_updates == $expected_maximum_updates
     and .training_configuration.maximum_final_evaluation_reserve_seconds == $expected_final_evaluation_reserve
+    and .training_configuration.sibling_sampling_temperature == 0.6
+    and .training_configuration.sibling_sampling_top_p == 0.9
     and .evaluation_interval_method == "wilson-score-95"
     and (.attempt_count == 1 or .attempt_count == 2)
     and .resumed_from_checkpoint == (.attempt_count == 2)

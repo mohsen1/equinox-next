@@ -242,6 +242,19 @@ paired checkpoint-selection set and a separate rotating curriculum set. A random
 curriculum window can no longer become the retained checkpoint merely by scoring higher
 than an incomparable baseline window.
 
+The seed `107` v6 run applied three optimizer updates from five informative groups out of
+twelve. Its rolling eight-group action window then reached a `7.2848%` malformed-action
+rate, exceeding the `5%` safety limit. Equinox rolled the adapter back to update 0 and
+completed the 24-task paired evaluation with zero improvements and zero regressions. The
+run validates the protocol safety stop and rollback, but it is not evidence of model
+improvement.
+
+Workload revision `runpod-repository-repair-loo-reinforce@13` keeps objective v6 and the
+protocol limit unchanged. It repeats the prefilled JSON completion contract immediately
+at each generation boundary and calibrates stochastic sibling sampling from temperature
+`0.8`, top-p `0.95` to temperature `0.6`, top-p `0.9`. Static K remains four; the lower
+entropy targets schema drift while retaining independent seeded continuations.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and

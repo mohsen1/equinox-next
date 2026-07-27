@@ -32,8 +32,8 @@ try:
         COMPLEXITY_LEVELS,
         DIAGNOSTIC_TOOLS,
         ENVIRONMENT_REVISION,
-        SYSTEM_PROMPT,
         STRUCTURAL_MIRROR_DISCLOSURES,
+        SYSTEM_PROMPT,
         VERIFIER_REVISION,
         EnvironmentSnapshot,
         RepairTask,
@@ -52,8 +52,8 @@ except ModuleNotFoundError:
         COMPLEXITY_LEVELS,
         DIAGNOSTIC_TOOLS,
         ENVIRONMENT_REVISION,
-        SYSTEM_PROMPT,
         STRUCTURAL_MIRROR_DISCLOSURES,
+        SYSTEM_PROMPT,
         VERIFIER_REVISION,
         EnvironmentSnapshot,
         RepairTask,
@@ -82,7 +82,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@12"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@13"
 OBJECTIVE_ID = "leave-one-out-paired-validation-reinforce@6"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -102,6 +102,8 @@ TEST_SEED_BASE = 90_000
 MAX_INPUT_TOKENS = 4_096
 MAX_NEW_TOKENS = 192
 ACTION_RESPONSE_PREFIX = '{"tool":'
+SIBLING_SAMPLING_TEMPERATURE = 0.6
+SIBLING_SAMPLING_TOP_P = 0.9
 LEARNING_RATE = 8e-5
 ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 TRAINING_MICROBATCH_SIZE = 2
@@ -1342,6 +1344,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
         "shared_prefix_sampling": "greedy",
+        "sibling_sampling_temperature": SIBLING_SAMPLING_TEMPERATURE,
+        "sibling_sampling_top_p": SIBLING_SAMPLING_TOP_P,
         "policy_prompt_roles": ["system", "user"],
         "learning_signal": "mixed_hidden_correctness_within_sibling_group",
         "checkpoint_selection_window": "fixed_paired_validation",
@@ -1495,7 +1499,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "eos_token_id": tokenizer.eos_token_id,
         }
         if stochastic:
-            generation_options.update(temperature=0.8, top_p=0.95)
+            generation_options.update(
+                temperature=SIBLING_SAMPLING_TEMPERATURE,
+                top_p=SIBLING_SAMPLING_TOP_P,
+            )
 
         class CompleteJsonObjectCriteria(StoppingCriteria):
             def __call__(
@@ -2504,9 +2511,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         "exact_rate": curriculum_observation["exact_rate"],
                         "exact_rate_95ci": curriculum_observation["exact_rate_95ci"],
                         "checkpoint_rate": curriculum_observation["checkpoint_rate"],
-                        "checkpoint_rate_95ci": (
-                            curriculum_observation["checkpoint_rate_95ci"]
-                        ),
+                        "checkpoint_rate_95ci": (curriculum_observation["checkpoint_rate_95ci"]),
                         "validation_examples": runtime.validation_examples,
                         "validation_seed": validation_seed,
                         "mastery_windows": mastery_streak,
