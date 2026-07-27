@@ -43,7 +43,10 @@ def api(path: str, *, method: str = "GET", json: dict[str, Any] | None = None) -
 @pytest.fixture(scope="module")
 def completed_runs() -> dict[str, dict[str, Any]]:
     items = api("/v1/runs")["items"]
-    by_algorithm = {item["algorithm"]: item for item in items if item["status"] == "SUCCEEDED"}
+    by_algorithm: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if item["status"] == "SUCCEEDED":
+            by_algorithm.setdefault(item["algorithm"], item)
     assert set(by_algorithm) == {"independent_rollout_baseline", "bpo_local_metric"}
     return by_algorithm
 
@@ -79,6 +82,125 @@ def test_seeded_algorithms_commit_exact_inputs(
         assert manifest["verification_run_ids"]
         assert manifest["judge_result_ids"]
         assert manifest["reward_signal_ids"]
+
+
+@pytest.mark.integration
+def test_episodes_sequences_and_complexity_are_bound_to_frozen_collection(
+    completed_runs: dict[str, dict[str, Any]],
+) -> None:
+    run_id = completed_runs["bpo_local_metric"]["run_id"]
+    with psycopg.connect(SCIENCE_DSN, row_factory=dict_row) as conn:
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM episodes WHERE run_id = %s) AS episodes,
+              (
+                SELECT count(*)
+                FROM collection_candidates cc
+                JOIN collection_batches cb USING (collection_batch_id)
+                JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+                WHERE ra.run_id = %s
+              ) AS candidates
+            """,
+            (run_id, run_id),
+        ).fetchone()
+        assert counts["episodes"] == counts["candidates"] == 4
+        assert (
+            conn.execute(
+                """
+                SELECT count(*) FROM collection_candidates cc
+                JOIN collection_batches cb USING (collection_batch_id)
+                JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+                WHERE ra.run_id = %s AND cc.episode_id IS NULL
+                """,
+                (run_id,),
+            ).fetchone()["count"]
+            == 0
+        )
+        sequence_gaps = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM (
+              SELECT aggregate_type, aggregate_id
+              FROM events
+              WHERE run_id = %s
+              GROUP BY aggregate_type, aggregate_id
+              HAVING min(aggregate_sequence) <> 1
+                 OR max(aggregate_sequence) <> count(*)
+            ) gaps
+            """,
+            (run_id,),
+        ).fetchone()["count"]
+        assert sequence_gaps == 0
+        closure = conn.execute(
+            """
+            SELECT
+              closure.collection_closure_id,
+              cb.behavior_policy_version_id,
+              cs.current_level
+            FROM collection_closures closure
+            JOIN collection_batches cb USING (collection_batch_id)
+            JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+            JOIN complexity_states cs ON cs.run_id = ra.run_id
+            WHERE ra.run_id = %s
+            """,
+            (run_id,),
+        ).fetchone()
+        members = list(
+            conn.execute(
+                """
+                SELECT
+                  cm.ordinal,
+                  rt.task_revision,
+                  cc.candidate_digest,
+                  cc.episode_id,
+                  mo.value AS terminal_quality
+                FROM collection_closures closure
+                JOIN collection_memberships cm
+                  ON cm.collection_batch_id = closure.collection_batch_id
+                JOIN collection_candidates cc
+                  ON cc.collection_candidate_id = cm.collection_candidate_id
+                JOIN rollout_trees rt ON rt.rollout_tree_id = cc.rollout_tree_id
+                JOIN metric_observations mo
+                  ON mo.subject_type = 'TRANSITION'
+                 AND mo.subject_id = cc.terminal_transition_id
+                 AND mo.descriptor = 'deterministic.terminal_quality'
+                WHERE closure.collection_closure_id = %s
+                ORDER BY cm.ordinal
+                """,
+                (closure["collection_closure_id"],),
+            )
+        )
+    task_set = [
+        {
+            "ordinal": member["ordinal"],
+            "task_revision": member["task_revision"],
+            "candidate_digest": member["candidate_digest"],
+            "episode_id": member["episode_id"],
+        }
+        for member in members
+    ]
+    payload = {
+        "operation_id": f"complexity_observation_{uuid.uuid4().hex}",
+        "level": closure["current_level"],
+        "collection_closure_id": closure["collection_closure_id"],
+        "behavior_policy_version_id": closure["behavior_policy_version_id"],
+        "task_set_digest": canonical_digest(task_set),
+        "success_definition": "deterministic.terminal_quality == 1.0",
+        "ordered_outcomes": [float(member["terminal_quality"]) == 1.0 for member in members],
+    }
+    observed = api(
+        f"/internal/runs/{run_id}/complexity-observations",
+        method="POST",
+        json=payload,
+    )
+    replayed = api(
+        f"/internal/runs/{run_id}/complexity-observations",
+        method="POST",
+        json=payload,
+    )
+    assert observed == replayed
+    assert observed["window_progress"]["attempts"] == len(members)
 
 
 @pytest.mark.integration
@@ -639,7 +761,7 @@ def test_migrations_are_recorded_in_both_authority_schemas() -> None:
             FROM schema_migrations ORDER BY version
             """
         ).fetchall()
-        assert [row[0] for row in science] == list(range(1, 10))
+        assert [row[0] for row in science] == list(range(1, 11))
         assert all(row[1] and row[2].startswith("sha256:") and not row[3] for row in science)
     with psycopg.connect(OPS_DSN) as conn:
         operations = conn.execute(

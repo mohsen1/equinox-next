@@ -196,8 +196,11 @@ def emit_event(
     )
     sequence = conn.execute(
         """
-        SELECT COALESCE(max(aggregate_sequence), 0) + 1 AS next
-        FROM events WHERE aggregate_type = %s AND aggregate_id = %s
+        INSERT INTO event_sequences(aggregate_type, aggregate_id, next_sequence)
+        VALUES (%s, %s, 2)
+        ON CONFLICT (aggregate_type, aggregate_id) DO UPDATE
+        SET next_sequence = event_sequences.next_sequence + 1
+        RETURNING next_sequence - 1 AS next
         """,
         (aggregate_type, aggregate_id),
     ).fetchone()["next"]

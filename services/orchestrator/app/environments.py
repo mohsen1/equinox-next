@@ -105,23 +105,44 @@ def advance_complexity(
     maximum_level: int,
     window_attempts: int,
     window_successes: int,
-    new_attempts: int,
-    new_successes: int,
+    ordered_outcomes: list[bool],
     evaluation_window: int,
     mastery_threshold: float,
     promotion_step: int,
 ) -> dict[str, int | float | bool]:
-    attempts = window_attempts + new_attempts
-    successes = window_successes + new_successes
-    evaluated = attempts >= evaluation_window
-    accuracy = successes / attempts if attempts else 0.0
-    promoted = evaluated and accuracy >= mastery_threshold and current_level < maximum_level
-    next_level = min(maximum_level, current_level + promotion_step) if promoted else current_level
+    if window_attempts >= evaluation_window:
+        raise ValueError("stored complexity window must be smaller than the evaluation window")
+    if window_successes > window_attempts:
+        raise ValueError("stored complexity successes cannot exceed attempts")
+    if not ordered_outcomes:
+        raise ValueError("at least one ordered complexity outcome is required")
+
+    attempts = window_attempts
+    successes = window_successes
+    next_level = current_level
+    evaluations = 0
+    promotions = 0
+    last_accuracy = 0.0
+    for outcome in ordered_outcomes:
+        attempts += 1
+        successes += int(outcome)
+        if attempts != evaluation_window:
+            continue
+        evaluations += 1
+        last_accuracy = successes / evaluation_window
+        if last_accuracy >= mastery_threshold and next_level < maximum_level:
+            next_level = min(maximum_level, next_level + promotion_step)
+            promotions += 1
+        attempts = 0
+        successes = 0
+
     return {
         "current_level": next_level,
-        "window_attempts": 0 if evaluated else attempts,
-        "window_successes": 0 if evaluated else successes,
-        "last_accuracy": accuracy if evaluated else 0.0,
-        "evaluated": evaluated,
-        "promoted": promoted,
+        "window_attempts": attempts,
+        "window_successes": successes,
+        "last_accuracy": last_accuracy,
+        "evaluated": evaluations > 0,
+        "evaluation_count": evaluations,
+        "promoted": promotions > 0,
+        "promotion_count": promotions,
     }

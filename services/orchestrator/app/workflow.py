@@ -812,6 +812,30 @@ def _accept_verification(
                 """,
                 (transition_id, name, REWARD_PIPELINE_ID),
             ).fetchone()["reward_signal_id"]
+            accepted_sources = list(
+                conn.execute(
+                    """
+                    SELECT metric_observation_id, ordinal
+                    FROM reward_metric_links
+                    WHERE reward_signal_id = %s
+                    ORDER BY ordinal
+                    """,
+                    (actual_reward,),
+                )
+            )
+            if accepted_sources:
+                if [row["metric_observation_id"] for row in accepted_sources] != source_ids:
+                    raise RuntimeError("reward replay conflicts with normalized metric lineage")
+            else:
+                for ordinal, metric_observation_id in enumerate(source_ids):
+                    conn.execute(
+                        """
+                        INSERT INTO reward_metric_links(
+                          reward_signal_id, metric_observation_id, ordinal
+                        ) VALUES (%s, %s, %s)
+                        """,
+                        (actual_reward, metric_observation_id, ordinal),
+                    )
             reward_signal_ids.append(actual_reward)
         emit_event(
             conn,
@@ -945,7 +969,12 @@ def _execute_transition(
             trust_class="CANDIDATE_CONTROLLED",
         )
         sequence = conn.execute(
-            "SELECT COALESCE(max(sequence), -1) + 1 AS next FROM states WHERE rollout_tree_id = %s",
+            """
+            UPDATE rollout_trees
+            SET next_state_sequence = next_state_sequence + 1
+            WHERE rollout_tree_id = %s
+            RETURNING next_state_sequence - 1 AS next
+            """,
             (rollout_tree_id,),
         ).fetchone()["next"]
         state_contract = {
@@ -2117,6 +2146,89 @@ def _record_eligibility(
             },
         }
         candidate_digest = canonical_digest(candidate_content)
+        episode_row = conn.execute(
+            """
+            SELECT
+              e.*,
+              cb.behavior_policy_version_id,
+              ra.run_id
+            FROM collection_batches cb
+            JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+            LEFT JOIN episodes e
+              ON e.rollout_tree_id = %s
+             AND e.branch_member_id IS NOT DISTINCT FROM %s
+            WHERE cb.collection_batch_id = %s
+            """,
+            (rollout_tree_id, branch_member_id, collection_batch_id),
+        ).fetchone()
+        step_count = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM transitions
+            WHERE rollout_tree_id = %s
+              AND branch_member_id IS NOT DISTINCT FROM %s
+            """,
+            (rollout_tree_id, branch_member_id),
+        ).fetchone()["count"]
+        return_value = conn.execute(
+            """
+            SELECT COALESCE(sum(value), 0) AS value
+            FROM reward_signals
+            WHERE subject_type = 'TRANSITION' AND subject_id = %s
+            """,
+            (terminal_evidence.transition_id,),
+        ).fetchone()["value"]
+        episode_content = {
+            "run_id": episode_row["run_id"],
+            "collection_batch_id": collection_batch_id,
+            "rollout_tree_id": rollout_tree_id,
+            "branch_member_id": branch_member_id,
+            "behavior_policy_version_id": episode_row["behavior_policy_version_id"],
+            "terminal_transition_id": terminal_evidence.transition_id,
+            "status": "EXCLUDED" if status == "EXCLUDED" else "TERMINATED",
+            "terminal_reason": reason_code,
+            "step_count": step_count,
+            "return_value": float(return_value),
+            "policy_lag": 0,
+        }
+        episode_digest = canonical_digest(episode_content)
+        if episode_row["episode_id"]:
+            if (
+                episode_row["manifest_digest"] != episode_digest
+                or episode_row["manifest"] != episode_content
+            ):
+                raise RuntimeError("episode replay conflicts with immutable trajectory summary")
+            episode_id = episode_row["episode_id"]
+        else:
+            episode_id = make_id("episode")
+            conn.execute(
+                """
+                INSERT INTO episodes(
+                  episode_id, run_id, collection_batch_id, rollout_tree_id,
+                  branch_member_id, behavior_policy_version_id, terminal_transition_id,
+                  status, terminal_reason, step_count, return_value, policy_lag,
+                  manifest_digest, manifest, completed_at
+                ) VALUES (
+                  %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, 0, %s, %s, now()
+                )
+                """,
+                (
+                    episode_id,
+                    episode_content["run_id"],
+                    collection_batch_id,
+                    rollout_tree_id,
+                    branch_member_id,
+                    episode_content["behavior_policy_version_id"],
+                    terminal_evidence.transition_id,
+                    episode_content["status"],
+                    reason_code,
+                    step_count,
+                    return_value,
+                    episode_digest,
+                    Jsonb(episode_content),
+                ),
+            )
         accepted = conn.execute(
             """
             SELECT
@@ -2124,7 +2236,8 @@ def _record_eligibility(
               terminal_transition_id,
               eligibility_decision_id,
               proof_bundle_id,
-              candidate_digest
+              candidate_digest,
+              episode_id
             FROM collection_candidates
             WHERE collection_batch_id = %s
               AND rollout_tree_id = %s
@@ -2138,6 +2251,7 @@ def _record_eligibility(
             "eligibility_decision_id": decision_id,
             "proof_bundle_id": terminal_evidence.proof_bundle_id,
             "candidate_digest": candidate_digest,
+            "episode_id": episode_id,
         }
         if accepted:
             if any(accepted[key] != value for key, value in expected.items()):
@@ -2148,8 +2262,8 @@ def _record_eligibility(
                 INSERT INTO collection_candidates(
                   collection_candidate_id, collection_batch_id, rollout_tree_id,
                   branch_member_id, terminal_transition_id, eligibility_decision_id,
-                  proof_bundle_id, candidate_digest
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                  proof_bundle_id, candidate_digest, episode_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     make_id("collection_candidate"),
@@ -2160,6 +2274,7 @@ def _record_eligibility(
                     decision_id,
                     terminal_evidence.proof_bundle_id,
                     candidate_digest,
+                    episode_id,
                 ),
             )
     return decision_id
@@ -2500,10 +2615,7 @@ def _materialize_iteration_input(
         "dataset_digest": dataset_digest,
         "dataset_row_count": len(dataset_rows),
         "materializer_version": "branch-jsonl@1",
-        "weights": {
-            row["candidate_digest"]: row["weight"]
-            for row in dataset_rows
-        },
+        "weights": {row["candidate_digest"]: row["weight"] for row in dataset_rows},
     }
     manifest = {
         "manifest_id": manifest_id,
@@ -2892,9 +3004,7 @@ def _process_branch_run(
                     state_id=cursor.state_id,
                     version=0,
                     fencing_token=1,
-                    lease_owner=(
-                        f"run:{run_id}:sibling:{member['sibling_index']}"
-                    ),
+                    lease_owner=(f"run:{run_id}:sibling:{member['sibling_index']}"),
                 ),
             )
             for member in persisted_members

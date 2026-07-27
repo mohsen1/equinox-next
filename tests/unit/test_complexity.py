@@ -18,8 +18,7 @@ def test_adaptive_complexity_promotes_after_mastery_window() -> None:
         maximum_level=8,
         window_attempts=24,
         window_successes=23,
-        new_attempts=8,
-        new_successes=7,
+        ordered_outcomes=[True, True, True, True, True, True, True, False],
         evaluation_window=32,
         mastery_threshold=0.9,
         promotion_step=1,
@@ -37,8 +36,7 @@ def test_adaptive_complexity_holds_when_the_policy_has_not_mastered_level() -> N
         maximum_level=8,
         window_attempts=24,
         window_successes=18,
-        new_attempts=8,
-        new_successes=5,
+        ordered_outcomes=[True, True, True, True, True, False, False, False],
         evaluation_window=32,
         mastery_threshold=0.9,
         promotion_step=1,
@@ -48,6 +46,24 @@ def test_adaptive_complexity_holds_when_the_policy_has_not_mastered_level() -> N
     assert result["promoted"] is False
     assert result["current_level"] == 3
     assert active_complexity_range(minimum=0, current=3, sampling_band=4) == [0, 3]
+
+
+def test_adaptive_complexity_carries_ordered_overshoot_into_the_next_window() -> None:
+    result = advance_complexity(
+        current_level=1,
+        maximum_level=8,
+        window_attempts=6,
+        window_successes=6,
+        ordered_outcomes=[True, True, False, True, False],
+        evaluation_window=8,
+        mastery_threshold=0.9,
+        promotion_step=1,
+    )
+
+    assert result["promoted"] is True
+    assert result["current_level"] == 2
+    assert result["window_attempts"] == 3
+    assert result["window_successes"] == 1
 
 
 def test_reproduction_name_does_not_accumulate_prefixes() -> None:

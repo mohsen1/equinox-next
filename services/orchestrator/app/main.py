@@ -61,9 +61,7 @@ class LaunchRunRequest(StrictModel):
     environment_id: Literal["cad.reconstruction"] = "cad.reconstruction"
     policy_compute_provider: Literal["LocalFixtureComputeProvider"] = "LocalFixtureComputeProvider"
     judge_provider: Literal["DeterministicJudgeFixture"] = "DeterministicJudgeFixture"
-    task_revision: Literal["mounting-plate@sha256:fixture-v1"] = (
-        "mounting-plate@sha256:fixture-v1"
-    )
+    task_revision: Literal["mounting-plate@sha256:fixture-v1"] = "mounting-plate@sha256:fixture-v1"
     branch: BranchConfig
     complexity: ComplexityConfig = ComplexityConfig()
     budgets: BudgetConfig = BudgetConfig()
@@ -74,9 +72,7 @@ class LaunchRunRequest(StrictModel):
     def validate_supported_plan(self) -> LaunchRunRequest:
         expected_width = 1 if self.algorithm == "independent_rollout_baseline" else 4
         if self.branch.width != expected_width:
-            raise ValueError(
-                f"{self.algorithm} requires static branch width K={expected_width}"
-            )
+            raise ValueError(f"{self.algorithm} requires static branch width K={expected_width}")
         required_transitions = 24 if expected_width == 1 else 15
         if self.budgets.transitions < required_transitions:
             raise ValueError(
@@ -110,8 +106,11 @@ class ClaimedAttemptRequest(StrictModel):
 class ComplexityObservationRequest(StrictModel):
     operation_id: str = Field(min_length=3, max_length=160)
     level: int = Field(ge=0, le=100)
-    successes: int = Field(ge=0)
-    attempts: int = Field(gt=0)
+    collection_closure_id: str = Field(min_length=3, max_length=160)
+    behavior_policy_version_id: str = Field(min_length=3, max_length=160)
+    task_set_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    success_definition: str = Field(min_length=3, max_length=240)
+    ordered_outcomes: list[bool] = Field(min_length=1, max_length=1024)
 
 
 class ResearchComputeProofRequest(StrictModel):
@@ -942,14 +941,6 @@ def run_complexity(run_id: str) -> dict[str, Any]:
 
 @app.post("/internal/runs/{run_id}/complexity-observations")
 def observe_complexity(run_id: str, request: ComplexityObservationRequest) -> dict[str, Any]:
-    if request.successes > request.attempts:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "INVALID_COMPLEXITY_OBSERVATION",
-                "message": "Successes cannot exceed attempts.",
-            },
-        )
     request_digest = canonical_digest(request.model_dump())
     with connection() as conn:
         existing = conn.execute(
@@ -966,12 +957,116 @@ def observe_complexity(run_id: str, request: ComplexityObservationRequest) -> di
                 "SELECT * FROM complexity_states WHERE run_id = %s", (run_id,)
             ).fetchone()
             return _complexity_payload(state)
+        observed_closure = conn.execute(
+            """
+            SELECT
+              run_id,
+              level,
+              behavior_policy_version_id,
+              task_set_digest,
+              success_definition,
+              ordered_outcomes
+            FROM complexity_observations
+            WHERE collection_closure_id = %s
+            """,
+            (request.collection_closure_id,),
+        ).fetchone()
+        if observed_closure:
+            same_observation = (
+                observed_closure["run_id"] == run_id
+                and observed_closure["level"] == request.level
+                and observed_closure["behavior_policy_version_id"]
+                == request.behavior_policy_version_id
+                and observed_closure["task_set_digest"] == request.task_set_digest
+                and observed_closure["success_definition"] == request.success_definition
+                and observed_closure["ordered_outcomes"] == request.ordered_outcomes
+            )
+            if not same_observation:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "COMPLEXITY_COLLECTION_REUSE_CONFLICT"},
+                )
+            state = conn.execute(
+                "SELECT * FROM complexity_states WHERE run_id = %s", (run_id,)
+            ).fetchone()
+            return _complexity_payload(state)
 
         state = conn.execute(
             "SELECT * FROM complexity_states WHERE run_id = %s FOR UPDATE", (run_id,)
         ).fetchone()
         if not state:
             raise HTTPException(status_code=404, detail={"code": "COMPLEXITY_STATE_NOT_FOUND"})
+        closure = conn.execute(
+            """
+            SELECT
+              cc.collection_closure_id,
+              cc.closure_digest,
+              cc.member_count,
+              cb.behavior_policy_version_id,
+              ra.run_id
+            FROM collection_closures cc
+            JOIN collection_batches cb
+              ON cb.collection_batch_id = cc.collection_batch_id
+            JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+            WHERE cc.collection_closure_id = %s
+            """,
+            (request.collection_closure_id,),
+        ).fetchone()
+        members = (
+            list(
+                conn.execute(
+                    """
+                    SELECT
+                      cm.ordinal,
+                      rt.task_revision,
+                      cc.candidate_digest,
+                      cc.episode_id,
+                      mo.value AS terminal_quality
+                    FROM collection_closures closure
+                    JOIN collection_memberships cm
+                      ON cm.collection_batch_id = closure.collection_batch_id
+                    JOIN collection_candidates cc
+                      ON cc.collection_candidate_id = cm.collection_candidate_id
+                    JOIN rollout_trees rt ON rt.rollout_tree_id = cc.rollout_tree_id
+                    JOIN metric_observations mo
+                      ON mo.subject_type = 'TRANSITION'
+                     AND mo.subject_id = cc.terminal_transition_id
+                     AND mo.descriptor = 'deterministic.terminal_quality'
+                    WHERE closure.collection_closure_id = %s
+                    ORDER BY cm.ordinal
+                    """,
+                    (request.collection_closure_id,),
+                )
+            )
+            if closure
+            else []
+        )
+        expected_task_set_digest = canonical_digest(
+            [
+                {
+                    "ordinal": member["ordinal"],
+                    "task_revision": member["task_revision"],
+                    "candidate_digest": member["candidate_digest"],
+                    "episode_id": member["episode_id"],
+                }
+                for member in members
+            ]
+        )
+        expected_outcomes = [float(member["terminal_quality"]) == 1.0 for member in members]
+        if (
+            not closure
+            or closure["run_id"] != run_id
+            or closure["behavior_policy_version_id"] != request.behavior_policy_version_id
+            or closure["member_count"] != len(request.ordered_outcomes)
+            or closure["member_count"] != len(members)
+            or request.task_set_digest != expected_task_set_digest
+            or request.success_definition != "deterministic.terminal_quality == 1.0"
+            or request.ordered_outcomes != expected_outcomes
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "COMPLEXITY_COLLECTION_BINDING_CONFLICT"},
+            )
         if request.level != state["current_level"]:
             raise HTTPException(
                 status_code=409,
@@ -988,8 +1083,7 @@ def observe_complexity(run_id: str, request: ComplexityObservationRequest) -> di
             maximum_level=state["maximum_level"],
             window_attempts=state["window_attempts"],
             window_successes=state["window_successes"],
-            new_attempts=request.attempts,
-            new_successes=request.successes,
+            ordered_outcomes=request.ordered_outcomes,
             evaluation_window=state["evaluation_window"],
             mastery_threshold=state["mastery_threshold"],
             promotion_step=state["promotion_step"],
@@ -997,17 +1091,24 @@ def observe_complexity(run_id: str, request: ComplexityObservationRequest) -> di
         conn.execute(
             """
             INSERT INTO complexity_observations(
-              operation_id, run_id, request_digest, level, successes, attempts, promoted
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+              operation_id, run_id, request_digest, level, successes, attempts, promoted,
+              collection_closure_id, behavior_policy_version_id, task_set_digest,
+              success_definition, ordered_outcomes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 request.operation_id,
                 run_id,
                 request_digest,
                 request.level,
-                request.successes,
-                request.attempts,
+                sum(request.ordered_outcomes),
+                len(request.ordered_outcomes),
                 update["promoted"],
+                request.collection_closure_id,
+                request.behavior_policy_version_id,
+                request.task_set_digest,
+                request.success_definition,
+                Jsonb(request.ordered_outcomes),
             ),
         )
         state = conn.execute(
@@ -1026,7 +1127,7 @@ def observe_complexity(run_id: str, request: ComplexityObservationRequest) -> di
                 update["current_level"],
                 update["window_attempts"],
                 update["window_successes"],
-                1 if update["promoted"] else 0,
+                update["promotion_count"],
                 update["evaluated"],
                 update["last_accuracy"],
                 run_id,
@@ -1790,6 +1891,15 @@ def events(
                 (run_id, after, limit),
             )
         )
+        if items:
+            conn.execute(
+                """
+                UPDATE outbox
+                SET published_at = COALESCE(published_at, now())
+                WHERE outbox_id = ANY(%s)
+                """,
+                ([item["cursor"] for item in items],),
+            )
     return {
         "items": items,
         "next_cursor": items[-1]["cursor"] if items else after,
