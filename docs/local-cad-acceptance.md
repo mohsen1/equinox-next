@@ -5,16 +5,16 @@ cloud credentials.
 
 ## Scenario
 
-1. Start PostgreSQL, MinIO, the orchestrator, execution service, mock run agent, and
+1. Start PostgreSQL, MinIO, the orchestrator, execution service, fixture worker, and
    dashboard with Docker Compose.
 2. Seed one bounded technical-drawing task: a mounting plate with a central bore, four
    corner holes, and a raised boss.
 3. Launch an independent-rollout baseline and a width-four branch-aware BPO-local run
-   through typed API requests. Both manifests explicitly name `MockRunPodProvider` and
-   `MockJudgeProvider`.
+   through typed API requests. Both manifests explicitly name
+   `LocalFixtureComputeProvider` and `DeterministicJudgeFixture`.
 4. Execute a shared three-action CAD prefix. Accept each action exactly once and record a
    semantic state, isolated runtime cursor, source and candidate render, geometry report,
-   proof bundle, verification DAG, mock pointwise result, metric observations, and named
+   proof bundle, verification DAG, deterministic pointwise result, metric observations, and named
    rewards.
 5. At the declared boundary, capture a logical environment snapshot and a policy-specific
    decision checkpoint. Restore four child cursors with distinct runtime identities,
@@ -47,8 +47,8 @@ cloud credentials.
 
 ## Release invariants
 
-- Local provider registries contain exactly `MockRunPodProvider` and
-  `MockJudgeProvider`; tests reject configuration containing real-provider names or
+- Local provider registries contain exactly `LocalFixtureComputeProvider` and
+  `DeterministicJudgeFixture`; tests reject configuration containing real-provider names or
   endpoints.
 - Infrastructure, verifier, judge-provider, abstention, disagreement, malformed output,
   and integrity failures never become candidate reward zero.

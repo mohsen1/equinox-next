@@ -5,9 +5,9 @@ reinforcement learning. The active research profile is multi-step micro-reposito
 a policy diagnoses a task, Equinox snapshots the repository and transcript, and four
 isolated continuations compete from the same state.
 
-The local Compose profile remains credential-free and uses deterministic CAD fixtures,
-`MockRunPodProvider`, and `MockJudgeProvider`. Real GPU research is an explicit, bounded
-operator workflow outside that provider registry.
+The local Compose profile is a single-operator contract fixture. It uses deterministic
+CAD execution and judge fixtures behind an authenticated internal service boundary. Real
+GPU research is an explicit, bounded RunPod operator workflow outside that registry.
 
 ## Start here
 
@@ -17,13 +17,14 @@ operator workflow outside that provider registry.
 ```
 
 Open [http://127.0.0.1:3100](http://127.0.0.1:3100). The first command builds and starts
-PostgreSQL, MinIO, the execution/verifier service, orchestrator, mock run agent, and
-dashboard. The second creates and completes an independent four-rollout baseline and a
-branch-aware CAD run.
+PostgreSQL, MinIO, the execution/verifier service, orchestrator, fixture worker, and
+dashboard. The second creates deterministic contract runs used by acceptance tests; the
+dashboard only lists actual research executions and their proofs.
 
-Ports default to `3100` for the dashboard, `8180` for the API, and `9001` for the MinIO
-console. Override the first two with `EQUINOX_DASHBOARD_PORT` and `EQUINOX_API_PORT`.
-No cloud credentials are accepted or required.
+Ports default to `3100` for the dashboard and `8180` for the API. Override them with
+`EQUINOX_DASHBOARD_PORT` and `EQUINOX_API_PORT`. MinIO, PostgreSQL, execution, and the
+worker are not exposed on the host. `scripts/preflight` creates a mode-0600 local service
+token in the ignored `.env` file.
 
 The dashboard exposes `/healthz` for nginx liveness and `/readyz` for API/database
 readiness. Runs and Proofs preserve the last successful response during a transient API
@@ -43,40 +44,29 @@ active hourly spend.
 EQUINOX_RUNPOD_EXPERIMENT=repository-repair ./scripts/runpod-rl-proof
 ```
 
-The repository-repair workload fine-tunes Qwen2.5-Coder-1.5B-Instruct with LoRA. It
+The repository-repair workload fine-tunes Qwen2.5-Coder-1.5B-Instruct with LoRA and a
+leave-one-out group-normalized REINFORCE objective. It
 collects a shared diagnostic prefix without gradient, saves an exact logical checkpoint,
 restores four continuations, and applies sibling-relative credit only after the branch.
-It also uses deterministic verification, adaptive levels, replay, live progress
-ingestion, retained adapters, and verified teardown. The dashboard observer is a launch
+It uses disjoint task-family train, validation, and final-test splits; deterministic
+verification; adaptive levels; replay; exact optimization checkpoints; live progress;
+verified adapter manifests; and confirmed teardown. The dashboard observer is a launch
 prerequisite.
 
 Repository complexity adapts file count, fault count, dependency depth, and horizon.
 Branch width remains static at four. The first proof uses a deterministic in-memory
 repository simulator; arbitrary model-generated code and shell commands are not executed.
-A conformant RunPool sandbox is the next environment integration.
+A single run is labelled exploratory. Use `scripts/summarize-runpod-study` on at least
+three distinct-seed receipts before making a replicated learning claim. A conformant
+RunPool sandbox is required before executing real repository code or test commands.
 
 ## Inspect trajectories
 
-From `/runs`, open **Local branch-aware CAD proof**, then select **Trace** and open its
-trajectory. The explorer shows one shared three-action prefix, one logical snapshot and
-decision checkpoint, and four isolated sibling cursors. Selecting any action updates the
-adjacent outcome, state, verification, and provenance inspector. The fixtures include:
-
-- a recovered render/inference retry;
-- a valid negative geometry outcome caused by an oversized bore;
-- a judge abstention excluded without manufacturing a zero reward; and
-- a blinded, randomized sibling-group judgment.
-
-Every transition links immutable source and candidate SVG renders, a geometry report, a
-proof bundle, a real verification DAG record, judge attempt provenance, metric
-observations, and named reward signals. The committed iteration input lists the exact
-trees, proofs, verification runs, judge results, rewards, eligibility decisions, and
-materializer digest used for the policy update.
-
-Real research runs appear in the same run list while progress is ingested. Their
-trajectory view exposes captured model responses and branch samples. The repository
-profile extends that view with one shared-prefix lane, a checkpoint, and four multi-step
-continuation lanes so each action and verifier result is selectable.
+From `/runs`, open a research execution and select **Trajectory**. The branching view
+shows the shared diagnostic prefix once, the exact logical checkpoint, and four restored
+multi-step continuations. Each action exposes its observation, state digest, verifier
+result, return, sibling advantage, exclusion status, and policy signal. The curriculum
+view separates validation checkpoints from the one-time final test.
 
 Completed RunPod evidence appears under `/proofs`. Each proof links back to its originating
 run and trajectory and records learning outcome, hardware, estimated total cost,
@@ -114,13 +104,14 @@ Useful operational commands:
 
 ```bash
 docker compose ps
-docker compose logs -f orchestrator mock-agent execution
+docker compose logs -f orchestrator fixture-worker execution
 docker compose restart orchestrator
 docker compose down
 ```
 
 Metadata survives ordinary restarts in PostgreSQL. Artifacts survive in MinIO and are
-content-addressed by SHA-256. Candidate session directories use a named Docker volume.
+content-addressed by SHA-256. Execution sessions are logical database/object-store
+records; no shared session filesystem volume exists.
 
 ## Architecture and limits
 
@@ -130,9 +121,10 @@ records in separate schemas and roles; MinIO stores immutable artifact bytes. Op
 inputs and digests make restart replay and duplicate delivery inspectable. Snapshot
 fidelity is honestly reported as `logical_restore`, not process or kernel restoration.
 
-The CAD slice proves the platform contracts with deterministic fixtures. It does not claim
-that the mock judge is human-aligned, run a real CAD kernel, or provide production
-container isolation. The repository research profile tests learning behavior without
-changing those claims. Boundaries and triggers are recorded in
+The CAD slice only proves platform contracts with deterministic fixtures and is not shown
+as a research environment in the dashboard. This build refuses any deployment mode other
+than `local-only`; it has no user authentication, tenancy, real CAD kernel, or production
+code-execution isolation. Boundaries and audit dispositions are recorded in
 [PLAN.md](PLAN.md), [the execution-boundary ADR](docs/adr/0001-local-docker-execution-boundary.md),
-and [the judge-integrity ADR](docs/adr/0002-local-judge-integrity.md).
+[the judge-integrity ADR](docs/adr/0002-local-judge-integrity.md), and
+[the audit remediation record](docs/audit-remediation-2026-07-27.md).

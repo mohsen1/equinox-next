@@ -1,11 +1,11 @@
-# ADR-0002: Use a deterministic mock behind the production judge contract
+# ADR-0002: Use a deterministic fixture behind the judge contract
 
 Status: accepted for local contract proof
 Date: 2026-07-26
 
 ## Decision
 
-The local profile registers only `MockJudgeProvider`. Every invocation uses the same
+The local profile registers only `DeterministicJudgeFixture`. Every invocation uses the same
 versioned multimodal request and structured response schemas intended for a future strong
 provider. A judge specification pins proof-bundle digest, prompt-template digest, rubric,
 schema, sampling, sample index, provider model identity, evidence-role allowlist, and
@@ -15,7 +15,7 @@ The prompt keeps privileged instructions separate from untrusted evidence manife
 Candidate roles are data, not instructions. The provider receives no tools, browsing,
 shell, credentials, hidden calibration cases, or writable product systems.
 
-## Mock behavior
+## Fixture behavior
 
 Deterministic fixtures cover valid high and low assessments, tie, abstention, malformed
 output, retryable provider failure, disagreement, and integrity violation. Raw provider
@@ -27,7 +27,7 @@ branch, and candidate identity and persist the deterministic presentation permut
 
 ## Calibration and reward
 
-The mock passes contract and recovery conformance only. It cannot receive a
+The fixture passes contract and recovery conformance only. It cannot receive a
 human-alignment or production-ready calibration label. Judge results become accepted
 metric observations only after schema and integrity checks; named reward signals are
 created later by a deterministic reward-pipeline version.

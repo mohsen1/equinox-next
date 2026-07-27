@@ -54,8 +54,10 @@ simulator with real repositories and test commands.
 - At least two trustworthy sibling returns are required.
 - Equal sibling returns produce exactly zero relative advantage.
 - A sibling advantage is applied to every accepted post-branch action in that sibling.
-- Teacher fallback is recorded separately and cannot be presented as RL improvement.
-- Evaluation uses held-out tasks and greedy full trajectories.
+- The optimizer consumes policy samples only; no teacher targets or fallback updates are
+  allowed.
+- Validation tasks control curriculum decisions. The disjoint test split is evaluated
+  once, after training, for both the disabled-adapter baseline and final adapter.
 
 ## Observability contract
 
@@ -71,12 +73,14 @@ this vertical, not a semantic shortcut inside CAD records.
 
 ## Experiment contract
 
-The first launch is a bounded integration proof. A later matched-budget study compares
-teacher-only, sampling-only, sibling-relative, adaptive, and replay variants using the
-same tasks, seeds, action budget, model revision, tokenizer revision, verifier revision,
-and effective learning-rate control.
+The first launch is a bounded, explicitly single-seed exploration. A replicated claim
+requires at least three distinct optimization seeds summarized by
+`scripts/summarize-runpod-study`. Later matched-budget ablations compare sampling-only,
+sibling-relative, adaptive, and replay variants using the same tasks, seeds, action
+budget, model revision, tokenizer revision, verifier revision, and effective
+learning-rate control.
 
-Headline metrics are held-out solve rate, actions to solve, trustworthy informative-group
+Headline metrics are final-test solve rate, actions to solve, trustworthy informative-group
 rate, regression on mastered levels, and GPU cost. Scaling the model is conditional on
 restored branching producing useful signal.
 
@@ -85,5 +89,5 @@ restored branching producing useful signal.
 - Dynamic branch width.
 - AWS execution.
 - Arbitrary repository or shell execution.
-- A production RunPod provider inside the credential-free local registry.
+- A production RunPod provider inside the local fixture registry.
 - Recasting the completed CAD fixture as the repository environment.

@@ -16,8 +16,8 @@ The source worktree was dirty during inventory, so no source file is copied whol
 | CAD demo policy | Adapt | Preserve deterministic progressive construction for fixtures. Replace direct process-local execution with typed operations and immutable proof lineage. |
 | SQLite/process-local sessions | Replace | They cannot prove durable authority, leasing, fencing, cross-service retries, or restart recovery. |
 | Synchronous CAD `/score` | Replace | It collapses proof, judge evidence, metrics, and rewards. Use a versioned verification DAG and named reward pipeline. |
-| Existing real VLM judge | Replace | It reads ambient credentials, calls a real endpoint, and returns a scalar-like score. Local acceptance permits only `MockJudgeProvider` behind the production request/response contract. |
-| Direct RunPod adapter | Replace | Local acceptance must have no resolution or contact path. Only the provider interface and mock semantics remain. |
+| Existing real VLM judge | Replace | It reads ambient credentials, calls a real endpoint, and returns a scalar-like score. Local acceptance permits only `DeterministicJudgeFixture` behind the request/response contract. |
+| Direct RunPod adapter | Replace | Local acceptance must have no resolution or contact path. Only the provider interface and deterministic fixture semantics remain. |
 
 ## Dependency decisions
 
