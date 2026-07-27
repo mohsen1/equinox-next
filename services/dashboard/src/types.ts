@@ -93,6 +93,8 @@ export interface ResearchComputeExecution {
     post_training_completed?: boolean;
     informative_group_rate?: number;
     policy_update_count?: number;
+    evaluation_completed?: number;
+    evaluation_total?: number;
     claim_strength?: string;
     seed_count?: number;
     objective?: string;

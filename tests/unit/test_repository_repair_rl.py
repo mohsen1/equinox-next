@@ -24,6 +24,7 @@ from research.runpod.repository_repair_rl import (
     checkpoint_target_disposition,
     collect_branch_group,
     collect_greedy_trajectory,
+    complete_json_object,
     configure_from_environment,
     discarded_collection_accounting,
     emit_progress,
@@ -97,6 +98,23 @@ def test_action_prompt_prefills_the_parser_contract() -> None:
             return "<assistant>"
 
     assert render_action_prompt(Tokenizer(), "repair") == '<assistant>{"tool":'
+
+
+@pytest.mark.parametrize(
+    ("response", "complete"),
+    (
+        ('{"tool":"test"}', True),
+        ('{"tool":"edit","path":"a.py","old":"x","new":"return {\\"ok\\": true}"}', True),
+        ('{"tool":"read"', False),
+        ('["not","an","action"]', False),
+        ('{"tool":"test"} trailing', False),
+    ),
+)
+def test_complete_json_object_detects_only_a_closed_root_object(
+    response: str,
+    complete: bool,
+) -> None:
+    assert complete_json_object(response) is complete
 
 
 def test_wilson_interval_preserves_uncertainty_at_zero_and_perfect_rates() -> None:

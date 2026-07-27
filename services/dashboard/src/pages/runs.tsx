@@ -277,6 +277,12 @@ function progressItems(run: ResearchComputeExecution) {
   const sampledCompletions = numberValue(progress.sampled_completions);
   const elapsed = numberValue(progress.elapsed_seconds);
   const informativeGroupRate = numberValue(progress.informative_group_rate);
+  const evaluationCompleted = numberValue(progress.evaluation_completed);
+  const evaluationTotal = numberValue(progress.evaluation_total);
+  const evaluating =
+    evaluationCompleted !== null &&
+    evaluationTotal !== null &&
+    evaluationTotal > 0;
 
   return [
     {
@@ -287,9 +293,10 @@ function progressItems(run: ResearchComputeExecution) {
           : friendlyStatus(stringValue(progress.phase) ?? run.status),
     },
     {
-      label: "Updates",
-      value:
-        update === null
+      label: evaluating ? "Evaluation" : "Updates",
+      value: evaluating
+        ? `${evaluationCompleted} / ${evaluationTotal} tasks`
+        : update === null
           ? "Not started"
           : `${update}${maximumUpdates !== null ? ` / ${maximumUpdates}` : ""}`,
     },

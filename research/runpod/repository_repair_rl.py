@@ -80,7 +80,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_400
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@5"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@6"
 OBJECTIVE_ID = "leave-one-out-group-normalized-reinforce@1"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -115,6 +115,14 @@ def render_action_prompt(tokenizer: Any, prompt: str) -> str:
     if not isinstance(rendered, str):
         raise TypeError("the tokenizer did not render a text prompt")
     return rendered + ACTION_RESPONSE_PREFIX
+
+
+def complete_json_object(response: str) -> bool:
+    try:
+        value = json.loads(response)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(value, dict)
 
 
 def positive_environment_integer(
@@ -1076,7 +1084,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     ensure_dependencies()
     import torch
     from peft import LoraConfig, PeftModel, get_peft_model
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        StoppingCriteria,
+        StoppingCriteriaList,
+    )
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for repository repair post-training")
@@ -1241,8 +1254,30 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         }
         if stochastic:
             generation_options.update(temperature=0.8, top_p=0.95)
+
+        class CompleteJsonObjectCriteria(StoppingCriteria):
+            def __call__(
+                self,
+                input_ids: Any,
+                scores: Any,
+                **kwargs: Any,
+            ) -> Any:
+                del scores, kwargs
+                completed = [
+                    complete_json_object(
+                        ACTION_RESPONSE_PREFIX
+                        + tokenizer.decode(row[input_width:], skip_special_tokens=True)
+                    )
+                    for row in input_ids
+                ]
+                return torch.tensor(completed, device=input_ids.device, dtype=torch.bool)
+
         with torch.no_grad():
-            sequence = model.generate(**encoded, **generation_options)
+            sequence = model.generate(
+                **encoded,
+                **generation_options,
+                stopping_criteria=StoppingCriteriaList([CompleteJsonObjectCriteria()]),
+            )
         model.config.use_cache = False
         continuation = sequence[0, input_width:]
         response = (
@@ -1276,6 +1311,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         split: str,
         expected_examples: int | None = None,
         deadline_seconds: float | None = None,
+        progress_phase: str | None = None,
     ) -> dict[str, Any]:
         expected_examples = len(tasks) if expected_examples is None else expected_examples
         outcomes = []
@@ -1301,6 +1337,20 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     **outcome,
                 }
             )
+            if progress_phase is not None:
+                emit_progress(
+                    progress_phase,
+                    (
+                        f"Evaluating {split} level {level}: "
+                        f"{len(outcomes)} of {expected_examples} tasks."
+                    ),
+                    runtime_configuration=runtime,
+                    elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
+                    current_level=level,
+                    evaluation_completed=len(outcomes),
+                    evaluation_total=expected_examples,
+                    evaluation_split=split,
+                )
         successes = sum(outcome["solved"] for outcome in outcomes)
         checkpoint_successes = sum(outcome["checkpoint_reached"] for outcome in outcomes)
         semantic_task_ids = {outcome["semantic_task_id"] for outcome in outcomes}
@@ -1349,6 +1399,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         *,
         split: str,
         exclude_semantic_task_ids: frozenset[str] = frozenset(),
+        progress_phase: str | None = None,
     ) -> dict[str, Any]:
         tasks = make_tasks(
             level,
@@ -1362,6 +1413,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             level=level,
             seed=seed,
             split=split,
+            progress_phase=progress_phase,
         )
 
     def train_policy(
@@ -1433,6 +1485,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 runtime.validation_examples,
                 VALIDATION_SEED_BASE + level * 1_000,
                 split="validation",
+                progress_phase="baseline_evaluation",
             )
             for level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
         }
@@ -1785,6 +1838,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 seed=validation_seed,
                 split="validation",
                 deadline_seconds=training_deadline_seconds,
+                progress_phase="validation_evaluation",
             )
             validation_elapsed_seconds = time.monotonic() - validation_started
             if not observation["complete"]:
@@ -1931,6 +1985,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 split="test",
                 expected_examples=runtime.test_examples,
                 deadline_seconds=final_evaluation_deadline_seconds,
+                progress_phase="baseline_test_evaluation",
             )
     final_by_level: dict[str, dict[str, Any]] = {}
     for candidate_level in range(MAXIMUM_COMPLEXITY_LEVEL + 1):
@@ -1948,6 +2003,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             split="test",
             expected_examples=runtime.test_examples,
             deadline_seconds=final_evaluation_deadline_seconds,
+            progress_phase="final_test_evaluation",
         )
     final_evaluation_complete = all(
         observation["complete"]
