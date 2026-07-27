@@ -1073,8 +1073,7 @@ class RepositoryRepairEnvironment:
             "transcript": transcript,
         }
         return (
-            SYSTEM_PROMPT
-            + "\n\n<untrusted-environment-data>\n"
+            "<untrusted-environment-data>\n"
             + _canonical_json(task_data)
             + "\n</untrusted-environment-data>\n\n"
             + ACTION_REMINDER

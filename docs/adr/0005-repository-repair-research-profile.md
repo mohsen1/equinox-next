@@ -220,6 +220,14 @@ even if a later group in the same update is informative, clears transient evalua
 counters at phase boundaries, compares test results only with the matching test
 baseline, and keeps completed-run validation summaries lightweight.
 
+Objective v5 is `leave-one-out-correctness-contrast-reinforce@5` under workload revision
+`runpod-repository-repair-loo-reinforce@11`. It places standing tool policy in the
+tokenizer's system role, makes the untrained shared prefix greedy, and admits an optimizer
+step only when a sibling group contains both solved and unsolved continuations. Four
+frontier tasks per update replace two so each optimizer step aggregates more independent
+correctness contrasts. Efficiency-only differences remain evidence but no longer move
+the policy during this exact-solve milestone.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and

@@ -12,6 +12,7 @@ from research.runpod.repository_repair_env import (
     encode_action,
     make_task,
     make_tasks,
+    teacher_continuation_actions,
 )
 from research.runpod.repository_repair_rl import (
     DEFAULT_MODEL_ID,
@@ -28,6 +29,7 @@ from research.runpod.repository_repair_rl import (
     collect_greedy_trajectory,
     complete_json_object,
     configure_from_environment,
+    correctness_contrast_advantages,
     discarded_collection_accounting,
     emit_progress,
     evaluation_reward_summary,
@@ -95,6 +97,12 @@ def test_sibling_advantage_floor_does_not_amplify_tiny_efficiency_gaps() -> None
     advantages = sibling_advantages([0.95, 0.94, 0.94, 0.94])
 
     assert advantages == [0.1, -0.03333333, -0.03333333, -0.03333333]
+
+
+def test_correctness_contrast_is_required_for_policy_signal() -> None:
+    assert correctness_contrast_advantages([0.97, 0.975, 0.975, 0.97]) == [0.0] * 4
+    assert correctness_contrast_advantages([0.0, 0.0, 0.0, 0.0]) == [0.0] * 4
+    assert correctness_contrast_advantages([0.97, 0.0, 0.0, 0.0])[0] > 0
 
 
 def test_recent_action_protocol_window_is_group_bounded() -> None:
@@ -183,7 +191,9 @@ def test_action_prompt_prefills_the_parser_contract() -> None:
             tokenize: bool,
             add_generation_prompt: bool,
         ) -> str:
-            assert messages == [{"role": "user", "content": "repair"}]
+            assert messages[0]["role"] == "system"
+            assert "one JSON action at a time" in messages[0]["content"]
+            assert messages[1] == {"role": "user", "content": "repair"}
             assert tokenize is False
             assert add_generation_prompt is True
             return "<assistant>"
@@ -927,6 +937,32 @@ def test_serialized_branch_has_one_prefix_checkpoint_and_four_step_lanes() -> No
     assert serialized["optimizer_update"]["applied"] is False
     assert action_protocol_counts(collection) == (18, 0)
     assert next_uninformative_group_streak(4, [collection]) == 5
+
+
+def test_training_prefix_is_greedy_while_siblings_remain_stochastic() -> None:
+    task = make_task(0, seed=44)
+    calls: list[bool] = []
+    diagnostic = diagnostic_actions(task)
+    continuation = teacher_continuation_actions(task)
+
+    def scripted_policy(_: str, stochastic: bool, __: int) -> GeneratedAction:
+        calls.append(stochastic)
+        if len(calls) <= 2:
+            action = diagnostic[len(calls) - 1]
+        else:
+            action = continuation[(len(calls) - 3) // BRANCH_WIDTH]
+        return GeneratedAction(response=encode_action(action))
+
+    collection = collect_branch_group(
+        task,
+        scripted_policy,
+        stochastic=True,
+        sampling_seed=100,
+    )
+
+    assert collection.solved_siblings == BRANCH_WIDTH
+    assert calls[:2] == [False, False]
+    assert all(calls[2:])
 
 
 def test_policy_examples_never_include_prefix_and_split_weight_by_branch_actions() -> None:

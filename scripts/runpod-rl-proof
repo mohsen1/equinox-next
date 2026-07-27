@@ -47,7 +47,7 @@ case "$experiment" in
     default_validation_examples="8"
     default_test_examples="6"
     default_mastery_windows="2"
-    default_training_tasks_per_update="2"
+    default_training_tasks_per_update="4"
     default_replay_tasks_per_level="1"
     ;;
   *)
@@ -679,9 +679,9 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-loo-reinforce@10"
+    and .workload_revision == "runpod-repository-repair-loo-reinforce@11"
     and .algorithm == "leave-one-out-group-normalized-reinforce"
-    and .objective_id == "leave-one-out-correctness-gated-reinforce@4"
+    and .objective_id == "leave-one-out-correctness-contrast-reinforce@5"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
     and .reward_contract.revision == "correctness-gated-efficiency@1"
     and .reward_contract.incorrect_terminal_reward == 0

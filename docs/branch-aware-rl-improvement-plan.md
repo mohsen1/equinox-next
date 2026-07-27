@@ -58,6 +58,15 @@ threshold crossing within a multi-group update, and clear stale evaluation count
 heavy task outcomes from execution progress. Completed test rates also compare against
 the matching per-level test baseline rather than the rotating validation baseline.
 
+Objective v5 addresses the next measured confounds. The action contract now occupies the
+model's actual system role instead of being embedded in user content. The shared
+diagnostic prefix remains policy-generated but uses greedy decoding because sibling
+credit cannot update a decision shared by all four continuations. Optimizer eligibility
+now requires mixed hidden-correctness outcomes; small efficiency differences among four
+solved siblings remain evidence but cannot consume a policy update. Each update samples
+four frontier tasks to aggregate more independent correctness contrasts before applying
+one optimizer step.
+
 ## What we learned
 
 ### From the current Equinox runs

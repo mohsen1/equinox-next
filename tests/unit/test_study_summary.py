@@ -6,8 +6,8 @@ from research.runpod.study_summary import student_t_critical_95, summarize
 def receipt(seed: int, gain: float) -> dict:
     return {
         "seed": seed,
-        "workload_revision": "runpod-repository-repair-loo-reinforce@10",
-        "objective_id": "leave-one-out-correctness-gated-reinforce@4",
+        "workload_revision": "runpod-repository-repair-loo-reinforce@11",
+        "objective_id": "leave-one-out-correctness-contrast-reinforce@5",
         "teacher_data_used": False,
         "adapter_persisted": True,
         "probative_post_training": True,

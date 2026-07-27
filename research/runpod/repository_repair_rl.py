@@ -32,6 +32,7 @@ try:
         COMPLEXITY_LEVELS,
         DIAGNOSTIC_TOOLS,
         ENVIRONMENT_REVISION,
+        SYSTEM_PROMPT,
         STRUCTURAL_MIRROR_DISCLOSURES,
         VERIFIER_REVISION,
         EnvironmentSnapshot,
@@ -51,6 +52,7 @@ except ModuleNotFoundError:
         COMPLEXITY_LEVELS,
         DIAGNOSTIC_TOOLS,
         ENVIRONMENT_REVISION,
+        SYSTEM_PROMPT,
         STRUCTURAL_MIRROR_DISCLOSURES,
         VERIFIER_REVISION,
         EnvironmentSnapshot,
@@ -72,7 +74,7 @@ SUPPORTED_MODELS = {
 DEFAULT_MODEL_ID = "Qwen/Qwen2.5-Coder-3B-Instruct"
 DEFAULT_VALIDATION_EXAMPLES = 8
 DEFAULT_TEST_EXAMPLES = 6
-DEFAULT_TRAINING_TASKS_PER_UPDATE = 2
+DEFAULT_TRAINING_TASKS_PER_UPDATE = 4
 DEFAULT_REPLAY_TASKS_PER_LEVEL = 1
 DEFAULT_MAX_UPDATES = 120
 DEFAULT_MASTERY_WINDOWS = 2
@@ -80,8 +82,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@10"
-OBJECTIVE_ID = "leave-one-out-correctness-gated-reinforce@4"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@11"
+OBJECTIVE_ID = "leave-one-out-correctness-contrast-reinforce@5"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -113,7 +115,10 @@ PROGRESS_PATH = os.environ.get("EQUINOX_PROGRESS_PATH")
 
 def render_action_prompt(tokenizer: Any, prompt: str) -> str:
     rendered = tokenizer.apply_chat_template(
-        [{"role": "user", "content": prompt}],
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
         tokenize=False,
         add_generation_prompt=True,
     )
@@ -672,6 +677,15 @@ def sibling_advantages(returns: list[float]) -> list[float]:
     return [round(value - centered, 8) for value in advantages]
 
 
+def correctness_contrast_advantages(returns: list[float]) -> list[float]:
+    if len(returns) != BRANCH_WIDTH:
+        raise ValueError(f"expected {BRANCH_WIDTH} sibling returns")
+    solved = [value > 0 for value in returns]
+    if all(solved) or not any(solved):
+        return [0.0] * BRANCH_WIDTH
+    return sibling_advantages(returns)
+
+
 def wilson_interval(successes: int, total: int, *, z_score: float = 1.96) -> list[float]:
     if total <= 0 or not 0 <= successes <= total:
         raise ValueError("Wilson interval requires 0 <= successes <= total")
@@ -845,7 +859,7 @@ def collect_branch_group(
             )
         generated = sample_one(
             prefix.policy_prompt("shared_prefix"),
-            stochastic,
+            False,
             sampling_seed + attempt,
         )
         step = prefix.step(generated.response, allowed_tools=DIAGNOSTIC_TOOLS)
@@ -907,7 +921,7 @@ def collect_branch_group(
         generated_by_sibling=generated_by_sibling,
         sampling_seeds=sampling_seeds,
         returns=returns,
-        advantages=sibling_advantages(returns),
+        advantages=correctness_contrast_advantages(returns),
         exclusion_reason=None,
         replay=replay,
     )
@@ -1323,6 +1337,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
+        "shared_prefix_sampling": "greedy",
+        "policy_prompt_roles": ["system", "user"],
+        "learning_signal": "mixed_hidden_correctness_within_sibling_group",
         "reward_contract_revision": "correctness-gated-efficiency@1",
         "maximum_final_evaluation_reserve_seconds": (
             runtime.maximum_final_evaluation_reserve_seconds
