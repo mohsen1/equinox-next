@@ -299,7 +299,10 @@ function progressItems(run: ResearchComputeExecution) {
   const evaluationReserve = numberValue(
     progress.final_evaluation_reserve_seconds,
   );
-  const baselineRate = progress.baseline_validation?.exact_rate ?? null;
+  const baselineRate =
+    evaluationSplit === "test"
+      ? (progress.initial_level_exact_rate ?? null)
+      : (progress.baseline_validation?.exact_rate ?? null);
   const activeComplexity = progress.active_complexity;
   const evaluationCompleted = numberValue(progress.evaluation_completed);
   const evaluationTotal = numberValue(progress.evaluation_total);
@@ -392,21 +395,27 @@ function progressItems(run: ResearchComputeExecution) {
         sampledCompletions?.toLocaleString() ??
         "0",
     },
-    {
-      label: "Reserve",
-      value:
-        trainingRemaining === null && evaluationReserve === null
-          ? "Measuring"
-          : `${
-              trainingRemaining === null
-                ? "Training closed"
-                : `${formatDuration(trainingRemaining)} training`
-            }${
-              evaluationReserve === null
-                ? ""
-                : ` · ${formatDuration(evaluationReserve)} evaluation`
-            }`,
-    },
+    ...(run.status === "PROVISIONING" ||
+    run.status === "RUNNING" ||
+    run.status === "FINALIZING"
+      ? [
+          {
+            label: "Reserve",
+            value:
+              trainingRemaining === null && evaluationReserve === null
+                ? "Measuring"
+                : `${
+                    trainingRemaining === null
+                      ? "Training closed"
+                      : `${formatDuration(trainingRemaining)} training`
+                  }${
+                    evaluationReserve === null
+                      ? ""
+                      : ` · ${formatDuration(evaluationReserve)} evaluation`
+                  }`,
+          },
+        ]
+      : []),
     {
       label: "Elapsed",
       value: elapsed === null ? "—" : formatDuration(elapsed),

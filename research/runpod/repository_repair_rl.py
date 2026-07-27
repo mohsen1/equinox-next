@@ -80,8 +80,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@9"
-OBJECTIVE_ID = "leave-one-out-correctness-gated-reinforce@3"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@10"
+OBJECTIVE_ID = "leave-one-out-correctness-gated-reinforce@4"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -378,6 +378,20 @@ def next_uninformative_group_streak(
     for collection in collections:
         streak = 0 if collection.informative else streak + 1
     return streak
+
+
+def uninformative_group_limit_reached(
+    current: int,
+    collections: list[BranchCollection],
+    *,
+    maximum_consecutive_groups: int,
+) -> bool:
+    streak = current
+    for collection in collections:
+        streak = 0 if collection.informative else streak + 1
+        if streak >= maximum_consecutive_groups:
+            return True
+    return False
 
 
 def validation_regression_decision(
@@ -1737,6 +1751,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         current_level=0,
         evaluation_split="validation",
         evaluation_examples=runtime.validation_examples,
+        evaluation_completed=None,
+        evaluation_total=None,
         action_protocol_validity_rate=baseline_protocol_validity,
         minimum_protocol_validity_rate=MINIMUM_PROTOCOL_VALIDITY_RATE,
     )
@@ -2064,6 +2080,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             recent_action_protocol_groups,
             maximum_groups=runtime.validation_examples,
         )
+        uninformative_group_stop = uninformative_group_limit_reached(
+            consecutive_uninformative_groups,
+            collections,
+            maximum_consecutive_groups=MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS,
+        )
         consecutive_uninformative_groups = next_uninformative_group_streak(
             consecutive_uninformative_groups,
             collections,
@@ -2198,7 +2219,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         )
         if decision_reason is not None:
             stop_reason = decision_reason
-        if consecutive_uninformative_groups >= MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS:
+        if uninformative_group_stop:
             stop_after_checkpoint = True
             stop_reason = "consecutive_uninformative_groups"
         if (
@@ -2787,6 +2808,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         checkpoint_rate=reached["checkpoint_rate"],
         checkpoint_rate_95ci=reached["checkpoint_rate_95ci"],
         evaluation_examples=reached["examples"],
+        evaluation_completed=reached["examples"],
+        evaluation_total=runtime.test_examples,
         expected_evaluation_examples=runtime.test_examples,
         evaluation_complete=reached["complete"],
         evaluation_split="test",

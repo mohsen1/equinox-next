@@ -44,10 +44,19 @@ Objective v3 implements most of phases A and B before the next paid run:
   decisions, active complexity dimensions, and provider reserves in the observer; and
 - complete branch-inspector evidence for group eligibility, reward, and optimizer use.
 
-The next paid run remains a shared-prefix adaptive `K=4` condition. Protocol
+The paid v3 run used the shared-prefix adaptive `K=4` condition. Protocol
 initialization, harness diversity, durable pause and resume, the independent
 matched-budget baseline, replicated seeds, and SQLite remain follow-up work. None of
 those pending items is implied by the v3 receipt.
+
+The seed `107` v3 run completed after its recent eight-group action window reached
+`5.4264%` malformed actions. It retained the `5/8` baseline checkpoint, rolled back after
+nine updates and five policy updates, and produced 24 unchanged paired test outcomes.
+This proves the new stop and rollback path, but it does not prove learning. The run also
+exposed two bounded follow-ups now included in objective v4: remember a no-signal
+threshold crossing within a multi-group update, and clear stale evaluation counters and
+heavy task outcomes from execution progress. Completed test rates also compare against
+the matching per-level test baseline rather than the rotating validation baseline.
 
 ## What we learned
 

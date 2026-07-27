@@ -50,6 +50,7 @@ from research.runpod.repository_repair_rl import (
     sibling_advantages,
     training_loop_entry,
     training_stop_decision,
+    uninformative_group_limit_reached,
     validate_resume_state,
     validation_regression_decision,
     validation_window_seed,
@@ -110,6 +111,23 @@ def test_recent_action_protocol_window_is_group_bounded() -> None:
         "validity_rate": 0.97619,
         "malformed_rate": 0.02381,
     }
+
+
+def test_uninformative_group_limit_cannot_be_reset_after_it_is_reached() -> None:
+    collections = [
+        SimpleNamespace(informative=False),
+        SimpleNamespace(informative=True),
+    ]
+
+    assert (
+        uninformative_group_limit_reached(
+            4,
+            collections,  # type: ignore[arg-type]
+            maximum_consecutive_groups=5,
+        )
+        is True
+    )
+    assert next_uninformative_group_streak(4, collections) == 0  # type: ignore[arg-type]
 
 
 def test_validation_regression_requires_two_lower_windows() -> None:

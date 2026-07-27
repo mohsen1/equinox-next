@@ -267,6 +267,16 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
             "post_training_completed": True,
             "informative_group_rate": 0.2,
             "policy_update_count": 10,
+            "history": [
+                {
+                    "update": 5,
+                    "level": 0,
+                    "examples": 8,
+                    "exact_successes": 5,
+                    "exact_rate": 0.625,
+                    "task_outcomes": [{"task_id": "hidden"}],
+                }
+            ],
             "claim_strength": "INCOMPLETE_FINAL_EVALUATION",
             "seed_count": 1,
             "objective": "leave-one-out-group-normalized-reinforce@1",
@@ -303,6 +313,13 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
                 "regressed": 2,
                 "mcnemar_exact_p_value": 0.000221,
             },
+            "initial_by_level": {
+                "1": {
+                    "examples": 12,
+                    "split": "test",
+                    "exact_rate": 0.25,
+                }
+            },
             "final_by_level": {
                 "1": {
                     "examples": 12,
@@ -320,6 +337,7 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
 
     assert progress["phase"] == "complete"
     assert progress["exact_rate"] == 0.333333
+    assert "initial_level_exact_rate" not in progress
     assert progress["exact_rate_source"] == "reached_level"
     assert progress["checkpoint_rate_source"] == "reached_level"
     assert progress["hypothesis_passed"] is False
@@ -330,6 +348,8 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
     assert progress["seed_count"] == 1
     assert progress["exact_rate_95ci"] == [0.1377, 0.6094]
     assert progress["evaluation_examples"] == 12
+    assert progress["evaluation_completed"] == 12
+    assert progress["evaluation_total"] == 12
     assert progress["evaluation_split"] == "test"
     assert progress["test_examples"] == 12
     assert progress["teacher_data_used"] is False
@@ -352,6 +372,15 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
         "first",
         "safe_head",
     ]
+    assert progress["validation_history"] == [
+        {
+            "update": 5,
+            "level": 0,
+            "examples": 8,
+            "exact_successes": 5,
+            "exact_rate": 0.625,
+        }
+    ]
     assert "partial evidence" in progress["message"]
     assert "paired_test_change" not in progress
 
@@ -362,6 +391,11 @@ def test_research_result_progress_falls_back_only_for_exact_rate() -> None:
             "reached_complexity_level": 1,
             "final_reward": 0.625,
             "test_examples": 12,
+            "initial_by_level": {
+                "1": {
+                    "exact_rate": 0.25,
+                }
+            },
             "final_by_level": {
                 "1": {
                     "exact_rate": None,
@@ -373,6 +407,7 @@ def test_research_result_progress_falls_back_only_for_exact_rate() -> None:
     )
 
     assert progress["exact_rate"] == 0.625
+    assert progress["initial_level_exact_rate"] == 0.25
     assert progress["exact_rate_source"] == "aggregate_test_mean"
     assert progress["evaluation_split"] == "test"
     assert "evaluation_examples" not in progress

@@ -86,6 +86,7 @@ export interface ResearchComputeExecution {
     elapsed_seconds?: number;
     stop_reason?: string;
     initial_exact_rate?: number;
+    initial_level_exact_rate?: number;
     final_exact_rate?: number;
     reward_gain?: number;
     hypothesis_passed?: boolean;

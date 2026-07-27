@@ -148,10 +148,44 @@ class ResearchComputeExecutionRequest(StrictModel):
     teardown_confirmed: bool = False
 
 
+def lightweight_research_validation_history(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    keys = (
+        "update",
+        "level",
+        "exact_successes",
+        "exact_rate",
+        "exact_rate_95ci",
+        "checkpoint_successes",
+        "checkpoint_rate",
+        "checkpoint_rate_95ci",
+        "examples",
+        "mastered",
+        "mastery_streak",
+        "policy_loss",
+        "gradient_norm",
+        "elapsed_seconds",
+        "validation_elapsed_seconds",
+        "final_evaluation_reserve_seconds",
+        "regression_streak",
+        "best_checkpoint",
+    )
+    return [
+        {key: item[key] for key in keys if key in item} for item in value if isinstance(item, dict)
+    ]
+
+
 def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
     level = result.get("reached_complexity_level")
     final_evaluation_partial = result.get("final_evaluation_partial") is True
+    initial_by_level = result.get("initial_by_level")
     final_by_level = result.get("final_by_level")
+    initial_level_result: dict[str, Any] = {}
+    if isinstance(initial_by_level, dict) and level is not None:
+        candidate = initial_by_level.get(str(level))
+        if isinstance(candidate, dict):
+            initial_level_result = candidate
     level_result: dict[str, Any] = {}
     if isinstance(final_by_level, dict) and level is not None:
         candidate = final_by_level.get(str(level))
@@ -202,6 +236,9 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "initial_exact_rate": (None if final_evaluation_partial else result.get("initial_reward")),
+        "initial_level_exact_rate": (
+            None if final_evaluation_partial else initial_level_result.get("exact_rate")
+        ),
         "final_exact_rate": (None if final_evaluation_partial else result.get("final_reward")),
         "reward_gain": (None if final_evaluation_partial else result.get("reward_gain")),
         "paired_test_change": (
@@ -222,7 +259,7 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         ),
         "best_validation": result.get("best_validation"),
         "rollback_applied": result.get("rollback_applied"),
-        "validation_history": result.get("history"),
+        "validation_history": lightweight_research_validation_history(result.get("history")),
         "curriculum_history": result.get("promotions"),
         "reward_contract": result.get("reward_contract"),
         "optimizer_contract": result.get("optimizer_contract"),
@@ -237,6 +274,8 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         ),
         "checkpoint_rate_source": ("reached_level" if checkpoint_rate is not None else None),
         "evaluation_examples": (None if aggregate_rate_fallback else level_result.get("examples")),
+        "evaluation_completed": (None if aggregate_rate_fallback else level_result.get("examples")),
+        "evaluation_total": result.get("test_examples"),
         "evaluation_split": (
             (
                 ("test" if aggregate_has_test_provenance else None)

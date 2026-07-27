@@ -679,9 +679,9 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-loo-reinforce@9"
+    and .workload_revision == "runpod-repository-repair-loo-reinforce@10"
     and .algorithm == "leave-one-out-group-normalized-reinforce"
-    and .objective_id == "leave-one-out-correctness-gated-reinforce@3"
+    and .objective_id == "leave-one-out-correctness-gated-reinforce@4"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
     and .reward_contract.revision == "correctness-gated-efficiency@1"
     and .reward_contract.incorrect_terminal_reward == 0

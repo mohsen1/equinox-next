@@ -206,6 +206,20 @@ validation-regression rollback, no-signal and malformed-action stops, protocol v
 reward decomposition, optimizer provenance, curriculum decision history, and provider
 reserve telemetry.
 
+The seed `107` v3 run completed on an A40 after nine updates and five admitted policy
+updates. The rotating update-5 window remained at the `5/8` baseline. The latest
+eight-group action window then reached a `5.4264%` malformed-action rate and stopped
+training. Equinox restored update 0 and completed a paired 24-task test evaluation with
+zero improvements, zero regressions, and zero aggregate reward gain. This run validates
+the protocol stop, rollback, paired evaluation, artifact persistence, and provider
+teardown paths. It is not evidence of policy improvement. Estimated cost was `$0.197841`.
+
+Objective v4 is `leave-one-out-correctness-gated-reinforce@4` under workload revision
+`runpod-repository-repair-loo-reinforce@10`. It remembers a no-signal threshold crossing
+even if a later group in the same update is informative, clears transient evaluation
+counters at phase boundaries, compares test results only with the matching test
+baseline, and keeps completed-run validation summaries lightweight.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and
