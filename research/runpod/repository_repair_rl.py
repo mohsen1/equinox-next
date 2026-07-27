@@ -82,7 +82,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@14"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@15"
 OBJECTIVE_ID = "leave-one-out-paired-validation-reinforce@6"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -728,6 +728,32 @@ def bounded_final_evaluation_reserve(
     return min(reserve_seconds, maximum_seconds), exceeded_ceiling
 
 
+def retained_final_evaluation_reserve(
+    *,
+    current_seconds: int,
+    current_maximum_measured_seconds: int,
+    current_exceeded_ceiling: bool,
+    candidate_measured_seconds: int,
+    maximum_seconds: int,
+    candidate_retained: bool,
+) -> tuple[int, int, bool]:
+    if not candidate_retained:
+        return (
+            current_seconds,
+            current_maximum_measured_seconds,
+            current_exceeded_ceiling,
+        )
+    candidate_seconds, candidate_exceeded_ceiling = bounded_final_evaluation_reserve(
+        candidate_measured_seconds,
+        maximum_seconds,
+    )
+    return (
+        max(current_seconds, candidate_seconds),
+        max(current_maximum_measured_seconds, candidate_measured_seconds),
+        current_exceeded_ceiling or candidate_exceeded_ceiling,
+    )
+
+
 def training_loop_entry(
     resume_state: dict[str, Any] | None,
     *,
@@ -1349,6 +1375,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "policy_prompt_roles": ["system", "user"],
         "learning_signal": "mixed_hidden_correctness_within_sibling_group",
         "checkpoint_selection_window": "fixed_paired_validation",
+        "final_evaluation_reserve_source": "retained_checkpoint",
         "curriculum_validation_window": "rotating_disjoint",
         "reward_contract_revision": "correctness-gated-efficiency@1",
         "maximum_final_evaluation_reserve_seconds": (
@@ -2385,22 +2412,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 * 1.5
             )
             (
-                trained_policy_reserve,
+                candidate_final_evaluation_reserve_seconds,
                 reserve_exceeded_this_window,
             ) = bounded_final_evaluation_reserve(
                 measured_trained_policy_reserve,
                 runtime.maximum_final_evaluation_reserve_seconds,
-            )
-            maximum_measured_final_evaluation_reserve_seconds = max(
-                maximum_measured_final_evaluation_reserve_seconds,
-                measured_trained_policy_reserve,
-            )
-            final_evaluation_reserve_exceeded_ceiling = (
-                final_evaluation_reserve_exceeded_ceiling or reserve_exceeded_this_window
-            )
-            final_evaluation_reserve_seconds = max(
-                final_evaluation_reserve_seconds,
-                trained_policy_reserve,
             )
             mastered = observation_mastered(curriculum_observation)
             mastery_streak = mastery_streak + 1 if mastered else 0
@@ -2418,6 +2434,20 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     observed_exact_successes=int(checkpoint_observation["exact_successes"]),
                     consecutive_regressions=consecutive_regression_windows,
                 )
+            (
+                final_evaluation_reserve_seconds,
+                maximum_measured_final_evaluation_reserve_seconds,
+                final_evaluation_reserve_exceeded_ceiling,
+            ) = retained_final_evaluation_reserve(
+                current_seconds=final_evaluation_reserve_seconds,
+                current_maximum_measured_seconds=(
+                    maximum_measured_final_evaluation_reserve_seconds
+                ),
+                current_exceeded_ceiling=final_evaluation_reserve_exceeded_ceiling,
+                candidate_measured_seconds=measured_trained_policy_reserve,
+                maximum_seconds=runtime.maximum_final_evaluation_reserve_seconds,
+                candidate_retained=candidate_is_best,
+            )
             if candidate_is_best:
                 best_validation = {
                     "update": update,
@@ -2478,7 +2508,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     ),
                     "final_evaluation_reserve_seconds": (final_evaluation_reserve_seconds),
                     "measured_final_evaluation_reserve_seconds": (measured_trained_policy_reserve),
+                    "candidate_final_evaluation_reserve_seconds": (
+                        candidate_final_evaluation_reserve_seconds
+                    ),
                     "final_evaluation_reserve_exceeded_ceiling": (reserve_exceeded_this_window),
+                    "checkpoint_candidate_retained": candidate_is_best,
                     "elapsed_seconds": round(cumulative_elapsed_seconds(), 3),
                 }
             )

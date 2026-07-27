@@ -10,7 +10,7 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-EXPECTED_WORKLOAD = "runpod-repository-repair-loo-reinforce@14"
+EXPECTED_WORKLOAD = "runpod-repository-repair-loo-reinforce@15"
 EXPECTED_OBJECTIVE = "leave-one-out-paired-validation-reinforce@6"
 NUMBER_TYPES = (int, float)
 

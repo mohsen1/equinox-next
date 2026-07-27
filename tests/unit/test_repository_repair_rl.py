@@ -48,6 +48,7 @@ from research.runpod.repository_repair_rl import (
     remove_stale_checkpoint_targets,
     render_action_prompt,
     resumed_crash_tail_actions_unaccounted,
+    retained_final_evaluation_reserve,
     select_representative_collection,
     serialize_branch_group,
     sibling_advantages,
@@ -280,6 +281,25 @@ def test_final_evaluation_reserve_is_bounded_with_provenance() -> None:
         final_evaluation_reserve_seconds=reserve_seconds,
         final_evaluation_reserve_exceeded_ceiling=True,
     ) == (True, "final_evaluation_reserve_ceiling", 300)
+
+
+def test_final_evaluation_reserve_tracks_only_retained_checkpoints() -> None:
+    current = {
+        "current_seconds": 600,
+        "current_maximum_measured_seconds": 500,
+        "current_exceeded_ceiling": False,
+        "candidate_measured_seconds": 1_900,
+        "maximum_seconds": 1_500,
+    }
+
+    assert retained_final_evaluation_reserve(
+        **current,
+        candidate_retained=False,
+    ) == (600, 500, False)
+    assert retained_final_evaluation_reserve(
+        **current,
+        candidate_retained=True,
+    ) == (1_500, 1_900, True)
 
 
 def test_partial_final_evaluation_has_no_headline_reward() -> None:

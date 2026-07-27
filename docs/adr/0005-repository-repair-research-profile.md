@@ -265,6 +265,22 @@ Workload revision `runpod-repository-repair-loo-reinforce@14` restores the v6 pr
 verbatim and retains only the lower-entropy stochastic sibling sampling. This isolates
 protocol calibration from greedy task competence.
 
+The seed `107` revision-14 run retained update 10 after fixed paired validation improved
+from `5/8` to `6/8`. A later candidate fell to `4/8`, so Equinox restored update 10
+before the final paired 24-task evaluation. The retained adapter improved `square` and
+regressed `is_empty`, producing one paired improvement, one regression, and zero net
+reward gain. The run proves that branch-relative optimization can change held-out
+behavior and that best-checkpoint rollback works, but it does not meet the
+zero-regression improvement gate.
+
+Workload revision `runpod-repository-repair-loo-reinforce@15` binds measured
+final-evaluation reserve to the retained checkpoint. Revision 14 committed timing from
+every evaluated candidate before checkpoint selection. A slow rejected seed-109
+candidate therefore raised the reserve to its ceiling and stopped training after four
+policy updates even though final evaluation would have restored the faster update-0
+adapter. Revision 15 records candidate timing for observability but changes the active
+reserve and ceiling state only when that candidate becomes the retained checkpoint.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and
