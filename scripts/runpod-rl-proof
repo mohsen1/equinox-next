@@ -455,7 +455,7 @@ failure_message="RunPod pod creation failed before a provider handle was returne
 create_arguments=(
   pod create
   --name "$pod_name"
-  --template-id "$template_id"
+  --image "$image"
   --gpu-id "$gpu_id"
   --gpu-count 1
   --cloud-type "$cloud_type"
