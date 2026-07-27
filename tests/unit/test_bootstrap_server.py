@@ -84,7 +84,7 @@ def test_install_bundle_rejects_nested_paths(tmp_path: Path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
-def test_bootstrap_accepts_authenticated_bundle_before_handoff(
+def test_bootstrap_accepts_authenticated_bundle_on_proxy_rewritten_post_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -102,7 +102,7 @@ def test_bootstrap_accepts_authenticated_bundle_before_handoff(
     try:
         connection.request(
             "POST",
-            "/bundle",
+            "/opaque-proxy-prefix/bundle?transport=1",
             body=payload,
             headers={
                 "Authorization": f"Bearer {token}",

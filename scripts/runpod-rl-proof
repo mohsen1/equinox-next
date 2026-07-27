@@ -564,7 +564,7 @@ publish_execution "PROVISIONING" "$last_progress"
 echo "Worker $pod_id allocated at \$$hourly_cost/hour; waiting for container readiness." >&2
 proxy_root="https://${pod_id}-8000.proxy.runpod.net"
 bootstrap_health_url="$proxy_root/bootstrap-health"
-bundle_upload_url="$proxy_root/bundle"
+bundle_upload_url="$proxy_root/"
 progress_url="$proxy_root/progress.json"
 remote_authorization="Authorization: Bearer $transport_token"
 exit_code=""

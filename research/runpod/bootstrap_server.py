@@ -99,9 +99,6 @@ class BootstrapHandler(BaseHTTPRequestHandler):
         self._write_json(HTTPStatus.OK, {"status": "awaiting_bundle"})
 
     def do_POST(self) -> None:
-        if self.path != "/bundle":
-            self._write_json(HTTPStatus.NOT_FOUND, {"error": "NOT_FOUND"})
-            return
         if not self._authorized():
             self._write_json(HTTPStatus.UNAUTHORIZED, {"error": "UNAUTHORIZED"})
             return
