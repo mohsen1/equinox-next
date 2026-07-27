@@ -80,8 +80,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@7"
-OBJECTIVE_ID = "leave-one-out-group-normalized-reinforce@1"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@8"
+OBJECTIVE_ID = "leave-one-out-group-normalized-reinforce@2"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -100,7 +100,8 @@ TEST_SEED_BASE = 90_000
 MAX_INPUT_TOKENS = 4_096
 MAX_NEW_TOKENS = 192
 ACTION_RESPONSE_PREFIX = '{"tool":'
-LEARNING_RATE = 8e-5
+LEARNING_RATE = 2e-5
+ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
 PROGRESS_PATH = os.environ.get("EQUINOX_PROGRESS_PATH")
@@ -522,9 +523,13 @@ def sibling_advantages(returns: list[float]) -> list[float]:
     pooled_standard_deviation = statistics.pstdev(returns)
     if pooled_standard_deviation <= 1e-8:
         return [0.0] * BRANCH_WIDTH
+    advantage_scale = max(
+        pooled_standard_deviation,
+        ADVANTAGE_STANDARD_DEVIATION_FLOOR,
+    )
     total = sum(returns)
     advantages = [
-        (value - (total - value) / (BRANCH_WIDTH - 1)) / pooled_standard_deviation
+        (value - (total - value) / (BRANCH_WIDTH - 1)) / advantage_scale
         for value in returns
     ]
     centered = sum(advantages) / BRANCH_WIDTH
@@ -1456,7 +1461,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             token_log_probabilities = (
                 torch.log_softmax(logits, dim=-1).gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
             )
-            sequence_log_probability = (token_log_probabilities * target_mask).sum(dim=1)
+            completion_token_count = target_mask.sum(dim=1).clamp_min(1.0)
+            sequence_log_probability = (
+                (token_log_probabilities * target_mask).sum(dim=1) / completion_token_count
+            )
             weight_tensor = torch.tensor(weights, device=device)
             loss = -(weight_tensor.detach() * sequence_log_probability).sum() / denominator
             loss.backward()
@@ -2122,7 +2130,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "workload_revision": WORKLOAD_REVISION,
         "algorithm": "leave-one-out-group-normalized-reinforce",
         "objective_id": OBJECTIVE_ID,
-        "objective_sequence_reduction": "sum_completion_token_log_probabilities",
+        "objective_sequence_reduction": "mean_completion_token_log_probabilities",
         "teacher_data_used": False,
         "branch_width": BRANCH_WIDTH,
         "static_branch_width": BRANCH_WIDTH,

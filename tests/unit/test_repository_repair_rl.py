@@ -83,6 +83,12 @@ def test_sibling_advantage_is_leave_one_out_centered_and_zero_for_ties() -> None
     assert sibling_advantages([0.25] * BRANCH_WIDTH) == [0.0] * BRANCH_WIDTH
 
 
+def test_sibling_advantage_floor_does_not_amplify_tiny_efficiency_gaps() -> None:
+    advantages = sibling_advantages([0.95, 0.94, 0.94, 0.94])
+
+    assert advantages == [0.1, -0.03333333, -0.03333333, -0.03333333]
+
+
 def test_action_prompt_prefills_the_parser_contract() -> None:
     class Tokenizer:
         def apply_chat_template(

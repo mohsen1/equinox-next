@@ -56,7 +56,11 @@ simulator with real repositories and test commands.
 - Infrastructure failures are excluded rather than scored as candidate failure.
 - At least two trustworthy sibling returns are required.
 - Equal sibling returns produce exactly zero relative advantage.
+- The sibling standard-deviation denominator has a `0.1` floor, so small
+  action-cost differences cannot be amplified into full-scale policy signals.
 - A sibling advantage is applied to every accepted post-branch action in that sibling.
+- Policy loss uses mean completion-token log probability, avoiding larger gradients
+  merely because an action serialized to more tokens.
 - The optimizer consumes policy samples only; no teacher targets or fallback updates are
   allowed.
 - Rotating validation windows control curriculum decisions. A level advances only after
