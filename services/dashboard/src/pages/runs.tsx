@@ -17,6 +17,18 @@ import {
 } from "../contracts";
 import { formatEstimatedCost, formatRelativeTime } from "../format";
 import { Link, useParams } from "../router";
+import {
+  formatDuration,
+  formatRateInterval,
+  intervalValue,
+  numberValue,
+  observerStages,
+  percent,
+  resultItems,
+  runPercentage,
+  shortModelName,
+  stringValue,
+} from "../runs-helpers";
 import type { ResearchComputeExecution } from "../types";
 import { ResearchRunTabs } from "./research-trajectory";
 
@@ -67,10 +79,14 @@ function RunRow({ run }: { run: ResearchComputeExecution }) {
   const level = numberValue(run.progress.current_level);
   const maximumLevel = numberValue(run.progress.maximum_level);
   const phase = stringValue(run.progress.phase);
-  const percentage =
-    update !== null && maximumUpdates !== null && maximumUpdates > 0
-      ? Math.min(100, (update / maximumUpdates) * 100)
-      : phasePercentage(run.status, phase);
+  const attempt = numberValue(run.progress.attempt);
+  const percentage = runPercentage(
+    run.status,
+    update,
+    maximumUpdates,
+    phase,
+    attempt,
+  );
   const progressLabel =
     update !== null
       ? `Update ${update}${maximumUpdates !== null ? ` of ${maximumUpdates}` : ""}`
@@ -126,6 +142,7 @@ export function ResearchRunPage() {
   const phase = stringValue(run?.progress.phase);
   const error = stringValue(run?.progress.error);
   const claimStrength = stringValue(run?.progress.claim_strength);
+  const attempt = numberValue(run?.progress.attempt);
 
   return (
     <>
@@ -162,17 +179,32 @@ export function ResearchRunPage() {
               ) : null}
 
               <section className="observer-stage" aria-label="Run lifecycle">
-                {observerStages(run.status, phase, run.teardown_confirmed).map(
-                  (stage) => (
-                    <div
-                      key={stage.label}
-                      className={`observer-stage-item ${stage.state}`}
-                    >
-                      <span>{stage.label}</span>
-                      <small>{stage.detail}</small>
-                    </div>
-                  ),
-                )}
+                {observerStages(
+                  run.status,
+                  phase,
+                  run.teardown_confirmed,
+                  attempt,
+                  numberValue(run.progress.update) !== null ||
+                    numberValue(run.progress.current_level) !== null,
+                ).map((stage) => (
+                  <div
+                    key={stage.label}
+                    className={`observer-stage-item ${stage.state}`}
+                    aria-label={`${stage.label}: ${friendlyStatus(stage.state)}`}
+                  >
+                    <span>{stage.label}</span>
+                    <small>{stage.detail}</small>
+                    <span className="observer-stage-status" aria-hidden="true">
+                      {stage.state === "complete"
+                        ? "✓"
+                        : stage.state === "failed"
+                          ? "!"
+                          : stage.state === "current"
+                            ? "→"
+                            : "○"}
+                    </span>
+                  </div>
+                ))}
               </section>
 
               <div className="run-overview research-observer-grid">
@@ -232,6 +264,16 @@ function progressItems(run: ResearchComputeExecution) {
   const currentLevel = numberValue(progress.current_level);
   const maximumLevel = numberValue(progress.maximum_level);
   const validationRate = numberValue(progress.exact_rate);
+  const validationInterval = intervalValue(progress.exact_rate_95ci);
+  const validationExamples = numberValue(progress.validation_examples);
+  const exactRateSource = stringValue(progress.exact_rate_source);
+  const aggregateTestMean = exactRateSource === "aggregate_test_mean";
+  const finalEvaluationReward = exactRateSource === "final_evaluation_reward";
+  const evaluationExamples =
+    aggregateTestMean || finalEvaluationReward
+      ? null
+      : (numberValue(progress.evaluation_examples) ?? validationExamples);
+  const evaluationSplit = stringValue(progress.evaluation_split);
   const sampledCompletions = numberValue(progress.sampled_completions);
   const elapsed = numberValue(progress.elapsed_seconds);
   const informativeGroupRate = numberValue(progress.informative_group_rate);
@@ -259,8 +301,21 @@ function progressItems(run: ResearchComputeExecution) {
           : `Level ${currentLevel}${maximumLevel !== null ? ` of ${maximumLevel}` : ""}`,
     },
     {
-      label: "Validation exact",
-      value: percent(validationRate, "Awaiting evaluation"),
+      label: aggregateTestMean
+        ? "Test mean"
+        : finalEvaluationReward
+          ? "Final reward"
+          : evaluationSplit === "test"
+            ? "Test solve"
+            : evaluationSplit === "validation"
+              ? "Validation solve"
+              : "Solve rate",
+      value: formatRateInterval(
+        validationRate,
+        validationInterval,
+        evaluationExamples,
+        "Awaiting evaluation",
+      ),
     },
     ...(informativeGroupRate === null
       ? []
@@ -324,135 +379,4 @@ function allocationItems(run: ResearchComputeExecution) {
           : "Pending",
     },
   ];
-}
-
-function resultItems(
-  run: ResearchComputeExecution,
-  claimStrength: string | null,
-) {
-  const progress = run.progress;
-  const initial = numberValue(progress.initial_exact_rate);
-  const final = numberValue(progress.final_exact_rate);
-  const gain = numberValue(progress.reward_gain);
-  const promotions = numberValue(progress.promotion_count);
-  const adapterPersisted = booleanValue(progress.adapter_persisted);
-  return [
-    {
-      label: "Claim",
-      value:
-        claimStrength === "EXPLORATORY_SINGLE_SEED"
-          ? "Exploratory · one seed"
-          : claimStrength
-            ? friendlyStatus(claimStrength)
-            : "Not reported",
-    },
-    { label: "Baseline test", value: percent(initial, "Not reported") },
-    { label: "Final test", value: percent(final, "Not reported") },
-    {
-      label: "Test gain",
-      value:
-        gain === null
-          ? "Not reported"
-          : `${gain >= 0 ? "+" : ""}${(gain * 100).toFixed(1)} pts`,
-    },
-    { label: "Promotions", value: promotions?.toLocaleString() ?? "0" },
-    {
-      label: "Stop reason",
-      value: friendlyStatus(
-        stringValue(progress.stop_reason) ?? "not reported",
-      ),
-    },
-    {
-      label: "Adapter",
-      value:
-        adapterPersisted === null
-          ? "Not reported"
-          : adapterPersisted
-            ? "Verified"
-            : "Missing",
-    },
-  ];
-}
-
-function observerStages(
-  status: ResearchComputeExecution["status"],
-  phase: string | null,
-  teardownConfirmed: boolean,
-): Array<{ label: string; detail: string; state: string }> {
-  const learning = ["training", "evaluation", "baseline_evaluation"];
-  const current =
-    status === "SUCCEEDED"
-      ? 3
-      : status === "FINALIZING"
-        ? 2
-        : phase && learning.includes(phase)
-          ? 1
-          : 0;
-  const labels = [
-    ["Allocate", "Provider capacity"],
-    ["Learn", "Sample · verify · update"],
-    ["Finalize", "Persist result"],
-    ["Release", "Confirm teardown"],
-  ];
-  return labels.map(([label, detail], index) => ({
-    label,
-    detail,
-    state:
-      status === "SUCCEEDED"
-        ? "complete"
-        : status === "FAILED"
-          ? index === 3 && teardownConfirmed
-            ? "complete"
-            : index === current
-              ? "failed"
-              : index < current
-                ? "complete"
-                : "pending"
-          : index < current
-            ? "complete"
-            : index === current
-              ? "current"
-              : "pending",
-  }));
-}
-
-function phasePercentage(
-  status: ResearchComputeExecution["status"],
-  phase: string | null,
-): number {
-  if (status === "SUCCEEDED" || status === "FAILED") return 100;
-  if (status === "FINALIZING") return 92;
-  if (status === "PROVISIONING") return phase === "container_starting" ? 12 : 5;
-  if (phase === "dependency_setup") return 20;
-  if (phase === "model_loading") return 28;
-  if (phase === "baseline_evaluation") return 36;
-  if (phase === "training") return 50;
-  if (phase === "evaluation") return 70;
-  return 18;
-}
-
-function numberValue(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" && value.length ? value : null;
-}
-
-function booleanValue(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
-function shortModelName(value: string | null): string {
-  if (!value) return "Model pending";
-  return value.split("/").at(-1) ?? value;
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)} sec`;
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-}
-
-function percent(value: number | null, fallback = "Not reported"): string {
-  return value === null ? fallback : `${(value * 100).toFixed(1)}%`;
 }

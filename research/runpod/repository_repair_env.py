@@ -11,19 +11,25 @@ import argparse
 import ast
 import hashlib
 import json
+import math
 import random
 import re
 from dataclasses import asdict, dataclass
+from itertools import combinations
 from typing import Any, Literal
 
-ENVIRONMENT_REVISION = "repository-repair-simulator@1"
-VERIFIER_REVISION = "repository-repair-hidden-state@1"
+ENVIRONMENT_REVISION = "repository-repair-simulator@3"
+VERIFIER_REVISION = "repository-repair-hidden-state@3"
 ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@1"
 BRANCH_WIDTH = 4
 MAX_OBSERVATION_CHARS = 3_000
 MAX_FILE_CHARS = 1_500
 MAX_EDIT_CHARS = 500
 SAFE_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
+# The local conformance CLI also runs on Python 3.9, where PEP 604 unions
+# cannot be passed to isinstance at runtime.
+SAFE_CONSTANT_TYPES = (str, int, float, bool, type(None))
+SEQUENCE_TYPES = (str, tuple, list)
 
 SYSTEM_PROMPT = """Output contract:
 Return exactly one JSON object and no other text.
@@ -74,6 +80,7 @@ class Fault:
 @dataclass(frozen=True)
 class RepairTask:
     task_id: str
+    semantic_task_id: str
     level: int
     description: str
     files: dict[str, str]
@@ -85,6 +92,10 @@ class RepairTask:
     @property
     def failing_tests(self) -> tuple[str, ...]:
         return tuple(fault.test_name for fault in self.faults)
+
+    @property
+    def verifier_probe_seed(self) -> str:
+        return _digest(self.expected_files)
 
 
 @dataclass(frozen=True)
@@ -245,13 +256,212 @@ FAULT_TEMPLATES = (
         "return key in records",
         "test_has_key_reports_mapping_membership",
     ),
+    (
+        "is_positive",
+        "def is_positive(value):\n    return value >= 0\n",
+        "return value >= 0",
+        "return value > 0",
+        "test_is_positive_excludes_zero",
+    ),
+    (
+        "last",
+        "def last(values):\n    return values[0]\n",
+        "return values[0]",
+        "return values[-1]",
+        "test_last_returns_final_item",
+    ),
+    (
+        "uppercase",
+        "def uppercase(value):\n    return value.lower()\n",
+        "return value.lower()",
+        "return value.upper()",
+        "test_uppercase_changes_letter_case",
+    ),
+    (
+        "minimum",
+        "def minimum(left, right):\n    return max(left, right)\n",
+        "return max(left, right)",
+        "return min(left, right)",
+        "test_minimum_returns_smaller_value",
+    ),
+    (
+        "total",
+        "def total(values):\n    return len(values)\n",
+        "return len(values)",
+        "return sum(values)",
+        "test_total_sums_values",
+    ),
+    (
+        "different",
+        "def different(left, right):\n    return left == right\n",
+        "return left == right",
+        "return left != right",
+        "test_different_detects_inequality",
+    ),
+    (
+        "at_least",
+        "def at_least(value, minimum):\n    return value <= minimum\n",
+        "return value <= minimum",
+        "return value >= minimum",
+        "test_at_least_includes_larger_values",
+    ),
+    (
+        "coalesce",
+        "def coalesce(value, fallback):\n    return fallback if value else value\n",
+        "return fallback if value else value",
+        "return value if value else fallback",
+        "test_coalesce_uses_fallback_for_empty_values",
+    ),
+    (
+        "first",
+        "def first(values, fallback):\n    return values[-1] if values else fallback\n",
+        "return values[-1] if values else fallback",
+        "return values[0] if values else fallback",
+        "test_first_returns_initial_item",
+    ),
+    (
+        "negate",
+        "def negate(value):\n    return value\n",
+        "return value",
+        "return not value",
+        "test_negate_inverts_boolean",
+    ),
+    (
+        "nonnegative",
+        "def nonnegative(value):\n    return value > 0\n",
+        "return value > 0",
+        "return value >= 0",
+        "test_nonnegative_includes_zero",
+    ),
+    (
+        "subtract",
+        "def subtract(left, right):\n    return left + right\n",
+        "return left + right",
+        "return left - right",
+        "test_subtract_preserves_operand_order",
+    ),
+    (
+        "square",
+        "def square(value):\n    return value + value\n",
+        "return value + value",
+        "return value * value",
+        "test_square_multiplies_value_by_itself",
+    ),
+    (
+        "maximum_three",
+        "def maximum_three(first, second, third):\n    return max(first, second)\n",
+        "return max(first, second)",
+        "return max(first, second, third)",
+        "test_maximum_three_considers_every_value",
+    ),
+    (
+        "is_empty",
+        "def is_empty(value):\n    return len(value) > 0\n",
+        "return len(value) > 0",
+        "return len(value) == 0",
+        "test_is_empty_detects_empty_values",
+    ),
+    (
+        "safe_head",
+        "def safe_head(values, fallback):\n    return values[0]\n",
+        "return values[0]",
+        "return values[0] if values else fallback",
+        "test_safe_head_handles_empty_values",
+    ),
+    (
+        "middle",
+        "def middle(values):\n    return values[0]\n",
+        "return values[0]",
+        "return values[1]",
+        "test_middle_returns_center_item",
+    ),
+    (
+        "both",
+        "def both(left, right):\n    return left or right\n",
+        "return left or right",
+        "return left and right",
+        "test_both_requires_two_truthy_values",
+    ),
 )
 
 TEMPLATE_SPLITS = {
     "train": FAULT_TEMPLATES[:5],
-    "validation": FAULT_TEMPLATES[5:10],
-    "test": FAULT_TEMPLATES[10:15],
+    "validation": FAULT_TEMPLATES[5:10] + FAULT_TEMPLATES[15:26],
+    "test": FAULT_TEMPLATES[10:15] + FAULT_TEMPLATES[26:33],
 }
+STRUCTURAL_MIRROR_DISCLOSURES = (
+    {
+        "families": ("combine", "multiply", "subtract", "square"),
+        "splits": ("train", "test"),
+        "relationship": "arithmetic operator repair",
+    },
+    {
+        "families": ("nonempty", "is_empty"),
+        "splits": ("validation", "test"),
+        "relationship": "emptiness predicate repair",
+    },
+    {
+        "families": ("minimum", "maximum", "bounded_lower", "maximum_three"),
+        "splits": ("validation", "test"),
+        "relationship": "extremum operator repair",
+    },
+    {
+        "families": ("first", "safe_head"),
+        "splits": ("validation", "test"),
+        "relationship": "identical repaired expression",
+    },
+    {
+        "families": ("last", "middle"),
+        "splits": ("validation", "test"),
+        "relationship": "positional indexing repair",
+    },
+    {
+        "families": ("coalesce", "default_zero"),
+        "splits": ("validation", "test"),
+        "relationship": "fallback selection repair",
+    },
+    {
+        "families": ("different", "negate", "both"),
+        "splits": ("validation", "test"),
+        "relationship": "boolean operator repair",
+    },
+)
+
+
+def semantic_task_universe_size(
+    level: int,
+    split: Literal["train", "validation", "test"],
+) -> int:
+    if not 0 <= level < len(COMPLEXITY_LEVELS):
+        raise ValueError(f"level must be between 0 and {len(COMPLEXITY_LEVELS) - 1}")
+    return math.comb(
+        len(TEMPLATE_SPLITS[split]),
+        COMPLEXITY_LEVELS[level].fault_count,
+    )
+
+
+def _semantic_task_id(
+    level: int,
+    split: Literal["train", "validation", "test"],
+    family_ids: list[str] | tuple[str, ...],
+) -> str:
+    semantic_material = {
+        "level": level,
+        "split": split,
+        "family_ids": sorted(family_ids),
+    }
+    return f"repo-semantic-{split}-{level}-{_digest(semantic_material).split(':', 1)[1][:12]}"
+
+
+def _semantic_task_universe(
+    level: int,
+    split: Literal["train", "validation", "test"],
+) -> frozenset[str]:
+    fault_count = COMPLEXITY_LEVELS[level].fault_count
+    return frozenset(
+        _semantic_task_id(level, split, tuple(item[0] for item in selected))
+        for selected in combinations(TEMPLATE_SPLITS[split], fault_count)
+    )
 
 
 def make_task(
@@ -265,6 +475,16 @@ def make_task(
     complexity = COMPLEXITY_LEVELS[level]
     rng = random.Random(seed)
     selected = rng.sample(list(TEMPLATE_SPLITS[split]), complexity.fault_count)
+    return _make_task_from_selection(level, seed, split, selected)
+
+
+def _make_task_from_selection(
+    level: int,
+    seed: int,
+    split: Literal["train", "validation", "test"],
+    selected: list[tuple[str, str, str, str, str]] | tuple[tuple[str, str, str, str, str], ...],
+) -> RepairTask:
+    complexity = COMPLEXITY_LEVELS[level]
     files: dict[str, str] = {}
     faults: list[Fault] = []
 
@@ -318,6 +538,11 @@ def make_task(
         "expected_digest": _digest(expected_files),
     }
     task_id = f"repo-{level}-{_digest(task_material).split(':', 1)[1][:12]}"
+    semantic_task_id = _semantic_task_id(
+        level,
+        split,
+        tuple(fault.family_id for fault in faults),
+    )
     description = (
         f"Repair the repository so {len(faults)} failing hidden "
         f"{'test passes' if len(faults) == 1 else 'tests pass'}. "
@@ -325,6 +550,7 @@ def make_task(
     )
     return RepairTask(
         task_id=task_id,
+        semantic_task_id=semantic_task_id,
         level=level,
         description=description,
         files=files,
@@ -341,10 +567,58 @@ def make_tasks(
     seed: int,
     *,
     split: Literal["train", "validation", "test"] = "train",
+    exclude_semantic_task_ids: frozenset[str] = frozenset(),
 ) -> list[RepairTask]:
-    tasks = [make_task(level, seed + index * 7_919, split=split) for index in range(count)]
-    if len({task.task_id for task in tasks}) != len(tasks):
-        raise RuntimeError("task generator produced an exact duplicate")
+    semantic_universe_size = semantic_task_universe_size(level, split)
+    semantic_universe = _semantic_task_universe(level, split)
+    if len(semantic_universe) != semantic_universe_size:
+        raise RuntimeError("semantic task universe cardinality is inconsistent")
+    relevant_exclusions = exclude_semantic_task_ids & semantic_universe
+    available_semantics = semantic_universe_size - len(relevant_exclusions)
+    if count > available_semantics:
+        raise ValueError(
+            f"{split} split has only {available_semantics} available semantic tasks "
+            f"at level {level}, fewer than the requested {count}"
+        )
+    tasks: list[RepairTask] = []
+    selected_semantics: set[str] = set()
+    candidate_index = 0
+    maximum_candidates = max(1_000, semantic_universe_size * 100)
+    while len(tasks) < count and candidate_index < maximum_candidates:
+        task = make_task(level, seed + candidate_index * 7_919, split=split)
+        candidate_index += 1
+        if (
+            task.semantic_task_id in relevant_exclusions
+            or task.semantic_task_id in selected_semantics
+        ):
+            continue
+        tasks.append(task)
+        selected_semantics.add(task.semantic_task_id)
+    if len(tasks) != count:
+        enumerated = sorted(
+            (
+                _semantic_task_id(level, split, tuple(item[0] for item in selected)),
+                selected,
+            )
+            for selected in combinations(
+                TEMPLATE_SPLITS[split],
+                COMPLEXITY_LEVELS[level].fault_count,
+            )
+        )
+        for semantic_task_id, selected in enumerated:
+            if semantic_task_id in relevant_exclusions or semantic_task_id in selected_semantics:
+                continue
+            fallback_material = f"{level}:{split}:{seed}:{semantic_task_id}"
+            fallback_seed = int(hashlib.sha256(fallback_material.encode()).hexdigest()[:15], 16)
+            task = _make_task_from_selection(level, fallback_seed, split, selected)
+            if task.semantic_task_id != semantic_task_id:
+                raise RuntimeError("enumerated semantic task identity is inconsistent")
+            tasks.append(task)
+            selected_semantics.add(semantic_task_id)
+            if len(tasks) == count:
+                break
+    if len(tasks) != count:
+        raise RuntimeError("semantic task enumeration did not satisfy the requested sample")
     return tasks
 
 
@@ -364,7 +638,113 @@ SEMANTIC_CASES: dict[str, tuple[tuple[Any, ...], ...]] = {
     "default_zero": ((None,), (0,), ("value",), (7,)),
     "bounded_lower": ((5, 3), (1, 3), (-4, -2)),
     "has_key": (({"a": 1}, "a"), ({"a": 1}, "b"), ({}, "a")),
+    "is_positive": ((-1,), (0,), (4,)),
+    "last": (((1, 2, 3),), ((3, 1, 2),), (("a", "b"),)),
+    "uppercase": (("Alpha",), ("already upper",), ("",)),
+    "minimum": ((3, 4), (-2, -5), (0, 0)),
+    "total": (((1, 2, 3),), ((-2, 5),), ((),)),
+    "different": ((1, 1), ([1], [1]), (1, 2), ("a", "b")),
+    "at_least": ((3, 3), (5, 3), (1, 3)),
+    "coalesce": ((None, 9), (0, 9), ("value", "fallback")),
+    "first": (((1, 2), 9), ((2, 1), 9), ((), 9), (("a", "b"), "fallback")),
+    "negate": ((True,), (False,)),
+    "nonnegative": ((-1,), (0,), (4,)),
+    "subtract": ((5, 3), (-2, 4), (0, 7)),
+    "square": ((-3,), (0,), (5,)),
+    "maximum_three": ((1, 2, 3), (5, 2, 3), (0, 9, 1), (-1, -2, -3)),
+    "is_empty": (("",), ("x",), ([],), ([0],)),
+    "safe_head": (((1, 2), 9), ((2, 1), 9), ((), 9), (("a",), "fallback")),
+    "middle": (((1, 2, 3),), ((3, 1, 2),), (("a", "b", "c"),)),
+    "both": ((True, True), (True, False), (False, True), (False, False)),
 }
+RANDOMIZED_NUMERIC_CASE_ARITY = {
+    "absolute": 1,
+    "at_least": 2,
+    "bounded_lower": 2,
+    "clamp": 3,
+    "combine": 2,
+    "is_even": 1,
+    "is_positive": 1,
+    "maximum": 2,
+    "maximum_three": 3,
+    "minimum": 2,
+    "multiply": 2,
+    "nonnegative": 1,
+    "square": 1,
+    "subtract": 2,
+}
+
+
+def semantic_cases(
+    family_id: str,
+    probe_seed: str | None,
+) -> tuple[tuple[Any, ...], ...]:
+    cases = SEMANTIC_CASES[family_id]
+    if probe_seed is None:
+        return cases
+    arity = RANDOMIZED_NUMERIC_CASE_ARITY.get(family_id)
+    rng = random.Random(f"{family_id}:{probe_seed}")
+    randomized: list[tuple[Any, ...]] = []
+    if arity is not None:
+        for _ in range(8):
+            magnitude = rng.randint(6, 10_000)
+            if arity == 1:
+                randomized.extend(((magnitude,), (-magnitude,)))
+            else:
+                values = tuple(rng.randint(-10_000, 10_000) for _ in range(arity))
+                randomized.append(values)
+    elif family_id in {"last", "middle", "total"}:
+        randomized.extend((tuple(rng.sample(range(-10_000, 10_001), 3)),) for _ in range(8))
+    elif family_id in {"first", "safe_head"}:
+        randomized.extend(
+            (
+                tuple(rng.sample(range(-10_000, 10_001), 3)),
+                rng.randint(-10_000, 10_000),
+            )
+            for _ in range(8)
+        )
+    elif family_id in {"uppercase", "normalize"}:
+        randomized.extend((f"  Probe{rng.randrange(1_000_000):06d} Value  ",) for _ in range(8))
+    elif family_id == "prefix":
+        for _ in range(8):
+            token = f"probe{rng.randrange(1_000_000):06d}"
+            randomized.extend(((f"{token}-tail", token), (f"head-{token}", token)))
+    elif family_id in {"nonempty", "is_empty"}:
+        randomized.extend((f"probe-{rng.randrange(1_000_000):06d}",) for _ in range(8))
+    elif family_id == "contains":
+        for _ in range(8):
+            values = tuple(rng.sample(range(-10_000, 10_001), 3))
+            randomized.extend(((values, values[1]), (values, rng.randint(20_001, 30_000))))
+    elif family_id == "lookup":
+        for _ in range(8):
+            key = f"k{rng.randrange(1_000_000):06d}"
+            value = rng.randint(-10_000, 10_000)
+            fallback = rng.randint(20_001, 30_000)
+            randomized.extend((({key: value}, key, fallback), ({}, key, fallback)))
+    elif family_id == "has_key":
+        for _ in range(8):
+            key = f"k{rng.randrange(1_000_000):06d}"
+            randomized.extend((({key: 1}, key), ({}, key)))
+    elif family_id == "different":
+        for _ in range(8):
+            value = rng.randint(-10_000, 10_000)
+            randomized.extend(((value, value), (value, value + 1)))
+    elif family_id == "coalesce":
+        randomized.extend(
+            (
+                rng.choice((rng.randint(1, 10_000), f"v{rng.randrange(1_000_000):06d}")),
+                f"fallback-{rng.randrange(1_000_000):06d}",
+            )
+            for _ in range(8)
+        )
+    elif family_id == "default_zero":
+        randomized.extend((rng.randint(1, 10_000),) for _ in range(8))
+    elif family_id == "is_missing":
+        randomized.extend(
+            (rng.choice((rng.randint(1, 10_000), f"v{rng.randrange(1_000_000):06d}")),)
+            for _ in range(8)
+        )
+    return cases + tuple(randomized)
 
 
 def _return_expression(source: str) -> tuple[tuple[str, ...], ast.expr] | None:
@@ -392,10 +772,13 @@ def _return_expression(source: str) -> tuple[tuple[str, ...], ast.expr] | None:
 
 
 def _evaluate_expression(node: ast.expr, values: dict[str, Any]) -> Any:
-    if isinstance(node, ast.Constant) and isinstance(
-        node.value,
-        str | int | float | bool | type(None),
-    ):
+    if isinstance(node, ast.Constant) and isinstance(node.value, SAFE_CONSTANT_TYPES):
+        if (
+            isinstance(node.value, int)
+            and not isinstance(node.value, bool)
+            and abs(node.value) > 1_000_000
+        ):
+            raise ValueError("integer constant exceeds the inert verifier bound")
         return node.value
     if isinstance(node, ast.Name) and node.id in values:
         return values[node.id]
@@ -417,7 +800,35 @@ def _evaluate_expression(node: ast.expr, values: dict[str, Any]) -> Any:
         if isinstance(node.op, ast.Sub):
             return left - right
         if isinstance(node.op, ast.Mult):
+            sequence: str | tuple[Any, ...] | list[Any] | None = None
+            repetitions: int | None = None
+            if isinstance(left, SEQUENCE_TYPES) and isinstance(right, int):
+                sequence, repetitions = left, right
+            elif isinstance(right, SEQUENCE_TYPES) and isinstance(left, int):
+                sequence, repetitions = right, left
+            if (
+                sequence is not None
+                and repetitions is not None
+                and (
+                    isinstance(repetitions, bool)
+                    or repetitions < 0
+                    or repetitions > 1_000
+                    or len(sequence) * repetitions > 10_000
+                )
+            ):
+                raise ValueError("sequence repetition exceeds the inert verifier bound")
             return left * right
+        if isinstance(node.op, ast.Pow):
+            if (
+                isinstance(left, bool)
+                or isinstance(right, bool)
+                or not isinstance(left, int)
+                or not isinstance(right, int)
+                or abs(left) > 1_000_000
+                or not 0 <= right <= 16
+            ):
+                raise ValueError("exponentiation exceeds the inert verifier bound")
+            return left**right
         if isinstance(node.op, ast.Mod):
             return left % right
     if isinstance(node, ast.BoolOp):
@@ -485,7 +896,13 @@ def _evaluate_expression(node: ast.expr, values: dict[str, Any]) -> Any:
     raise ValueError("expression is outside the inert semantic verifier subset")
 
 
-def _semantically_matches(candidate: str, expected: str, family_id: str) -> bool:
+def _semantically_matches(
+    candidate: str,
+    expected: str,
+    family_id: str,
+    *,
+    probe_seed: str | None = None,
+) -> bool:
     candidate_expression = _return_expression(candidate)
     expected_expression = _return_expression(expected)
     if not candidate_expression or not expected_expression:
@@ -494,14 +911,24 @@ def _semantically_matches(candidate: str, expected: str, family_id: str) -> bool
     expected_arguments, expected_return = expected_expression
     if candidate_arguments != expected_arguments:
         return False
-    for arguments in SEMANTIC_CASES[family_id]:
+    for arguments in semantic_cases(family_id, probe_seed):
         if len(candidate_arguments) != len(arguments):
             return False
         values = {name: arguments[index] for index, name in enumerate(candidate_arguments)}
         try:
             candidate_value = _evaluate_expression(candidate_return, values)
             expected_value = _evaluate_expression(expected_return, values)
-        except (AttributeError, KeyError, TypeError, ValueError, ZeroDivisionError):
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            MemoryError,
+            OverflowError,
+            RecursionError,
+            TypeError,
+            ValueError,
+            ZeroDivisionError,
+        ):
             return False
         if type(candidate_value) is not type(expected_value) or candidate_value != expected_value:
             return False
@@ -577,6 +1004,7 @@ class RepositoryRepairEnvironment:
                 self.files.get(fault.path, ""),
                 self.task.expected_files[fault.path],
                 fault.family_id,
+                probe_seed=self.task.verifier_probe_seed,
             ):
                 failing.append(fault.test_name)
         return len(self.task.faults) - len(failing), failing
@@ -832,7 +1260,8 @@ def run_teacher_trajectory(
 def self_test() -> dict[str, Any]:
     tasks_checked = 0
     for level, complexity in enumerate(COMPLEXITY_LEVELS):
-        for task in make_tasks(level, 8, seed=10_000 + level):
+        task_count = min(8, semantic_task_universe_size(level, "train"))
+        for task in make_tasks(level, task_count, seed=10_000 + level):
             if len(task.files) != complexity.file_count:
                 raise AssertionError("file-count complexity is not reflected in the task")
             if len(task.faults) != complexity.fault_count:

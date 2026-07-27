@@ -150,27 +150,63 @@ class ResearchComputeExecutionRequest(StrictModel):
 
 def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
     level = result.get("reached_complexity_level")
+    final_evaluation_partial = result.get("final_evaluation_partial") is True
     final_by_level = result.get("final_by_level")
     level_result: dict[str, Any] = {}
     if isinstance(final_by_level, dict) and level is not None:
         candidate = final_by_level.get(str(level))
         if isinstance(candidate, dict):
             level_result = candidate
+    level_exact_rate = level_result.get("exact_rate")
+    aggregate_rate_fallback = level_exact_rate is None
+    aggregate_has_test_provenance = (
+        isinstance(final_by_level, dict) and result.get("test_examples") is not None
+    )
+    exact_rate = level_exact_rate
+    if aggregate_rate_fallback and not final_evaluation_partial:
+        exact_rate = result.get("final_reward")
+    checkpoint_rate = level_result.get("checkpoint_rate")
 
     values = {
         "phase": "complete",
         "message": (
-            "Training and final evaluation completed; artifacts persisted "
-            "and provider teardown confirmed."
+            (
+                "Training completed; final evaluation reached its workload deadline "
+                "and partial evidence was persisted."
+            )
+            if final_evaluation_partial
+            else (
+                "Training and final evaluation completed; artifacts persisted "
+                "and provider teardown confirmed."
+            )
         ),
         "update": result.get("updates_completed"),
         "current_level": level,
         "promotion_count": result.get("promotion_count"),
         "sampled_completions": result.get("total_sampled_completions"),
-        "exact_rate": level_result.get("exact_rate", result.get("final_reward")),
-        "initial_exact_rate": result.get("initial_reward"),
-        "final_exact_rate": result.get("final_reward"),
-        "reward_gain": result.get("reward_gain"),
+        "exact_rate": exact_rate,
+        "exact_rate_95ci": (
+            None if aggregate_rate_fallback else level_result.get("exact_rate_95ci")
+        ),
+        "exact_rate_source": (
+            (
+                (
+                    "aggregate_test_mean"
+                    if aggregate_has_test_provenance
+                    else "final_evaluation_reward"
+                )
+                if aggregate_rate_fallback
+                else "reached_level"
+            )
+            if exact_rate is not None
+            else None
+        ),
+        "initial_exact_rate": (None if final_evaluation_partial else result.get("initial_reward")),
+        "final_exact_rate": (None if final_evaluation_partial else result.get("final_reward")),
+        "reward_gain": (None if final_evaluation_partial else result.get("reward_gain")),
+        "paired_test_change": (
+            None if final_evaluation_partial else result.get("paired_test_change")
+        ),
         "elapsed_seconds": result.get("elapsed_seconds"),
         "stop_reason": result.get("stop_reason"),
         "hypothesis_passed": result.get("hypothesis_passed"),
@@ -181,8 +217,48 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "claim_strength": result.get("claim_strength"),
         "seed_count": result.get("seed_count", result.get("optimization_seed_count")),
         "objective": result.get("objective", result.get("objective_id")),
-        "checkpoint_rate": level_result.get("checkpoint_rate", result.get("checkpoint_rate")),
+        "checkpoint_rate": checkpoint_rate,
+        "checkpoint_rate_95ci": (
+            level_result.get("checkpoint_rate_95ci") if checkpoint_rate is not None else None
+        ),
+        "checkpoint_rate_source": ("reached_level" if checkpoint_rate is not None else None),
+        "evaluation_examples": (None if aggregate_rate_fallback else level_result.get("examples")),
+        "evaluation_split": (
+            (
+                ("test" if aggregate_has_test_provenance else None)
+                if aggregate_rate_fallback
+                else level_result.get("split")
+            )
+            if exact_rate is not None
+            else None
+        ),
+        "validation_examples": result.get("validation_examples"),
+        "test_examples": result.get("test_examples"),
+        "mastery_windows": result.get("mastery_windows"),
+        "teacher_data_used": result.get("teacher_data_used"),
+        "resumed_from_checkpoint": result.get("resumed_from_checkpoint"),
+        "attempt_count": result.get("attempt_count"),
+        "attempt_elapsed_seconds": result.get("attempt_elapsed_seconds"),
+        "raw_resume_gap_seconds": result.get("raw_resume_gap_seconds"),
+        "applied_resume_gap_seconds": result.get("applied_resume_gap_seconds"),
+        "crash_tail_actions_unaccounted": result.get("crash_tail_actions_unaccounted"),
+        "crash_tail_cost_accounting": result.get("crash_tail_cost_accounting"),
+        "final_evaluation_reserve_exceeded_ceiling": result.get(
+            "final_evaluation_reserve_exceeded_ceiling"
+        ),
+        "final_evaluation_complete": result.get("final_evaluation_complete"),
+        "final_evaluation_partial": result.get("final_evaluation_partial"),
+        "final_evaluation_deadline_seconds": result.get("final_evaluation_deadline_seconds"),
+        "distinct_semantic_examples": level_result.get("distinct_semantic_examples"),
+        "semantic_universe_size": level_result.get("semantic_universe_size"),
+        "structural_mirror_disclosures": result.get("structural_mirror_disclosures"),
+        "maximum_measured_final_evaluation_reserve_seconds": result.get(
+            "maximum_measured_final_evaluation_reserve_seconds"
+        ),
         "total_sampled_actions": result.get("total_sampled_actions"),
+        "discarded_task_groups": result.get("discarded_task_groups"),
+        "discarded_sampled_actions": result.get("discarded_sampled_actions"),
+        "discarded_post_branch_actions": result.get("discarded_post_branch_actions"),
         "multi_step": result.get("multi_step"),
         "restored_continuations": result.get("restored_continuations"),
         "restored_branching_observed": result.get("restored_branching_observed"),
@@ -219,9 +295,15 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "maximum_level": result.get("maximum_complexity_level", result.get("maximum_level")),
         "reached_level": result.get("reached_complexity_level", result.get("current_level")),
         "updates_completed": result.get("updates_completed", result.get("update")),
-        "initial_exact_rate": result.get("initial_reward"),
-        "final_exact_rate": result.get("final_reward"),
-        "exact_gain": result.get("reward_gain"),
+        "initial_exact_rate": (
+            None if result.get("final_evaluation_partial") is True else result.get("initial_reward")
+        ),
+        "final_exact_rate": (
+            None if result.get("final_evaluation_partial") is True else result.get("final_reward")
+        ),
+        "exact_gain": (
+            None if result.get("final_evaluation_partial") is True else result.get("reward_gain")
+        ),
         "stop_reason": result.get("stop_reason"),
         "checkpoints": (
             [item for item in history if isinstance(item, dict)]
@@ -241,6 +323,9 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "total_sampled_completions": result.get("total_sampled_completions"),
         "total_sampled_actions": result.get("total_sampled_actions"),
         "total_post_branch_actions": result.get("total_post_branch_actions"),
+        "discarded_task_groups": result.get("discarded_task_groups"),
+        "discarded_sampled_actions": result.get("discarded_sampled_actions"),
+        "discarded_post_branch_actions": result.get("discarded_post_branch_actions"),
     }
 
 
@@ -295,6 +380,7 @@ def research_proof_response(
     )
     workload = item["workload"] if isinstance(item.get("workload"), dict) else {}
     result = item["result"] if isinstance(item.get("result"), dict) else {}
+    final_evaluation_partial = result.get("final_evaluation_partial") is True
     elapsed = result.get("elapsed_seconds")
     gpu = result.get("gpu_name") or resource_profile.get("gpu_id")
 
@@ -304,9 +390,9 @@ def research_proof_response(
         "run_name": item.get("execution_name"),
         "completed_at": item["completed_at"],
         "learning": {
-            "initial_reward": result.get("initial_reward"),
-            "final_reward": result.get("final_reward"),
-            "reward_gain": result.get("reward_gain"),
+            "initial_reward": (None if final_evaluation_partial else result.get("initial_reward")),
+            "final_reward": (None if final_evaluation_partial else result.get("final_reward")),
+            "reward_gain": (None if final_evaluation_partial else result.get("reward_gain")),
             "hypothesis_passed": result.get("hypothesis_passed"),
             "claim_strength": result.get("claim_strength"),
             "seed_count": result.get("seed_count", result.get("optimization_seed_count")),

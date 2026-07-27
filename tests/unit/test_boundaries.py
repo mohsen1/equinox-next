@@ -176,6 +176,36 @@ def test_proof_list_and_detail_contracts_keep_summary_focused() -> None:
     assert detail["evidence"]["receipt_digest"] == "sha256:receipt"
 
 
+def test_partial_proof_suppresses_headline_learning_metrics() -> None:
+    item = {
+        "proof_id": "proof-partial",
+        "execution_id": "run-partial",
+        "execution_name": "Partial run",
+        "provider_name": "RunPod",
+        "resource_profile": {},
+        "workload": {},
+        "result": {
+            "initial_reward": 0.25,
+            "final_reward": 0.75,
+            "reward_gain": 0.5,
+            "paired_test_change": {
+                "examples": 4,
+                "improved": 4,
+                "regressed": 0,
+            },
+            "final_evaluation_partial": True,
+        },
+        "completed_at": "2026-07-27T12:00:00Z",
+        "teardown_confirmed": True,
+    }
+
+    learning = research_proof_response(item, detail=False)["learning"]
+
+    assert learning["initial_reward"] is None
+    assert learning["final_reward"] is None
+    assert learning["reward_gain"] is None
+
+
 def test_proof_api_list_and_detail_use_dedicated_contracts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -237,23 +267,177 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
             "post_training_completed": True,
             "informative_group_rate": 0.2,
             "policy_update_count": 10,
-            "claim_strength": "EXPLORATORY_SINGLE_SEED",
+            "claim_strength": "INCOMPLETE_FINAL_EVALUATION",
             "seed_count": 1,
             "objective": "leave-one-out-group-normalized-reinforce@1",
             "elapsed_seconds": 1804.33,
-            "stop_reason": "target_runtime",
-            "final_by_level": {"1": {"exact_rate": 0.333333}},
+            "stop_reason": "final_evaluation_reserve",
+            "validation_examples": 8,
+            "test_examples": 12,
+            "mastery_windows": 2,
+            "teacher_data_used": False,
+            "resumed_from_checkpoint": True,
+            "attempt_count": 2,
+            "attempt_elapsed_seconds": 412.5,
+            "raw_resume_gap_seconds": 31.25,
+            "applied_resume_gap_seconds": 31.25,
+            "crash_tail_actions_unaccounted": True,
+            "crash_tail_cost_accounting": "wall_clock_only",
+            "final_evaluation_reserve_exceeded_ceiling": False,
+            "final_evaluation_complete": False,
+            "final_evaluation_partial": True,
+            "final_evaluation_deadline_seconds": 9_600,
+            "maximum_measured_final_evaluation_reserve_seconds": 782,
+            "discarded_task_groups": 1,
+            "discarded_sampled_actions": 12,
+            "discarded_post_branch_actions": 10,
+            "structural_mirror_disclosures": [
+                {
+                    "families": ["first", "safe_head"],
+                    "splits": ["validation", "test"],
+                }
+            ],
+            "paired_test_change": {
+                "examples": 48,
+                "improved": 19,
+                "regressed": 2,
+                "mcnemar_exact_p_value": 0.000221,
+            },
+            "final_by_level": {
+                "1": {
+                    "examples": 12,
+                    "distinct_semantic_examples": 12,
+                    "semantic_universe_size": 12,
+                    "split": "test",
+                    "exact_rate": 0.333333,
+                    "exact_rate_95ci": [0.1377, 0.6094],
+                    "checkpoint_rate": 1.0,
+                    "checkpoint_rate_95ci": [0.7575, 1.0],
+                }
+            },
         }
     )
 
     assert progress["phase"] == "complete"
     assert progress["exact_rate"] == 0.333333
+    assert progress["exact_rate_source"] == "reached_level"
+    assert progress["checkpoint_rate_source"] == "reached_level"
     assert progress["hypothesis_passed"] is False
     assert progress["adapter_persisted"] is True
     assert progress["post_training_completed"] is True
     assert progress["informative_group_rate"] == 0.2
-    assert progress["claim_strength"] == "EXPLORATORY_SINGLE_SEED"
+    assert progress["claim_strength"] == "INCOMPLETE_FINAL_EVALUATION"
     assert progress["seed_count"] == 1
+    assert progress["exact_rate_95ci"] == [0.1377, 0.6094]
+    assert progress["evaluation_examples"] == 12
+    assert progress["evaluation_split"] == "test"
+    assert progress["test_examples"] == 12
+    assert progress["teacher_data_used"] is False
+    assert progress["resumed_from_checkpoint"] is True
+    assert progress["attempt_count"] == 2
+    assert progress["raw_resume_gap_seconds"] == 31.25
+    assert progress["applied_resume_gap_seconds"] == 31.25
+    assert progress["crash_tail_actions_unaccounted"] is True
+    assert progress["crash_tail_cost_accounting"] == "wall_clock_only"
+    assert progress["final_evaluation_reserve_exceeded_ceiling"] is False
+    assert progress["final_evaluation_complete"] is False
+    assert progress["final_evaluation_partial"] is True
+    assert "initial_exact_rate" not in progress
+    assert "final_exact_rate" not in progress
+    assert progress["distinct_semantic_examples"] == 12
+    assert progress["discarded_task_groups"] == 1
+    assert progress["discarded_sampled_actions"] == 12
+    assert progress["discarded_post_branch_actions"] == 10
+    assert progress["structural_mirror_disclosures"][0]["families"] == [
+        "first",
+        "safe_head",
+    ]
+    assert "partial evidence" in progress["message"]
+    assert "paired_test_change" not in progress
+
+
+def test_research_result_progress_falls_back_only_for_exact_rate() -> None:
+    progress = research_result_progress(
+        {
+            "reached_complexity_level": 1,
+            "final_reward": 0.625,
+            "test_examples": 12,
+            "final_by_level": {
+                "1": {
+                    "exact_rate": None,
+                    "checkpoint_rate": None,
+                    "checkpoint_rate_95ci": [0.1, 0.9],
+                }
+            },
+        }
+    )
+
+    assert progress["exact_rate"] == 0.625
+    assert progress["exact_rate_source"] == "aggregate_test_mean"
+    assert progress["evaluation_split"] == "test"
+    assert "evaluation_examples" not in progress
+    assert "exact_rate_95ci" not in progress
+    assert "checkpoint_rate_95ci" not in progress
+    assert "checkpoint_rate" not in progress
+    assert "checkpoint_rate_source" not in progress
+
+
+def test_research_result_progress_does_not_invent_a_test_split_for_ladder_reward() -> None:
+    progress = research_result_progress({"final_reward": 0.625})
+
+    assert progress["exact_rate"] == 0.625
+    assert progress["exact_rate_source"] == "final_evaluation_reward"
+    assert "evaluation_split" not in progress
+    assert "evaluation_examples" not in progress
+
+
+def test_research_result_progress_omits_rate_provenance_without_a_rate() -> None:
+    progress = research_result_progress(
+        {
+            "reached_complexity_level": 1,
+            "final_by_level": {"1": {"exact_rate": None}},
+        }
+    )
+
+    assert "exact_rate" not in progress
+    assert "exact_rate_source" not in progress
+    assert "checkpoint_rate_source" not in progress
+    assert "evaluation_split" not in progress
+
+
+def test_research_result_progress_suppresses_partial_aggregate_fallbacks() -> None:
+    progress = research_result_progress(
+        {
+            "reached_complexity_level": 1,
+            "final_evaluation_partial": True,
+            "initial_reward": 0.5,
+            "final_reward": 1.0,
+            "reward_gain": 0.5,
+            "paired_test_change": {
+                "examples": 4,
+                "improved": 4,
+                "regressed": 0,
+            },
+            "checkpoint_rate": 1.0,
+            "final_by_level": {
+                "1": {
+                    "exact_rate": None,
+                    "checkpoint_rate": None,
+                }
+            },
+        }
+    )
+
+    assert progress["final_evaluation_partial"] is True
+    assert "exact_rate" not in progress
+    assert "exact_rate_source" not in progress
+    assert "checkpoint_rate" not in progress
+    assert "checkpoint_rate_source" not in progress
+    assert "evaluation_split" not in progress
+    assert "initial_exact_rate" not in progress
+    assert "final_exact_rate" not in progress
+    assert "reward_gain" not in progress
+    assert "paired_test_change" not in progress
 
 
 def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:

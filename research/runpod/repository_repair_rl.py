@@ -32,6 +32,7 @@ try:
         COMPLEXITY_LEVELS,
         DIAGNOSTIC_TOOLS,
         ENVIRONMENT_REVISION,
+        STRUCTURAL_MIRROR_DISCLOSURES,
         VERIFIER_REVISION,
         EnvironmentSnapshot,
         RepairTask,
@@ -40,6 +41,7 @@ try:
         encode_action,
         make_task,
         make_tasks,
+        semantic_task_universe_size,
         teacher_continuation_actions,
     )
 except ModuleNotFoundError:
@@ -49,6 +51,7 @@ except ModuleNotFoundError:
         COMPLEXITY_LEVELS,
         DIAGNOSTIC_TOOLS,
         ENVIRONMENT_REVISION,
+        STRUCTURAL_MIRROR_DISCLOSURES,
         VERIFIER_REVISION,
         EnvironmentSnapshot,
         RepairTask,
@@ -57,13 +60,27 @@ except ModuleNotFoundError:
         encode_action,
         make_task,
         make_tasks,
+        semantic_task_universe_size,
         teacher_continuation_actions,
     )
 
 DEFAULT_SEED = 73
-MODEL_ID = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
-MODEL_REVISION = "2e1fd397ee46e1388853d2af2c993145b0f1098a"
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@2"
+SUPPORTED_MODELS = {
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct": "2e1fd397ee46e1388853d2af2c993145b0f1098a",
+    "Qwen/Qwen2.5-Coder-3B-Instruct": "488639f1ff808d1d3d0ba301aef8c11461451ec5",
+}
+DEFAULT_MODEL_ID = "Qwen/Qwen2.5-Coder-3B-Instruct"
+DEFAULT_VALIDATION_EXAMPLES = 8
+DEFAULT_TEST_EXAMPLES = 12
+DEFAULT_TRAINING_TASKS_PER_UPDATE = 2
+DEFAULT_REPLAY_TASKS_PER_LEVEL = 1
+DEFAULT_MAX_UPDATES = 120
+DEFAULT_MASTERY_WINDOWS = 2
+DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
+MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
+DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
+DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_400
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@4"
 OBJECTIVE_ID = "leave-one-out-group-normalized-reinforce@1"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -77,19 +94,167 @@ MAXIMUM_COMPLEXITY_LEVEL = len(COMPLEXITY_LEVELS) - 1
 PREFIX_ACCEPTED_ACTIONS = 2
 PREFIX_MAX_ATTEMPTS = 5
 EVALUATION_INTERVAL = 5
-EVALUATION_EXAMPLES = 4
 VALIDATION_SEED_BASE = 40_000
+VALIDATION_WINDOW_SEED_STRIDE = 1_000_003
 TEST_SEED_BASE = 90_000
-TRAINING_TASKS_PER_UPDATE = 1
-REPLAY_TASKS_PER_LEVEL = 1
-MAX_UPDATES = 80
 MAX_INPUT_TOKENS = 4_096
 MAX_NEW_TOKENS = 192
 LEARNING_RATE = 8e-5
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
-MASTERY_WINDOWS = 1
 PROGRESS_PATH = os.environ.get("EQUINOX_PROGRESS_PATH")
+
+
+def positive_environment_integer(
+    name: str,
+    default: int,
+    *,
+    minimum: int = 1,
+    maximum: int,
+) -> int:
+    raw = os.environ.get(name, str(default))
+    if not raw.isdigit():
+        raise ValueError(f"{name} must be an integer between {minimum} and {maximum}")
+    value = int(raw)
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+@dataclass(frozen=True)
+class RuntimeConfiguration:
+    model_id: str
+    model_revision: str
+    optimization_seed: int
+    validation_examples: int
+    test_examples: int
+    training_tasks_per_update: int
+    replay_tasks_per_level: int
+    maximum_updates: int
+    mastery_windows: int
+    target_runtime_seconds: int
+    maximum_resume_gap_seconds: int
+    maximum_final_evaluation_reserve_seconds: int
+    workload_attempt: int
+
+
+DEFAULT_RUNTIME_CONFIGURATION = RuntimeConfiguration(
+    model_id=DEFAULT_MODEL_ID,
+    model_revision=SUPPORTED_MODELS[DEFAULT_MODEL_ID],
+    optimization_seed=DEFAULT_SEED,
+    validation_examples=DEFAULT_VALIDATION_EXAMPLES,
+    test_examples=DEFAULT_TEST_EXAMPLES,
+    training_tasks_per_update=DEFAULT_TRAINING_TASKS_PER_UPDATE,
+    replay_tasks_per_level=DEFAULT_REPLAY_TASKS_PER_LEVEL,
+    maximum_updates=DEFAULT_MAX_UPDATES,
+    mastery_windows=DEFAULT_MASTERY_WINDOWS,
+    target_runtime_seconds=DEFAULT_TARGET_RUNTIME_SECONDS,
+    maximum_resume_gap_seconds=DEFAULT_MAXIMUM_RESUME_GAP_SECONDS,
+    maximum_final_evaluation_reserve_seconds=(DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS),
+    workload_attempt=1,
+)
+
+
+def workload_attempt_from_environment() -> int:
+    return positive_environment_integer(
+        "EQUINOX_WORKLOAD_ATTEMPT",
+        1,
+        maximum=2,
+    )
+
+
+def configure_from_environment() -> RuntimeConfiguration:
+    workload_attempt = workload_attempt_from_environment()
+    model_id = os.environ.get("EQUINOX_RL_MODEL_ID", DEFAULT_MODEL_ID)
+    if model_id not in SUPPORTED_MODELS:
+        raise ValueError(f"EQUINOX_RL_MODEL_ID must be one of {sorted(SUPPORTED_MODELS)}")
+    optimization_seed = positive_environment_integer(
+        "EQUINOX_RL_SEED",
+        DEFAULT_SEED,
+        minimum=0,
+        maximum=2**31 - 1,
+    )
+    maximum_validation_examples = (
+        min(
+            semantic_task_universe_size(level, "validation")
+            for level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
+        )
+        // 2
+    )
+    maximum_test_examples = min(
+        semantic_task_universe_size(level, "test") for level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
+    )
+    maximum_training_tasks = min(
+        semantic_task_universe_size(level, "train") for level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
+    )
+    validation_examples = positive_environment_integer(
+        "EQUINOX_RL_VALIDATION_EXAMPLES",
+        DEFAULT_VALIDATION_EXAMPLES,
+        minimum=4,
+        maximum=maximum_validation_examples,
+    )
+    test_examples = positive_environment_integer(
+        "EQUINOX_RL_TEST_EXAMPLES",
+        DEFAULT_TEST_EXAMPLES,
+        minimum=4,
+        maximum=maximum_test_examples,
+    )
+    training_tasks_per_update = positive_environment_integer(
+        "EQUINOX_RL_TRAINING_TASKS_PER_UPDATE",
+        DEFAULT_TRAINING_TASKS_PER_UPDATE,
+        maximum=maximum_training_tasks,
+    )
+    replay_tasks_per_level = positive_environment_integer(
+        "EQUINOX_RL_REPLAY_TASKS_PER_LEVEL",
+        DEFAULT_REPLAY_TASKS_PER_LEVEL,
+        maximum=4,
+    )
+    maximum_updates = positive_environment_integer(
+        "EQUINOX_RL_MAX_UPDATES",
+        DEFAULT_MAX_UPDATES,
+        maximum=500,
+    )
+    mastery_windows = positive_environment_integer(
+        "EQUINOX_RL_MASTERY_WINDOWS",
+        DEFAULT_MASTERY_WINDOWS,
+        maximum=2,
+    )
+    target_runtime_seconds = positive_environment_integer(
+        "EQUINOX_RL_TARGET_SECONDS",
+        DEFAULT_TARGET_RUNTIME_SECONDS,
+        maximum=MAXIMUM_TARGET_RUNTIME_SECONDS,
+    )
+    maximum_resume_gap_seconds = positive_environment_integer(
+        "EQUINOX_RL_MAX_RESUME_GAP_SECONDS",
+        DEFAULT_MAXIMUM_RESUME_GAP_SECONDS,
+        maximum=7_200,
+    )
+    maximum_final_evaluation_reserve_seconds = positive_environment_integer(
+        "EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS",
+        DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS,
+        minimum=300,
+        maximum=7_200,
+    )
+    if target_runtime_seconds <= maximum_final_evaluation_reserve_seconds + 60:
+        raise ValueError(
+            "EQUINOX_RL_TARGET_SECONDS must leave at least 60 seconds "
+            "for training before final evaluation"
+        )
+    return RuntimeConfiguration(
+        model_id=model_id,
+        model_revision=SUPPORTED_MODELS[model_id],
+        optimization_seed=optimization_seed,
+        validation_examples=validation_examples,
+        test_examples=test_examples,
+        training_tasks_per_update=training_tasks_per_update,
+        replay_tasks_per_level=replay_tasks_per_level,
+        maximum_updates=maximum_updates,
+        mastery_windows=mastery_windows,
+        target_runtime_seconds=target_runtime_seconds,
+        maximum_resume_gap_seconds=maximum_resume_gap_seconds,
+        maximum_final_evaluation_reserve_seconds=(maximum_final_evaluation_reserve_seconds),
+        workload_attempt=workload_attempt,
+    )
 
 
 @dataclass(frozen=True)
@@ -133,9 +298,171 @@ class BranchCollection:
 SampleOne = Callable[[str, bool, int], GeneratedAction]
 
 
-def emit_progress(phase: str, message: str, **values: Any) -> None:
+def sampled_action_count(collections: list[BranchCollection]) -> int:
+    return sum(
+        len(collection.prefix.steps)
+        + sum(len(sibling.steps) - len(collection.prefix.steps) for sibling in collection.siblings)
+        for collection in collections
+    )
+
+
+def post_branch_action_count(collections: list[BranchCollection]) -> int:
+    return sum(
+        sum(len(actions) for actions in collection.generated_by_sibling)
+        for collection in collections
+    )
+
+
+def discarded_collection_accounting(
+    collections: list[BranchCollection],
+) -> tuple[int, int, int]:
+    return (
+        len(collections),
+        sampled_action_count(collections),
+        post_branch_action_count(collections),
+    )
+
+
+def checkpoint_target_disposition(
+    target: str,
+    *,
+    checkpoint_name: str,
+    previous_checkpoint: object,
+) -> str:
+    if os.path.isdir(target) and previous_checkpoint == checkpoint_name:
+        return "rewrite_live"
+    if os.path.exists(target):
+        return "replace_orphan"
+    return "create"
+
+
+def remove_orphan_checkpoint_target(target: str) -> None:
+    if os.path.isdir(target) and not os.path.islink(target):
+        shutil.rmtree(target)
+    else:
+        os.remove(target)
+
+
+def remove_stale_checkpoint_targets(checkpoints_root: str, live_checkpoint: str) -> None:
+    for name in os.listdir(checkpoints_root):
+        suffix = name.removeprefix("update-")
+        if name == live_checkpoint or not name.startswith("update-") or not suffix.isdigit():
+            continue
+        remove_orphan_checkpoint_target(os.path.join(checkpoints_root, name))
+
+
+def fsync_file(path: str) -> None:
+    with open(path, "rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def fsync_directory(path: str) -> None:
+    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def fsync_tree(root: str) -> None:
+    for current_root, _, files in os.walk(root, topdown=False):
+        for name in files:
+            fsync_file(os.path.join(current_root, name))
+        fsync_directory(current_root)
+
+
+def persist_checkpoint(
+    *,
+    checkpoints_root: str,
+    latest_checkpoint_path: str,
+    checkpoint_name: str,
+    state: dict[str, Any],
+    save_adapter: Callable[[str], None],
+    save_state: Callable[[dict[str, Any], str], None],
+    after_step: Callable[[str], None] | None = None,
+) -> None:
+    os.makedirs(checkpoints_root, exist_ok=True)
+    target = os.path.join(checkpoints_root, checkpoint_name)
+    previous = None
+    if os.path.isfile(latest_checkpoint_path):
+        with open(latest_checkpoint_path, encoding="utf-8") as handle:
+            previous = json.load(handle).get("checkpoint")
+    target_disposition = checkpoint_target_disposition(
+        target,
+        checkpoint_name=checkpoint_name,
+        previous_checkpoint=previous,
+    )
+    rewrite_live_state = target_disposition == "rewrite_live"
+    if target_disposition == "replace_orphan":
+        remove_orphan_checkpoint_target(target)
+    if rewrite_live_state:
+        required_adapter_files = (
+            os.path.join(target, "adapter_config.json"),
+            os.path.join(target, "adapter_model.safetensors"),
+            os.path.join(target, "training-state.pt"),
+        )
+        if not all(os.path.isfile(path) for path in required_adapter_files):
+            raise RuntimeError("live checkpoint is incomplete")
+    else:
+        os.makedirs(target)
+        save_adapter(target)
+        fsync_tree(target)
+        fsync_directory(checkpoints_root)
+        if after_step is not None:
+            after_step("adapter_saved")
+    temporary_state = os.path.join(target, "training-state.pt.pending")
+    save_state(state, temporary_state)
+    fsync_file(temporary_state)
+    os.replace(temporary_state, os.path.join(target, "training-state.pt"))
+    fsync_directory(target)
+    if after_step is not None:
+        after_step("state_persisted")
+    if not rewrite_live_state:
+        temporary_pointer = latest_checkpoint_path + ".pending"
+        with open(temporary_pointer, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"schema_version": 1, "checkpoint": checkpoint_name},
+                handle,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_pointer, latest_checkpoint_path)
+        fsync_directory(checkpoints_root)
+        if after_step is not None:
+            after_step("pointer_persisted")
+    remove_stale_checkpoint_targets(checkpoints_root, checkpoint_name)
+    fsync_directory(checkpoints_root)
+
+
+def emit_progress(
+    phase: str,
+    message: str,
+    runtime_configuration: RuntimeConfiguration | None,
+    *,
+    preserve_context: bool = False,
+    **values: Any,
+) -> None:
     if not PROGRESS_PATH:
         return
+    preserved: dict[str, Any] = {}
+    if preserve_context and os.path.isfile(PROGRESS_PATH):
+        try:
+            with open(PROGRESS_PATH, encoding="utf-8") as handle:
+                previous = json.load(handle)
+        except (OSError, ValueError):
+            previous = {}
+        if isinstance(previous, dict):
+            for key in (
+                "update",
+                "current_level",
+                "maximum_updates",
+                "elapsed_seconds",
+            ):
+                if key in previous:
+                    preserved[key] = previous[key]
     payload = {
         "schema_version": 2,
         "phase": phase,
@@ -143,16 +470,28 @@ def emit_progress(phase: str, message: str, **values: Any) -> None:
         "branch_width": BRANCH_WIDTH,
         "complexity_strategy": "adaptive",
         "maximum_level": MAXIMUM_COMPLEXITY_LEVEL,
-        "maximum_updates": MAX_UPDATES,
         "multi_step": True,
         "restored_continuations": True,
+        **(
+            {
+                "maximum_updates": runtime_configuration.maximum_updates,
+                "attempt": runtime_configuration.workload_attempt,
+            }
+            if runtime_configuration is not None
+            else {}
+        ),
+        **preserved,
+        "error": None,
         **values,
     }
     temporary_path = f"{PROGRESS_PATH}.tmp"
     with open(temporary_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
         handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(temporary_path, PROGRESS_PATH)
+    fsync_directory(os.path.dirname(PROGRESS_PATH) or ".")
 
 
 def sibling_advantages(returns: list[float]) -> list[float]:
@@ -172,6 +511,152 @@ def sibling_advantages(returns: list[float]) -> list[float]:
     return [round(value - centered, 8) for value in advantages]
 
 
+def wilson_interval(successes: int, total: int, *, z_score: float = 1.96) -> list[float]:
+    if total <= 0 or not 0 <= successes <= total:
+        raise ValueError("Wilson interval requires 0 <= successes <= total")
+    proportion = successes / total
+    z_squared = z_score**2
+    denominator = 1 + z_squared / total
+    center = (proportion + z_squared / (2 * total)) / denominator
+    radius = (
+        z_score
+        * math.sqrt(proportion * (1 - proportion) / total + z_squared / (4 * total**2))
+        / denominator
+    )
+    return [
+        round(max(0.0, center - radius), 6),
+        round(min(1.0, center + radius), 6),
+    ]
+
+
+def validation_window_seed(level: int, update: int) -> int:
+    return (
+        VALIDATION_SEED_BASE
+        + 10_000_000
+        + level * 1_000_000
+        + update * VALIDATION_WINDOW_SEED_STRIDE
+    )
+
+
+def bounded_final_evaluation_reserve(
+    estimated_seconds: int,
+    maximum_seconds: int = DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS,
+) -> tuple[int, bool]:
+    reserve_seconds = max(300, estimated_seconds)
+    exceeded_ceiling = reserve_seconds > maximum_seconds
+    return min(reserve_seconds, maximum_seconds), exceeded_ceiling
+
+
+def training_loop_entry(
+    resume_state: dict[str, Any] | None,
+    *,
+    updates_completed: int,
+    maximum_updates: int,
+) -> tuple[bool, str, int]:
+    training_complete = (
+        bool(resume_state.get("training_complete", False)) if resume_state else False
+    )
+    if not training_complete:
+        return False, "maximum_updates", updates_completed + 1
+    stop_reason = resume_state.get("stop_reason")
+    if not isinstance(stop_reason, str) or not stop_reason:
+        raise RuntimeError("terminal training checkpoint omitted its stop reason")
+    return True, stop_reason, maximum_updates + 1
+
+
+def training_stop_decision(
+    *,
+    elapsed_seconds: float,
+    target_seconds: int,
+    final_evaluation_reserve_seconds: int,
+    final_evaluation_reserve_exceeded_ceiling: bool = False,
+    maximum_level_mastered: bool = False,
+) -> tuple[bool, str | None, float]:
+    training_deadline_seconds = target_seconds - final_evaluation_reserve_seconds
+    if final_evaluation_reserve_exceeded_ceiling:
+        return True, "final_evaluation_reserve_ceiling", training_deadline_seconds
+    if maximum_level_mastered:
+        return True, "maximum_level_mastered", training_deadline_seconds
+    if elapsed_seconds + final_evaluation_reserve_seconds + 60 >= target_seconds:
+        return True, "final_evaluation_reserve", training_deadline_seconds
+    return False, None, training_deadline_seconds
+
+
+def evaluation_reward_summary(
+    initial_by_level: dict[str, dict[str, Any]],
+    final_by_level: dict[str, dict[str, Any]],
+    *,
+    complete: bool,
+) -> tuple[float | None, float | None, float | None]:
+    if not complete:
+        return None, None, None
+    initial_rates = [
+        observation["exact_rate"]
+        for observation in initial_by_level.values()
+        if observation["exact_rate"] is not None
+    ]
+    final_rates = [
+        observation["exact_rate"]
+        for observation in final_by_level.values()
+        if observation["exact_rate"] is not None
+    ]
+    initial_reward = statistics.mean(initial_rates) if initial_rates else None
+    final_reward = statistics.mean(final_rates) if final_rates else None
+    reward_gain = (
+        final_reward - initial_reward
+        if initial_reward is not None and final_reward is not None
+        else None
+    )
+    return initial_reward, final_reward, reward_gain
+
+
+def post_training_claim_strength(
+    *,
+    final_evaluation_complete: bool,
+    probative_post_training: bool,
+) -> str:
+    if not final_evaluation_complete:
+        return "INCOMPLETE_FINAL_EVALUATION"
+    if not probative_post_training:
+        return "NONPROBATIVE_RESERVE_STOP"
+    return "EXPLORATORY_SINGLE_SEED"
+
+
+def resumed_crash_tail_actions_unaccounted(
+    resume_state: dict[str, Any] | None,
+) -> bool:
+    return resume_state is not None and not bool(resume_state.get("training_complete"))
+
+
+def paired_change_summary(
+    initial_outcomes: list[dict[str, Any]],
+    final_outcomes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    initial = {item["task_id"]: bool(item["solved"]) for item in initial_outcomes}
+    final = {item["task_id"]: bool(item["solved"]) for item in final_outcomes}
+    if initial.keys() != final.keys() or not initial:
+        raise ValueError("paired evaluation requires the same non-empty task set")
+    improved = sum(not initial[task_id] and final[task_id] for task_id in initial)
+    regressed = sum(initial[task_id] and not final[task_id] for task_id in initial)
+    discordant = improved + regressed
+    if discordant:
+        smaller_tail = (
+            sum(math.comb(discordant, count) for count in range(min(improved, regressed) + 1))
+            / 2**discordant
+        )
+        exact_p_value = min(1.0, 2 * smaller_tail)
+    else:
+        exact_p_value = 1.0
+    return {
+        "examples": len(initial),
+        "improved": improved,
+        "regressed": regressed,
+        "unchanged": len(initial) - discordant,
+        "net_improved": improved - regressed,
+        "mcnemar_exact_p_value": exact_p_value,
+    }
+
+
 def collect_branch_group(
     task: RepairTask,
     sample_one: SampleOne,
@@ -179,10 +664,24 @@ def collect_branch_group(
     stochastic: bool,
     sampling_seed: int,
     replay: bool = False,
+    deadline_reached: Callable[[], bool] | None = None,
 ) -> BranchCollection:
     prefix = RepositoryRepairEnvironment(task)
     accepted_diagnostics = 0
     for attempt in range(PREFIX_MAX_ATTEMPTS):
+        if deadline_reached is not None and deadline_reached():
+            return BranchCollection(
+                task=task,
+                snapshot=None,
+                prefix=prefix,
+                siblings=[],
+                generated_by_sibling=[],
+                sampling_seeds=[],
+                returns=[],
+                advantages=[],
+                exclusion_reason="TRAINING_DEADLINE_REACHED",
+                replay=replay,
+            )
         generated = sample_one(
             prefix.policy_prompt("shared_prefix"),
             stochastic,
@@ -216,6 +715,19 @@ def collect_branch_group(
         for sibling_index, sibling in enumerate(siblings):
             if sibling.terminal:
                 continue
+            if deadline_reached is not None and deadline_reached():
+                return BranchCollection(
+                    task=task,
+                    snapshot=snapshot,
+                    prefix=prefix,
+                    siblings=siblings,
+                    generated_by_sibling=generated_by_sibling,
+                    sampling_seeds=sampling_seeds,
+                    returns=[],
+                    advantages=[],
+                    exclusion_reason="TRAINING_DEADLINE_REACHED",
+                    replay=replay,
+                )
             action_index = len(generated_by_sibling[sibling_index])
             generated = sample_one(
                 sibling.policy_prompt("continuation"),
@@ -245,10 +757,13 @@ def collect_greedy_trajectory(
     sample_one: SampleOne,
     *,
     sampling_seed: int,
-) -> dict[str, Any]:
+    deadline_reached: Callable[[], bool] | None = None,
+) -> dict[str, Any] | None:
     prefix = RepositoryRepairEnvironment(task)
     accepted_diagnostics = 0
     for attempt in range(PREFIX_MAX_ATTEMPTS):
+        if deadline_reached is not None and deadline_reached():
+            return None
         generated = sample_one(
             prefix.policy_prompt("shared_prefix"),
             False,
@@ -269,6 +784,8 @@ def collect_greedy_trajectory(
 
     continuation = RepositoryRepairEnvironment.restore(task, prefix.capture_snapshot())
     while not continuation.terminal:
+        if deadline_reached is not None and deadline_reached():
+            return None
         generated = sample_one(
             continuation.policy_prompt("continuation"),
             False,
@@ -323,8 +840,29 @@ def serialize_branch_group(
         if collection.returns
         else None
     )
+
+    def serialized_sibling(index: int, sibling: RepositoryRepairEnvironment) -> dict[str, Any]:
+        sibling_return = collection.returns[index] if index < len(collection.returns) else None
+        sibling_advantage = (
+            collection.advantages[index] if index < len(collection.advantages) else None
+        )
+        return {
+            "index": index,
+            "sampling_seed": collection.sampling_seeds[index],
+            "return": sibling_return,
+            "advantage": sibling_advantage,
+            "policy_signal": (sibling_advantage is not None and abs(sibling_advantage) > 1e-8),
+            "passed": sibling.terminal_reason == "solved",
+            "terminal_reason": sibling.terminal_reason,
+            "trajectory_digest": sibling.trajectory_digest,
+            "steps": [
+                serialize_step(step) for step in sibling.steps[len(collection.prefix.steps) :]
+            ],
+        }
+
     return {
         "schema_version": 2,
+        "selection": "frontier-nonreplay-informative",
         "snapshot_id": f"update-{update}-{snapshot_id}",
         "update": update,
         "level": collection.task.level,
@@ -361,28 +899,77 @@ def serialize_branch_group(
         "exclusion_reason": collection.exclusion_reason,
         "replay": collection.replay,
         "siblings": [
-            {
-                "index": index,
-                "sampling_seed": collection.sampling_seeds[index],
-                "return": collection.returns[index],
-                "advantage": collection.advantages[index],
-                "policy_signal": abs(collection.advantages[index]) > 1e-8,
-                "passed": sibling.terminal_reason == "solved",
-                "terminal_reason": sibling.terminal_reason,
-                "trajectory_digest": sibling.trajectory_digest,
-                "steps": [
-                    serialize_step(step) for step in sibling.steps[len(collection.prefix.steps) :]
-                ],
-            }
-            for index, sibling in enumerate(collection.siblings)
+            serialized_sibling(index, sibling) for index, sibling in enumerate(collection.siblings)
         ],
     }
 
 
 def observation_mastered(observation: dict[str, Any]) -> bool:
     return (
-        observation["exact_rate"] >= MASTERY_THRESHOLD
-        and observation["checkpoint_rate"] >= MASTERY_THRESHOLD
+        observation["exact_rate_95ci"][0] >= MASTERY_THRESHOLD
+        and observation["checkpoint_rate_95ci"][0] >= MASTERY_THRESHOLD
+    )
+
+
+def select_representative_collection(
+    collections: list[BranchCollection],
+    *,
+    current_level: int,
+) -> BranchCollection:
+    if not collections:
+        raise ValueError("cannot select a representative from an empty collection")
+    return min(
+        collections,
+        key=lambda collection: (
+            collection.task.level != current_level,
+            collection.replay,
+            collection.exclusion_reason is not None,
+            not collection.informative,
+            collection.task.task_id,
+        ),
+    )
+
+
+def validate_resume_state(
+    state: dict[str, Any],
+    *,
+    experiment_seed: int,
+    training_configuration: dict[str, Any],
+    resume_started_at_unix_seconds: float,
+    workload_attempt: int,
+    model_revision: str,
+) -> tuple[float, int, float, float]:
+    if (
+        state.get("seed") != experiment_seed
+        or state.get("workload_revision") != WORKLOAD_REVISION
+        or state.get("model_revision") != model_revision
+        or state.get("objective_id") != OBJECTIVE_ID
+        or state.get("training_configuration") != training_configuration
+    ):
+        raise RuntimeError("training checkpoint identity does not match this workload")
+    if "cumulative_elapsed_seconds" not in state:
+        raise RuntimeError("training checkpoint elapsed budget is missing")
+    prior_elapsed_seconds = float(state["cumulative_elapsed_seconds"])
+    if not math.isfinite(prior_elapsed_seconds) or prior_elapsed_seconds < 0:
+        raise RuntimeError("training checkpoint elapsed budget is invalid")
+    checkpointed_at = float(state.get("checkpointed_at_unix_seconds", math.nan))
+    if not math.isfinite(checkpointed_at) or checkpointed_at < 0:
+        raise RuntimeError("training checkpoint wall time is invalid")
+    raw_resume_gap_seconds = resume_started_at_unix_seconds - checkpointed_at
+    maximum_resume_gap_seconds = float(training_configuration["maximum_resume_gap_seconds"])
+    applied_resume_gap_seconds = min(
+        maximum_resume_gap_seconds,
+        max(0.0, raw_resume_gap_seconds),
+    )
+    prior_elapsed_seconds += applied_resume_gap_seconds
+    attempt_count = int(state.get("attempt_count", 0)) + 1
+    if attempt_count != workload_attempt or workload_attempt != 2:
+        raise RuntimeError("training checkpoint attempt count does not match the runner")
+    return (
+        prior_elapsed_seconds,
+        attempt_count,
+        raw_resume_gap_seconds,
+        applied_resume_gap_seconds,
     )
 
 
@@ -394,6 +981,8 @@ def self_test() -> dict[str, Any]:
         raise AssertionError("sibling advantages are not centered")
     if sibling_advantages([0.5] * BRANCH_WIDTH) != [0.0] * BRANCH_WIDTH:
         raise AssertionError("equal sibling returns must produce exact zero advantage")
+    if wilson_interval(4, 4)[0] >= 1.0:
+        raise AssertionError("finite perfect samples must retain statistical uncertainty")
 
     task = make_task(2, seed=DEFAULT_SEED)
     continuation = teacher_continuation_actions(task)
@@ -435,6 +1024,7 @@ def self_test() -> dict[str, Any]:
         "shared_prefix_actions": PREFIX_ACCEPTED_ACTIONS,
         "sibling_steps": [len(sibling.steps) for sibling in collection.siblings],
         "environment_revision": ENVIRONMENT_REVISION,
+        "structural_mirror_disclosures": STRUCTURAL_MIRROR_DISCLOSURES,
     }
     print(json.dumps(result, sort_keys=True))
     return result
@@ -462,9 +1052,15 @@ def ensure_dependencies() -> None:
         raise RuntimeError("pinned research dependency versions were not installed exactly")
 
 
-def run_experiment() -> None:
+def run_experiment(runtime: RuntimeConfiguration) -> None:
     started = time.monotonic()
-    emit_progress("dependency_setup", "Preparing model runtime.", elapsed_seconds=0)
+    attempt_started_at_unix_seconds = time.time()
+    emit_progress(
+        "dependency_setup",
+        "Preparing model runtime.",
+        runtime_configuration=runtime,
+        elapsed_seconds=0,
+    )
     ensure_dependencies()
     import torch
     from peft import LoraConfig, PeftModel, get_peft_model
@@ -473,10 +1069,24 @@ def run_experiment() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for repository repair post-training")
 
-    target_seconds = int(os.environ.get("EQUINOX_RL_TARGET_SECONDS", "2700"))
-    experiment_seed = int(os.environ.get("EQUINOX_RL_SEED", str(DEFAULT_SEED)))
-    if not 0 <= experiment_seed <= 2**31 - 1:
-        raise ValueError("EQUINOX_RL_SEED must be between 0 and 2^31 - 1")
+    target_seconds = runtime.target_runtime_seconds
+    experiment_seed = runtime.optimization_seed
+    training_configuration = {
+        "maximum_updates": runtime.maximum_updates,
+        "validation_examples": runtime.validation_examples,
+        "test_examples": runtime.test_examples,
+        "training_tasks_per_update": runtime.training_tasks_per_update,
+        "replay_tasks_per_level": runtime.replay_tasks_per_level,
+        "evaluation_interval": EVALUATION_INTERVAL,
+        "mastery_threshold": MASTERY_THRESHOLD,
+        "mastery_windows": runtime.mastery_windows,
+        "maximum_final_evaluation_reserve_seconds": (
+            runtime.maximum_final_evaluation_reserve_seconds
+        ),
+        "target_runtime_seconds": target_seconds,
+        "maximum_resume_gap_seconds": runtime.maximum_resume_gap_seconds,
+        "validation_window_seed_stride": VALIDATION_WINDOW_SEED_STRIDE,
+    }
     random.seed(experiment_seed)
     torch.manual_seed(experiment_seed)
     torch.cuda.manual_seed_all(experiment_seed)
@@ -489,15 +1099,24 @@ def run_experiment() -> None:
     emit_progress(
         "model_loading",
         "Loading model and LoRA adapter.",
+        runtime_configuration=runtime,
         elapsed_seconds=round(time.monotonic() - started, 3),
         gpu_name=torch.cuda.get_device_name(0),
+        model_id=runtime.model_id,
+        validation_examples=runtime.validation_examples,
+        test_examples=runtime.test_examples,
+        mastery_windows=runtime.mastery_windows,
+        teacher_data_used=False,
     )
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
+    tokenizer = AutoTokenizer.from_pretrained(
+        runtime.model_id,
+        revision=runtime.model_revision,
+    )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
     base_model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        revision=MODEL_REVISION,
+        runtime.model_id,
+        revision=runtime.model_revision,
         dtype=torch.bfloat16,
         use_safetensors=True,
     ).to(device)
@@ -556,14 +1175,31 @@ def run_experiment() -> None:
             map_location=device,
             weights_only=False,
         )
-        if (
-            resume_state.get("seed") != experiment_seed
-            or resume_state.get("workload_revision") != WORKLOAD_REVISION
-            or resume_state.get("model_revision") != MODEL_REVISION
-            or resume_state.get("objective_id") != OBJECTIVE_ID
-        ):
-            raise RuntimeError("training checkpoint identity does not match this workload")
+        (
+            prior_elapsed_seconds,
+            attempt_count,
+            raw_resume_gap_seconds,
+            applied_resume_gap_seconds,
+        ) = validate_resume_state(
+            resume_state,
+            experiment_seed=experiment_seed,
+            training_configuration=training_configuration,
+            resume_started_at_unix_seconds=attempt_started_at_unix_seconds,
+            workload_attempt=runtime.workload_attempt,
+            model_revision=runtime.model_revision,
+        )
         optimizer.load_state_dict(resume_state["optimizer"])
+    else:
+        if runtime.workload_attempt != 1:
+            raise RuntimeError("a retry requires a valid training checkpoint")
+        prior_elapsed_seconds = 0.0
+        attempt_count = 1
+        raw_resume_gap_seconds = 0.0
+        applied_resume_gap_seconds = 0.0
+
+    def cumulative_elapsed_seconds() -> float:
+        return prior_elapsed_seconds + time.monotonic() - started
+
     trainable_parameters = sum(
         parameter.numel() for parameter in model.parameters() if parameter.requires_grad
     )
@@ -621,47 +1257,101 @@ def run_experiment() -> None:
         del encoded, sequence, continuation
         return generated
 
+    def evaluate_tasks(
+        tasks: list[RepairTask],
+        *,
+        level: int,
+        seed: int,
+        split: str,
+        expected_examples: int | None = None,
+        deadline_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        expected_examples = len(tasks) if expected_examples is None else expected_examples
+        outcomes = []
+        for index, task in enumerate(tasks):
+            if deadline_seconds is not None and cumulative_elapsed_seconds() >= deadline_seconds:
+                break
+            outcome = collect_greedy_trajectory(
+                task,
+                sample_one,
+                sampling_seed=seed + index * 101,
+                deadline_reached=(
+                    None
+                    if deadline_seconds is None
+                    else lambda: cumulative_elapsed_seconds() >= deadline_seconds
+                ),
+            )
+            if outcome is None:
+                break
+            outcomes.append(
+                {
+                    "task_id": task.task_id,
+                    "semantic_task_id": task.semantic_task_id,
+                    **outcome,
+                }
+            )
+        successes = sum(outcome["solved"] for outcome in outcomes)
+        checkpoint_successes = sum(outcome["checkpoint_reached"] for outcome in outcomes)
+        semantic_task_ids = {outcome["semantic_task_id"] for outcome in outcomes}
+        if len(semantic_task_ids) != len(outcomes):
+            raise RuntimeError("evaluation task set contains duplicate semantic repairs")
+        examples = len(outcomes)
+        return {
+            "level": level,
+            "split": split,
+            "seed": seed,
+            "examples": examples,
+            "expected_examples": expected_examples,
+            "complete": examples == expected_examples,
+            "distinct_semantic_examples": len(semantic_task_ids),
+            "semantic_universe_size": semantic_task_universe_size(
+                level,
+                split,
+            ),
+            "exact_successes": successes,
+            "exact_rate": round(successes / examples, 6) if examples else None,
+            "exact_rate_95ci": wilson_interval(successes, examples) if examples else None,
+            "checkpoint_successes": checkpoint_successes,
+            "checkpoint_rate": (round(checkpoint_successes / examples, 6) if examples else None),
+            "checkpoint_rate_95ci": (
+                wilson_interval(checkpoint_successes, examples) if examples else None
+            ),
+            "mean_reward": round(
+                sum(outcome["reward"] for outcome in outcomes) / examples,
+                6,
+            )
+            if examples
+            else None,
+            "mean_actions": round(
+                sum(outcome["actions"] for outcome in outcomes) / examples,
+                6,
+            )
+            if examples
+            else None,
+            "task_outcomes": outcomes,
+        }
+
     def evaluate(
         level: int,
         count: int,
         seed: int,
         *,
         split: str,
+        exclude_semantic_task_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
-        outcomes = [
-            collect_greedy_trajectory(
-                task,
-                sample_one,
-                sampling_seed=seed + index * 101,
-            )
-            for index, task in enumerate(make_tasks(level, count, seed, split=split))
-        ]
-        successes = sum(outcome["solved"] for outcome in outcomes)
-        exact_rate = successes / len(outcomes)
-        interval_radius = 1.96 * math.sqrt(max(exact_rate * (1 - exact_rate), 0.0) / len(outcomes))
-        return {
-            "level": level,
-            "split": split,
-            "examples": count,
-            "exact_successes": successes,
-            "exact_rate": round(exact_rate, 6),
-            "exact_rate_95ci": [
-                round(max(0.0, exact_rate - interval_radius), 6),
-                round(min(1.0, exact_rate + interval_radius), 6),
-            ],
-            "checkpoint_rate": round(
-                sum(outcome["checkpoint_reached"] for outcome in outcomes) / len(outcomes),
-                6,
-            ),
-            "mean_reward": round(
-                sum(outcome["reward"] for outcome in outcomes) / len(outcomes),
-                6,
-            ),
-            "mean_actions": round(
-                sum(outcome["actions"] for outcome in outcomes) / len(outcomes),
-                6,
-            ),
-        }
+        tasks = make_tasks(
+            level,
+            count,
+            seed,
+            split=split,
+            exclude_semantic_task_ids=exclude_semantic_task_ids,
+        )
+        return evaluate_tasks(
+            tasks,
+            level=level,
+            seed=seed,
+            split=split,
+        )
 
     def train_policy(
         examples: list[WeightedAction],
@@ -712,26 +1402,83 @@ def run_experiment() -> None:
         return loss_value
 
     emit_progress(
-        "baseline_evaluation",
-        "Evaluating the validation split.",
-        elapsed_seconds=round(time.monotonic() - started, 3),
+        "resuming" if resume_state else "baseline_evaluation",
+        (
+            "Restoring the validation baseline from the checkpoint."
+            if resume_state
+            else "Evaluating the validation split."
+        ),
+        runtime_configuration=runtime,
+        elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
         current_level=0,
     )
+    baseline_evaluation_started = time.monotonic()
     validation_baseline_by_level = (
         resume_state["validation_baseline_by_level"]
         if resume_state
         else {
             str(level): evaluate(
                 level,
-                EVALUATION_EXAMPLES,
+                runtime.validation_examples,
                 VALIDATION_SEED_BASE + level * 1_000,
                 split="validation",
             )
             for level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
         }
     )
+    maximum_final_evaluation_actions = (
+        2 * runtime.test_examples * sum(item.repair_horizon for item in COMPLEXITY_LEVELS)
+    )
+    if resume_state:
+        final_evaluation_reserve_seconds = int(resume_state["final_evaluation_reserve_seconds"])
+        final_evaluation_reserve_exceeded_ceiling = bool(
+            resume_state["final_evaluation_reserve_exceeded_ceiling"]
+        )
+        maximum_measured_final_evaluation_reserve_seconds = int(
+            resume_state["maximum_measured_final_evaluation_reserve_seconds"]
+        )
+    else:
+        baseline_evaluation_seconds = time.monotonic() - baseline_evaluation_started
+        baseline_evaluation_actions = sum(
+            outcome["actions"]
+            for observation in validation_baseline_by_level.values()
+            for outcome in observation["task_outcomes"]
+        )
+        maximum_measured_final_evaluation_reserve_seconds = math.ceil(
+            baseline_evaluation_seconds
+            / max(1, baseline_evaluation_actions)
+            * maximum_final_evaluation_actions
+            * 1.5
+        )
+        (
+            final_evaluation_reserve_seconds,
+            final_evaluation_reserve_exceeded_ceiling,
+        ) = bounded_final_evaluation_reserve(
+            maximum_measured_final_evaluation_reserve_seconds,
+            runtime.maximum_final_evaluation_reserve_seconds,
+        )
+
+    (
+        initial_stop,
+        initial_stop_reason,
+        training_deadline_seconds,
+    ) = training_stop_decision(
+        elapsed_seconds=cumulative_elapsed_seconds(),
+        target_seconds=target_seconds,
+        final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
+        final_evaluation_reserve_exceeded_ceiling=(final_evaluation_reserve_exceeded_ceiling),
+    )
+    if (
+        not resume_state
+        and initial_stop
+        and initial_stop_reason != "final_evaluation_reserve_ceiling"
+    ):
+        raise RuntimeError("target runtime is too short for measured final-evaluation reserve")
     level = int(resume_state["level"]) if resume_state else 0
     history = list(resume_state["history"]) if resume_state else []
+    previous_validation_semantic_task_ids = (
+        set(resume_state["previous_validation_semantic_task_ids"]) if resume_state else set()
+    )
     promotions = list(resume_state["promotions"]) if resume_state else []
     branch_snapshots = list(resume_state["branch_snapshots"]) if resume_state else []
     mastery_streak = int(resume_state["mastery_streak"]) if resume_state else 0
@@ -742,11 +1489,27 @@ def run_experiment() -> None:
     replay_task_groups = int(resume_state["replay_task_groups"]) if resume_state else 0
     informative_task_groups = int(resume_state["informative_task_groups"]) if resume_state else 0
     excluded_task_groups = int(resume_state["excluded_task_groups"]) if resume_state else 0
+    discarded_task_groups = int(resume_state.get("discarded_task_groups", 0)) if resume_state else 0
+    discarded_sampled_actions = (
+        int(resume_state.get("discarded_sampled_actions", 0)) if resume_state else 0
+    )
+    discarded_post_branch_actions = (
+        int(resume_state.get("discarded_post_branch_actions", 0)) if resume_state else 0
+    )
     total_sampled_actions = int(resume_state["total_sampled_actions"]) if resume_state else 0
     total_post_branch_actions = (
         int(resume_state["total_post_branch_actions"]) if resume_state else 0
     )
-    stop_reason = "maximum_updates"
+    training_complete, stop_reason, first_update = training_loop_entry(
+        resume_state,
+        updates_completed=updates_completed,
+        maximum_updates=runtime.maximum_updates,
+    )
+    persist_initial_terminal_checkpoint = initial_stop and not training_complete
+    if persist_initial_terminal_checkpoint:
+        training_complete = True
+        stop_reason = initial_stop_reason or "final_evaluation_reserve"
+        first_update = runtime.maximum_updates + 1
     last_observation = (
         resume_state["last_observation"] if resume_state else validation_baseline_by_level["0"]
     )
@@ -754,27 +1517,36 @@ def run_experiment() -> None:
         random.setstate(resume_state["python_rng_state"])
         torch.set_rng_state(resume_state["torch_rng_state"].cpu())
         torch.cuda.set_rng_state_all(resume_state["cuda_rng_states"])
-    first_update = updates_completed + 1
 
     def persist_training_checkpoint(update: int) -> None:
         if not checkpoints_root or not latest_checkpoint_path:
             return
-        os.makedirs(checkpoints_root, exist_ok=True)
         checkpoint_name = f"update-{update:04d}"
-        target = os.path.join(checkpoints_root, checkpoint_name)
-        if os.path.exists(target):
-            shutil.rmtree(target)
-        os.makedirs(target)
-        model.save_pretrained(target, safe_serialization=True)
         state = {
             "schema_version": 1,
             "workload_revision": WORKLOAD_REVISION,
-            "model_revision": MODEL_REVISION,
+            "model_revision": runtime.model_revision,
             "objective_id": OBJECTIVE_ID,
             "seed": experiment_seed,
+            "training_configuration": training_configuration,
+            "final_evaluation_reserve_seconds": final_evaluation_reserve_seconds,
+            "final_evaluation_reserve_exceeded_ceiling": (
+                final_evaluation_reserve_exceeded_ceiling
+            ),
+            "maximum_measured_final_evaluation_reserve_seconds": (
+                maximum_measured_final_evaluation_reserve_seconds
+            ),
+            "cumulative_elapsed_seconds": cumulative_elapsed_seconds(),
+            "checkpointed_at_unix_seconds": time.time(),
+            "attempt_count": attempt_count,
+            "raw_resume_gap_seconds": raw_resume_gap_seconds,
+            "applied_resume_gap_seconds": applied_resume_gap_seconds,
+            "training_complete": training_complete,
+            "stop_reason": stop_reason,
             "updates_completed": updates_completed,
             "level": level,
             "history": history,
+            "previous_validation_semantic_task_ids": sorted(previous_validation_semantic_task_ids),
             "promotions": promotions,
             "branch_snapshots": branch_snapshots,
             "mastery_streak": mastery_streak,
@@ -784,6 +1556,9 @@ def run_experiment() -> None:
             "replay_task_groups": replay_task_groups,
             "informative_task_groups": informative_task_groups,
             "excluded_task_groups": excluded_task_groups,
+            "discarded_task_groups": discarded_task_groups,
+            "discarded_sampled_actions": discarded_sampled_actions,
+            "discarded_post_branch_actions": discarded_post_branch_actions,
             "total_sampled_actions": total_sampled_actions,
             "total_post_branch_actions": total_post_branch_actions,
             "last_observation": last_observation,
@@ -793,40 +1568,36 @@ def run_experiment() -> None:
             "torch_rng_state": torch.get_rng_state(),
             "cuda_rng_states": torch.cuda.get_rng_state_all(),
         }
-        temporary_state = os.path.join(target, "training-state.pt.pending")
-        torch.save(state, temporary_state)
-        os.replace(temporary_state, os.path.join(target, "training-state.pt"))
-        previous = None
-        if os.path.isfile(latest_checkpoint_path):
-            with open(latest_checkpoint_path, encoding="utf-8") as handle:
-                previous = json.load(handle).get("checkpoint")
-        temporary_pointer = latest_checkpoint_path + ".pending"
-        with open(temporary_pointer, "w", encoding="utf-8") as handle:
-            json.dump(
-                {"schema_version": 1, "checkpoint": checkpoint_name},
-                handle,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            handle.write("\n")
-        os.replace(temporary_pointer, latest_checkpoint_path)
-        if (
-            isinstance(previous, str)
-            and previous != checkpoint_name
-            and previous.startswith("update-")
-            and "/" not in previous
-        ):
-            previous_path = os.path.join(checkpoints_root, previous)
-            if os.path.isdir(previous_path):
-                shutil.rmtree(previous_path)
+        persist_checkpoint(
+            checkpoints_root=checkpoints_root,
+            latest_checkpoint_path=latest_checkpoint_path,
+            checkpoint_name=checkpoint_name,
+            state=state,
+            save_adapter=lambda target: model.save_pretrained(
+                target,
+                safe_serialization=True,
+            ),
+            save_state=torch.save,
+        )
 
-    for update in range(first_update, MAX_UPDATES + 1):
-        if time.monotonic() - started >= target_seconds:
-            stop_reason = "target_runtime"
+    if persist_initial_terminal_checkpoint:
+        persist_training_checkpoint(updates_completed)
+
+    for update in range(first_update, runtime.maximum_updates + 1):
+        stop_before_collection, decision_reason, training_deadline_seconds = training_stop_decision(
+            elapsed_seconds=cumulative_elapsed_seconds(),
+            target_seconds=target_seconds,
+            final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
+            final_evaluation_reserve_exceeded_ceiling=(final_evaluation_reserve_exceeded_ceiling),
+        )
+        if stop_before_collection:
+            stop_reason = decision_reason or "final_evaluation_reserve"
+            training_complete = True
+            persist_training_checkpoint(updates_completed)
             break
         current_tasks = make_tasks(
             level,
-            TRAINING_TASKS_PER_UPDATE,
+            runtime.training_tasks_per_update,
             experiment_seed * 100_000 + update * 17,
             split="train",
         )
@@ -835,7 +1606,7 @@ def run_experiment() -> None:
             for replay_level in range(level)
             for task in make_tasks(
                 replay_level,
-                REPLAY_TASKS_PER_LEVEL,
+                runtime.replay_tasks_per_level,
                 experiment_seed * 1_000_000 + update * 101 + replay_level,
                 split="train",
             )
@@ -844,16 +1615,43 @@ def run_experiment() -> None:
             (task, True) for task in replay_tasks
         ]
         random.Random(experiment_seed + update).shuffle(task_specs)
-        collections = [
-            collect_branch_group(
-                task,
-                sample_one,
-                stochastic=True,
-                sampling_seed=(experiment_seed * 10_000_000 + update * 100_000 + index * 1_000),
-                replay=replay,
+        collections = []
+        deadline_reached_during_collection = False
+        for index, (task, replay) in enumerate(task_specs):
+            if cumulative_elapsed_seconds() >= training_deadline_seconds:
+                deadline_reached_during_collection = True
+                break
+            collections.append(
+                collect_branch_group(
+                    task,
+                    sample_one,
+                    stochastic=True,
+                    sampling_seed=(experiment_seed * 10_000_000 + update * 100_000 + index * 1_000),
+                    replay=replay,
+                    deadline_reached=lambda deadline=training_deadline_seconds: (
+                        cumulative_elapsed_seconds() >= deadline
+                    ),
+                )
             )
-            for index, (task, replay) in enumerate(task_specs)
-        ]
+        deadline_reached_during_collection = (
+            deadline_reached_during_collection
+            or cumulative_elapsed_seconds() >= training_deadline_seconds
+        )
+        if deadline_reached_during_collection:
+            (
+                discarded_groups,
+                discarded_actions,
+                discarded_post_branch_action_count,
+            ) = discarded_collection_accounting(collections)
+            discarded_task_groups += discarded_groups
+            discarded_sampled_actions += discarded_actions
+            discarded_post_branch_actions += discarded_post_branch_action_count
+            total_sampled_actions += discarded_actions
+            total_post_branch_actions += discarded_post_branch_action_count
+            stop_reason = "final_evaluation_reserve"
+            training_complete = True
+            persist_training_checkpoint(updates_completed)
+            break
         policy_training_examples = [
             example for collection in collections for example in policy_examples(collection)
         ]
@@ -879,34 +1677,42 @@ def run_experiment() -> None:
 
         updates_completed = update
         total_task_groups += len(collections)
-        replay_task_groups += len(replay_tasks)
+        replay_task_groups += sum(collection.replay for collection in collections)
         informative_task_groups += informative_collections
         excluded_task_groups += sum(
             collection.exclusion_reason is not None for collection in collections
         )
-        total_sampled_actions += sum(
-            len(collection.prefix.steps)
-            + sum(
-                len(sibling.steps) - len(collection.prefix.steps) for sibling in collection.siblings
-            )
-            for collection in collections
+        total_sampled_actions += sampled_action_count(collections)
+        total_post_branch_actions += post_branch_action_count(collections)
+        representative_collection = select_representative_collection(
+            collections,
+            current_level=level,
         )
-        total_post_branch_actions += sum(
-            sum(len(actions) for actions in collection.generated_by_sibling)
-            for collection in collections
+        latest_snapshot = serialize_branch_group(
+            representative_collection,
+            update=update,
         )
-        latest_snapshot = serialize_branch_group(collections[0], update=update)
         branch_snapshots.append(latest_snapshot)
-        branch_snapshots = branch_snapshots[-24:]
+        branch_snapshots = branch_snapshots[-40:]
 
         emit_progress(
             "training",
             "Collecting restored continuations and updating the adapter.",
+            runtime_configuration=runtime,
             update=update,
             current_level=level,
             promotion_count=len(promotions),
             exact_rate=last_observation["exact_rate"],
+            exact_rate_95ci=last_observation["exact_rate_95ci"],
             checkpoint_rate=last_observation["checkpoint_rate"],
+            checkpoint_rate_95ci=last_observation["checkpoint_rate_95ci"],
+            evaluation_examples=runtime.validation_examples,
+            evaluation_split="validation",
+            validation_examples=runtime.validation_examples,
+            test_examples=runtime.test_examples,
+            mastery_windows=runtime.mastery_windows,
+            mastery_streak=mastery_streak,
+            teacher_data_used=False,
             informative_group_rate=round(
                 informative_task_groups / total_task_groups,
                 6,
@@ -914,16 +1720,108 @@ def run_experiment() -> None:
             total_sampled_actions=total_sampled_actions,
             policy_update_count=policy_update_count,
             latest_branch_snapshot=latest_snapshot,
-            elapsed_seconds=round(time.monotonic() - started, 3),
+            elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
         )
 
-        stop_after_checkpoint = False
-        if update % EVALUATION_INTERVAL == 0:
-            observation = evaluate(
+        (
+            stop_after_checkpoint,
+            decision_reason,
+            training_deadline_seconds,
+        ) = training_stop_decision(
+            elapsed_seconds=cumulative_elapsed_seconds(),
+            target_seconds=target_seconds,
+            final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
+            final_evaluation_reserve_exceeded_ceiling=(final_evaluation_reserve_exceeded_ceiling),
+        )
+        if decision_reason is not None:
+            stop_reason = decision_reason
+        if update % EVALUATION_INTERVAL == 0 and not stop_after_checkpoint:
+            validation_seed = validation_window_seed(level, update)
+            validation_tasks = make_tasks(
                 level,
-                EVALUATION_EXAMPLES,
-                VALIDATION_SEED_BASE + level * 1_000,
+                runtime.validation_examples,
+                validation_seed,
                 split="validation",
+                exclude_semantic_task_ids=frozenset(previous_validation_semantic_task_ids),
+            )
+            validation_semantic_task_ids = {task.semantic_task_id for task in validation_tasks}
+            if not validation_semantic_task_ids.isdisjoint(previous_validation_semantic_task_ids):
+                raise RuntimeError(
+                    "validation generator reused a semantic task from its predecessor"
+                )
+            (
+                stop_after_checkpoint,
+                decision_reason,
+                training_deadline_seconds,
+            ) = training_stop_decision(
+                elapsed_seconds=cumulative_elapsed_seconds(),
+                target_seconds=target_seconds,
+                final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
+                final_evaluation_reserve_exceeded_ceiling=(
+                    final_evaluation_reserve_exceeded_ceiling
+                ),
+            )
+            if decision_reason is not None:
+                stop_reason = decision_reason
+            if stop_after_checkpoint:
+                training_complete = True
+                persist_training_checkpoint(update)
+                break
+            validation_started = time.monotonic()
+            observation = evaluate_tasks(
+                validation_tasks,
+                level=level,
+                seed=validation_seed,
+                split="validation",
+                deadline_seconds=training_deadline_seconds,
+            )
+            validation_elapsed_seconds = time.monotonic() - validation_started
+            if not observation["complete"]:
+                history.append(
+                    {
+                        "update": update,
+                        **observation,
+                        "mastery_streak": mastery_streak,
+                        "mastered": False,
+                        "validation_elapsed_seconds": round(
+                            validation_elapsed_seconds,
+                            3,
+                        ),
+                        "incomplete_reason": "training_deadline",
+                        "elapsed_seconds": round(cumulative_elapsed_seconds(), 3),
+                    }
+                )
+                stop_reason = "final_evaluation_reserve"
+                training_complete = True
+                persist_training_checkpoint(update)
+                break
+            previous_validation_semantic_task_ids = validation_semantic_task_ids
+            observed_validation_actions = sum(
+                outcome["actions"] for outcome in observation["task_outcomes"]
+            )
+            measured_trained_policy_reserve = math.ceil(
+                validation_elapsed_seconds
+                / max(1, observed_validation_actions)
+                * maximum_final_evaluation_actions
+                * 1.5
+            )
+            (
+                trained_policy_reserve,
+                reserve_exceeded_this_window,
+            ) = bounded_final_evaluation_reserve(
+                measured_trained_policy_reserve,
+                runtime.maximum_final_evaluation_reserve_seconds,
+            )
+            maximum_measured_final_evaluation_reserve_seconds = max(
+                maximum_measured_final_evaluation_reserve_seconds,
+                measured_trained_policy_reserve,
+            )
+            final_evaluation_reserve_exceeded_ceiling = (
+                final_evaluation_reserve_exceeded_ceiling or reserve_exceeded_this_window
+            )
+            final_evaluation_reserve_seconds = max(
+                final_evaluation_reserve_seconds,
+                trained_policy_reserve,
             )
             mastered = observation_mastered(observation)
             mastery_streak = mastery_streak + 1 if mastered else 0
@@ -938,26 +1836,54 @@ def run_experiment() -> None:
                         6,
                     ),
                     "mastery_streak": mastery_streak,
-                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                    "mastered": mastered,
+                    "validation_elapsed_seconds": round(
+                        validation_elapsed_seconds,
+                        3,
+                    ),
+                    "final_evaluation_reserve_seconds": (final_evaluation_reserve_seconds),
+                    "measured_final_evaluation_reserve_seconds": (measured_trained_policy_reserve),
+                    "final_evaluation_reserve_exceeded_ceiling": (reserve_exceeded_this_window),
+                    "elapsed_seconds": round(cumulative_elapsed_seconds(), 3),
                 }
             )
             last_observation = observation
-            if mastery_streak >= MASTERY_WINDOWS and level < MAXIMUM_COMPLEXITY_LEVEL:
+            if mastery_streak >= runtime.mastery_windows and level < MAXIMUM_COMPLEXITY_LEVEL:
                 promotions.append(
                     {
                         "update": update,
                         "from_level": level,
                         "to_level": level + 1,
                         "exact_rate": observation["exact_rate"],
+                        "exact_rate_95ci": observation["exact_rate_95ci"],
                         "checkpoint_rate": observation["checkpoint_rate"],
+                        "checkpoint_rate_95ci": observation["checkpoint_rate_95ci"],
+                        "validation_examples": runtime.validation_examples,
+                        "validation_seed": validation_seed,
                         "mastery_windows": mastery_streak,
                     }
                 )
                 level += 1
                 mastery_streak = 0
-            elif level == MAXIMUM_COMPLEXITY_LEVEL and mastery_streak >= MASTERY_WINDOWS:
-                stop_reason = "maximum_level_mastered"
-                stop_after_checkpoint = True
+            maximum_level_mastered = (
+                level == MAXIMUM_COMPLEXITY_LEVEL and mastery_streak >= runtime.mastery_windows
+            )
+            (
+                stop_after_checkpoint,
+                decision_reason,
+                training_deadline_seconds,
+            ) = training_stop_decision(
+                elapsed_seconds=cumulative_elapsed_seconds(),
+                target_seconds=target_seconds,
+                final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
+                final_evaluation_reserve_exceeded_ceiling=(
+                    final_evaluation_reserve_exceeded_ceiling
+                ),
+                maximum_level_mastered=maximum_level_mastered,
+            )
+            if decision_reason is not None:
+                stop_reason = decision_reason
+        training_complete = stop_after_checkpoint
         persist_training_checkpoint(update)
         if stop_after_checkpoint:
             break
@@ -965,40 +1891,93 @@ def run_experiment() -> None:
     emit_progress(
         "finalizing",
         "Evaluating retained levels.",
+        runtime_configuration=runtime,
         update=updates_completed,
         current_level=level,
         promotion_count=len(promotions),
-        elapsed_seconds=round(time.monotonic() - started, 3),
+        elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
     )
-    with model.disable_adapter():
-        initial_by_level = {
-            str(candidate_level): evaluate(
-                candidate_level,
-                EVALUATION_EXAMPLES,
-                TEST_SEED_BASE + candidate_level * 1_000,
-                split="test",
-            )
-            for candidate_level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
-        }
-    final_by_level = {
-        str(candidate_level): evaluate(
+    final_evaluation_deadline_seconds = (
+        target_seconds + runtime.maximum_final_evaluation_reserve_seconds
+    )
+    test_tasks_by_level = {
+        str(candidate_level): make_tasks(
             candidate_level,
-            EVALUATION_EXAMPLES,
+            runtime.test_examples,
             TEST_SEED_BASE + candidate_level * 1_000,
             split="test",
         )
         for candidate_level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
     }
-    initial_reward = statistics.mean(
-        observation["exact_rate"] for observation in initial_by_level.values()
+    initial_by_level: dict[str, dict[str, Any]] = {}
+    with model.disable_adapter():
+        for candidate_level in range(MAXIMUM_COMPLEXITY_LEVEL + 1):
+            level_key = str(candidate_level)
+            initial_by_level[level_key] = evaluate_tasks(
+                test_tasks_by_level[level_key],
+                level=candidate_level,
+                seed=TEST_SEED_BASE + candidate_level * 1_000,
+                split="test",
+                expected_examples=runtime.test_examples,
+                deadline_seconds=final_evaluation_deadline_seconds,
+            )
+    final_by_level: dict[str, dict[str, Any]] = {}
+    for candidate_level in range(MAXIMUM_COMPLEXITY_LEVEL + 1):
+        level_key = str(candidate_level)
+        baseline_task_ids = {
+            outcome["task_id"] for outcome in initial_by_level[level_key]["task_outcomes"]
+        }
+        paired_tasks = [
+            task for task in test_tasks_by_level[level_key] if task.task_id in baseline_task_ids
+        ]
+        final_by_level[level_key] = evaluate_tasks(
+            paired_tasks,
+            level=candidate_level,
+            seed=TEST_SEED_BASE + candidate_level * 1_000,
+            split="test",
+            expected_examples=runtime.test_examples,
+            deadline_seconds=final_evaluation_deadline_seconds,
+        )
+    final_evaluation_complete = all(
+        observation["complete"]
+        for observation in [*initial_by_level.values(), *final_by_level.values()]
     )
-    final_reward = statistics.mean(
-        observation["exact_rate"] for observation in final_by_level.values()
+    initial_reward, final_reward, reward_gain = evaluation_reward_summary(
+        initial_by_level,
+        final_by_level,
+        complete=final_evaluation_complete,
     )
-    reward_gain = final_reward - initial_reward
-    retention_passed = all(
+    initial_outcomes = [
+        outcome
+        for observation in initial_by_level.values()
+        for outcome in observation["task_outcomes"]
+    ]
+    final_outcomes = [
+        outcome
+        for observation in final_by_level.values()
+        for outcome in observation["task_outcomes"]
+    ]
+    paired_task_ids = {outcome["task_id"] for outcome in initial_outcomes} & {
+        outcome["task_id"] for outcome in final_outcomes
+    }
+    if paired_task_ids:
+        paired_test_change = paired_change_summary(
+            [outcome for outcome in initial_outcomes if outcome["task_id"] in paired_task_ids],
+            [outcome for outcome in final_outcomes if outcome["task_id"] in paired_task_ids],
+        )
+    else:
+        paired_test_change = {
+            "examples": 0,
+            "improved": 0,
+            "regressed": 0,
+            "unchanged": 0,
+            "net_improved": 0,
+            "mcnemar_exact_p_value": 1.0,
+        }
+    mastered_level_count = level + int(stop_reason == "maximum_level_mastered")
+    retention_passed = final_evaluation_complete and all(
         observation_mastered(final_by_level[str(candidate_level)])
-        for candidate_level in range(level + 1)
+        for candidate_level in range(mastered_level_count)
     )
     restored_branching_observed = any(
         snapshot["checkpoint"] is not None
@@ -1011,13 +1990,20 @@ def run_experiment() -> None:
         and informative_task_groups > 0
         and policy_update_count > 0
         and retention_passed
+        and reward_gain is not None
         and reward_gain > 0
+        and paired_test_change["mcnemar_exact_p_value"] < 0.05
+        and final_evaluation_complete
+    )
+    probative_post_training = (
+        updates_completed >= 1 and policy_update_count >= 1 and restored_branching_observed
     )
     adapter_manifest: dict[str, Any] | None = None
     if adapter_path:
         model.save_pretrained(adapter_path, safe_serialization=True)
         files = []
-        for directory, _, names in os.walk(adapter_path):
+        for directory, child_directories, names in os.walk(adapter_path):
+            child_directories[:] = [name for name in child_directories if name != "checkpoints"]
             for name in sorted(names):
                 path = os.path.join(directory, name)
                 relative_path = os.path.relpath(path, adapter_path)
@@ -1036,9 +2022,11 @@ def run_experiment() -> None:
             raise RuntimeError("adapter persistence produced no durable bytes")
         adapter_manifest_content = {
             "schema_version": 1,
-            "model_id": MODEL_ID,
-            "model_revision": MODEL_REVISION,
+            "model_id": runtime.model_id,
+            "model_revision": runtime.model_revision,
+            "workload_revision": WORKLOAD_REVISION,
             "objective_id": OBJECTIVE_ID,
+            "training_configuration": training_configuration,
             "files": files,
         }
         manifest_bytes = json.dumps(
@@ -1077,11 +2065,12 @@ def run_experiment() -> None:
         "replay_enabled": True,
         "task_domains": ["micro_repository"],
         "environment_revision": ENVIRONMENT_REVISION,
+        "structural_mirror_disclosures": STRUCTURAL_MIRROR_DISCLOSURES,
         "verifier_revision": VERIFIER_REVISION,
         "action_protocol_revision": ACTION_PROTOCOL_REVISION,
         "snapshot_fidelity": "logical_restore",
-        "model_id": MODEL_ID,
-        "model_revision": MODEL_REVISION,
+        "model_id": runtime.model_id,
+        "model_revision": runtime.model_revision,
         "model_parameters": model_parameters,
         "trainable_parameters": trainable_parameters,
         "seed": experiment_seed,
@@ -1093,21 +2082,26 @@ def run_experiment() -> None:
             "tf32": False,
         },
         "mastery_threshold": MASTERY_THRESHOLD,
-        "mastery_windows": MASTERY_WINDOWS,
+        "mastery_windows": runtime.mastery_windows,
         "maximum_complexity_level": MAXIMUM_COMPLEXITY_LEVEL,
         "complexity_levels": [asdict(item) for item in COMPLEXITY_LEVELS],
-        "evaluation_examples": EVALUATION_EXAMPLES,
-        "training_tasks_per_update": TRAINING_TASKS_PER_UPDATE,
-        "replay_tasks_per_level": REPLAY_TASKS_PER_LEVEL,
+        "validation_examples": runtime.validation_examples,
+        "test_examples": runtime.test_examples,
+        "evaluation_interval": EVALUATION_INTERVAL,
+        "evaluation_interval_method": "wilson-score-95",
+        "training_tasks_per_update": runtime.training_tasks_per_update,
+        "replay_tasks_per_level": runtime.replay_tasks_per_level,
+        "training_configuration": training_configuration,
         "reached_complexity_level": level,
         "promotion_count": len(promotions),
         "promotions": promotions,
-        "initial_reward": round(initial_reward, 6),
-        "final_reward": round(final_reward, 6),
-        "reward_gain": round(reward_gain, 6),
+        "initial_reward": round(initial_reward, 6) if initial_reward is not None else None,
+        "final_reward": round(final_reward, 6) if final_reward is not None else None,
+        "reward_gain": round(reward_gain, 6) if reward_gain is not None else None,
         "initial_by_level": initial_by_level,
         "validation_baseline_by_level": validation_baseline_by_level,
         "final_by_level": final_by_level,
+        "paired_test_change": paired_test_change,
         "history": history,
         "branch_snapshots": branch_snapshots,
         "updates_completed": updates_completed,
@@ -1117,6 +2111,9 @@ def run_experiment() -> None:
         "replay_task_groups": replay_task_groups,
         "informative_task_groups": informative_task_groups,
         "excluded_task_groups": excluded_task_groups,
+        "discarded_task_groups": discarded_task_groups,
+        "discarded_sampled_actions": discarded_sampled_actions,
+        "discarded_post_branch_actions": discarded_post_branch_actions,
         "informative_group_rate": round(
             informative_task_groups / max(1, total_task_groups),
             6,
@@ -1125,6 +2122,14 @@ def run_experiment() -> None:
         "total_post_branch_actions": total_post_branch_actions,
         "stop_reason": stop_reason,
         "target_runtime_seconds": target_seconds,
+        "final_evaluation_reserve_seconds": final_evaluation_reserve_seconds,
+        "maximum_measured_final_evaluation_reserve_seconds": (
+            maximum_measured_final_evaluation_reserve_seconds
+        ),
+        "final_evaluation_reserve_exceeded_ceiling": (final_evaluation_reserve_exceeded_ceiling),
+        "final_evaluation_complete": final_evaluation_complete,
+        "final_evaluation_partial": not final_evaluation_complete,
+        "final_evaluation_deadline_seconds": final_evaluation_deadline_seconds,
         "device": device.type,
         "gpu_name": torch.cuda.get_device_name(0),
         "torch_version": torch.__version__,
@@ -1132,7 +2137,16 @@ def run_experiment() -> None:
             package: importlib.metadata.version(package) for package in sorted(DEPENDENCY_VERSIONS)
         },
         "cuda_version": torch.version.cuda,
-        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "elapsed_seconds": round(cumulative_elapsed_seconds(), 3),
+        "attempt_elapsed_seconds": round(time.monotonic() - started, 3),
+        "attempt_count": attempt_count,
+        "raw_resume_gap_seconds": round(raw_resume_gap_seconds, 3),
+        "applied_resume_gap_seconds": round(applied_resume_gap_seconds, 3),
+        "crash_tail_actions_unaccounted": resumed_crash_tail_actions_unaccounted(resume_state),
+        "crash_tail_cost_accounting": (
+            "wall_clock_only" if resume_state is not None else "not_applicable"
+        ),
+        "cumulative_elapsed_seconds": round(cumulative_elapsed_seconds(), 3),
         "adapter_persisted": adapter_manifest is not None,
         "adapter_manifest": adapter_manifest,
         "resumed_from_checkpoint": resume_state is not None,
@@ -1140,7 +2154,11 @@ def run_experiment() -> None:
             latest_checkpoint_path and os.path.isfile(latest_checkpoint_path)
         ),
         "optimization_seed_count": 1,
-        "claim_strength": "EXPLORATORY_SINGLE_SEED",
+        "probative_post_training": probative_post_training,
+        "claim_strength": post_training_claim_strength(
+            final_evaluation_complete=final_evaluation_complete,
+            probative_post_training=probative_post_training,
+        ),
         "retention_passed": retention_passed,
         "restored_branching_observed": restored_branching_observed,
     }
@@ -1148,15 +2166,28 @@ def run_experiment() -> None:
     emit_progress(
         "finalizing",
         "Result ready for persistence and teardown.",
+        runtime_configuration=runtime,
         update=updates_completed,
         current_level=level,
         promotion_count=len(promotions),
         exact_rate=reached["exact_rate"],
+        exact_rate_95ci=reached["exact_rate_95ci"],
         checkpoint_rate=reached["checkpoint_rate"],
+        checkpoint_rate_95ci=reached["checkpoint_rate_95ci"],
+        evaluation_examples=reached["examples"],
+        expected_evaluation_examples=runtime.test_examples,
+        evaluation_complete=reached["complete"],
+        evaluation_split="test",
+        validation_examples=runtime.validation_examples,
+        test_examples=runtime.test_examples,
+        mastery_windows=runtime.mastery_windows,
+        teacher_data_used=False,
         informative_group_rate=result["informative_group_rate"],
         total_sampled_actions=total_sampled_actions,
         policy_update_count=policy_update_count,
         hypothesis_passed=hypothesis_passed,
+        paired_test_change=paired_test_change,
+        claim_strength=result["claim_strength"],
         elapsed_seconds=result["elapsed_seconds"],
         stop_reason=stop_reason,
         latest_branch_snapshot=branch_snapshots[-1] if branch_snapshots else None,
@@ -1167,16 +2198,27 @@ def run_experiment() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--validate-configuration", action="store_true")
     arguments = parser.parse_args()
     if arguments.self_test:
         self_test()
         return
+    if arguments.validate_configuration:
+        configure_from_environment()
+        return
+    runtime: RuntimeConfiguration | None = None
     try:
-        run_experiment()
+        runtime = configure_from_environment()
+        run_experiment(runtime)
     except Exception as exc:
+        raw_attempt = os.environ.get("EQUINOX_WORKLOAD_ATTEMPT", "1")
+        reported_attempt = int(raw_attempt) if raw_attempt in {"1", "2"} else 1
         emit_progress(
             "failed",
             "Repository repair workload failed.",
+            runtime_configuration=runtime,
+            preserve_context=True,
+            attempt=reported_attempt,
             error=f"{type(exc).__name__}: {exc}",
         )
         raise

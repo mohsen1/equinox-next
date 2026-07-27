@@ -19,6 +19,9 @@ The first proof runs the environment as a safe deterministic simulator alongside
 trainer on a bounded RunPod worker. It does not execute model-generated code, shell
 commands, or arbitrary test processes.
 
+This protocol pins environment revision `repository-repair-simulator@3` and verifier
+revision `repository-repair-hidden-state@3`.
+
 ## Why this vertical
 
 The local CAD fixture proves platform contracts but current affordable models are poor
@@ -56,8 +59,55 @@ simulator with real repositories and test commands.
 - A sibling advantage is applied to every accepted post-branch action in that sibling.
 - The optimizer consumes policy samples only; no teacher targets or fallback updates are
   allowed.
-- Validation tasks control curriculum decisions. The disjoint test split is evaluated
-  once, after training, for both the disabled-adapter baseline and final adapter.
+- Rotating validation windows control curriculum decisions. A level advances only after
+  two consecutive windows whose 95% Wilson lower bounds exceed the mastery threshold for
+  both exact solve rate and checkpoint rate. Validation-window seeds use a `1,000,003`
+  stride. Exact fixture IDs include the seed, so they are not the independence unit.
+  The workload also records a seed-free semantic identity derived from level, split,
+  and normalized fault families. It excludes the preceding window's semantic identities
+  before inference and rejects sample sizes larger than the available semantic universe.
+  The profile caps mastery at two windows because one-fault validation has exactly two
+  disjoint eight-task halves.
+- The disjoint test split is evaluated once, after training, on the same retained tasks
+  for the disabled-adapter baseline and final adapter. The result records Wilson
+  intervals and paired improvement and regression counts. The exploratory hypothesis
+  gate requires a positive gain and a paired exact McNemar p-value below `0.05`.
+- The inert semantic verifier uses explicit boundary cases plus task-identity-keyed
+  probes for open-domain numeric, string, sequence, and mapping families. Boolean
+  families use their exhaustive finite truth tables. It never executes candidate
+  code. These probes reduce trivial
+  fixed-value reward hacking but remain finite, so solve rate is evidence against this
+  declared verifier rather than a proof of full Python semantic equivalence.
+- Checkpoints retain cumulative elapsed time and attempt count. Resume consumes the
+  remaining run budget; it never refreshes the target runtime. A fenced attempt-2 receipt
+  remains eligible as the same logical run when checkpoint provenance and cumulative
+  elapsed time are present. The remote runner makes one bounded
+  retry when a failed workload has a valid latest-checkpoint pointer; failures before
+  the first checkpoint remain terminal. Its attempt counter is persisted in the remote
+  work directory so a container restart cannot reset the two-attempt budget or relabel
+  a resumed workload. The launcher provisions a 10 GB pod volume at `/workspace` and
+  places the attempt counter, checkpoints, pending result, and runner bundle under
+  `/workspace/equinox-state`; this fence therefore survives container restarts within
+  the bounded pod lifetime. A completed pending result is promoted on restart before any retry,
+  and failure before the first checkpoint remains distinct from exhausted retry budget.
+  The provider lifetime includes a separate
+  2,700-second retry reserve. The measured final-evaluation reserve is capped separately
+  at 2,400 seconds. Exceeding that ceiling stops training and proceeds to final
+  evaluation; the receipt retains the unclamped measurement and the ceiling event.
+  Resumed accounting includes the wall-clock tail after the latest checkpoint, capped
+  by the declared 2,700-second retry reserve to bound cross-host clock skew. The raw
+  and applied gaps remain in the checkpoint and result for audit. Sampled actions after
+  the last durable checkpoint cannot be reconstructed after a crash; resumed receipts
+  mark those crash-tail actions as unaccounted while retaining their cost in wall-clock
+  time. Final evaluation has
+  its own workload deadline. If it expires, the workload persists a
+  partial, ineligible receipt with observed and expected sample counts instead of
+  relying on provider termination; partial receipts do not report a cross-level reward
+  gain. The evaluator checks its deadline before every model generation, and the
+  provider ceiling retains a 900-second allowance for the one generation already in
+  flight. Collections completed after the training deadline
+  are not optimized, but their groups and sampled actions remain in cost accounting and
+  the terminal checkpoint.
 
 ## Observability contract
 
@@ -71,18 +121,50 @@ orchestrator contracts contain CAD-specific schema constants. The result must re
 complete step lineage. Generalizing the core scientific schema is a follow-up informed by
 this vertical, not a semantic shortcut inside CAD records.
 
+The retained branch tree is selected from the current non-replay frontier, preferring an
+informative non-excluded group. The serialized tree names this selection rule. It does
+not prefer groups by sibling success count.
+
 ## Experiment contract
 
 The first launch is a bounded, explicitly single-seed exploration. A replicated claim
 requires at least three distinct optimization seeds summarized by
-`scripts/summarize-runpod-study`. Later matched-budget ablations compare sampling-only,
-sibling-relative, adaptive, and replay variants using the same tasks, seeds, action
-budget, model revision, tokenizer revision, verifier revision, and effective
-learning-rate control.
+`scripts/summarize-runpod-study`. The summarizer rejects mixed models, revisions,
+training configurations, runtime budgets, complexity levels, or test task identities.
+Later matched-budget ablations compare sampling-only, sibling-relative, adaptive, and
+replay variants using the same tasks, seeds, action budget, model revision, tokenizer
+revision, verifier revision, and effective learning-rate control.
 
 Headline metrics are final-test solve rate, actions to solve, trustworthy informative-group
 rate, regression on mastered levels, and GPU cost. Scaling the model is conditional on
 restored branching producing useful signal.
+
+## 2026-07-27 protocol revision
+
+The first 1.5B run verified restored branching and produced useful sibling-relative
+signal, but its learning claim was confounded by teacher fallback and four-example
+evaluation sets. Its perfect final rate is retained as historical evidence, not treated
+as a generalization result.
+
+The next bounded run uses the pinned 3B model revision on one A40. It removes teacher
+updates, doubles current-level task collection per update, uses eight-example rotating
+validation windows, retains twelve test tasks per level for paired baseline and adapter
+evaluation, and caps the workload at 120 updates or 7,200 cumulative seconds. The run
+has a 240-minute provider ceiling so boot, one retry, final-evaluation overrun, and
+teardown do not compete with the 7,200-second workload budget. It remains a
+single-seed exploration and cannot
+establish a replicated gain. Validation has 16 distinct one-fault semantic cases and
+test has 12; larger multi-fault levels draw unique combinations from those held-out
+families.
+
+The split is disjoint by fixture family ID, not by abstract program transformation.
+Known structural mirrors remain across splits: `first`/`safe_head`,
+`nonempty`/`is_empty`, `minimum`/`maximum`/`bounded_lower`/`maximum_three`,
+`last`/`middle`, `coalesce`/`default_zero`, and simple arithmetic operator
+repairs such as `combine`/`multiply`/`subtract`/`square`. Boolean operator repairs
+also mirror across `different`/`negate`/`both`. This run therefore measures transfer to
+unseen fixtures within a narrow repair grammar; it is not evidence of broad
+repository-repair generalization.
 
 ## Non-goals
 

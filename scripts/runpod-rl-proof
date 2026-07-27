@@ -17,22 +17,38 @@ case "$experiment" in
     workload_file="branching_sequence_ladder.py"
     workload_id="branching-sequence-policy-gradient-ladder"
     execution_name="Branching sequence ladder"
-    model_id=""
+    default_model_id=""
     default_gpu_id="NVIDIA GeForce RTX 3090"
+    default_cloud_type="COMMUNITY"
     default_target_runtime_seconds="420"
     default_maximum_lifetime_minutes="15"
+    default_retry_reserve_seconds="0"
+    default_maximum_final_evaluation_reserve_seconds="0"
     default_maximum_updates="1200"
+    default_validation_examples="1"
+    default_test_examples="1"
+    default_mastery_windows="1"
+    default_training_tasks_per_update="1"
+    default_replay_tasks_per_level="1"
     ;;
   repository-repair)
     workload_file="repository_repair_rl.py"
     support_file="repository_repair_env.py"
     workload_id="repository-repair-restored-continuation-post-training"
     execution_name="Repository repair post-training"
-    model_id="Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    default_model_id="Qwen/Qwen2.5-Coder-3B-Instruct"
     default_gpu_id="NVIDIA A40"
-    default_target_runtime_seconds="2700"
-    default_maximum_lifetime_minutes="60"
-    default_maximum_updates="80"
+    default_cloud_type="SECURE"
+    default_target_runtime_seconds="7200"
+    default_maximum_lifetime_minutes="240"
+    default_retry_reserve_seconds="2700"
+    default_maximum_final_evaluation_reserve_seconds="2400"
+    default_maximum_updates="120"
+    default_validation_examples="8"
+    default_test_examples="12"
+    default_mastery_windows="2"
+    default_training_tasks_per_update="2"
+    default_replay_tasks_per_level="1"
     ;;
   *)
     echo "EQUINOX_RUNPOD_EXPERIMENT must be sequence-ladder or repository-repair." >&2
@@ -48,13 +64,42 @@ api_root="${EQUINOX_API_ROOT:-http://127.0.0.1:8180}"
 dashboard_root="${EQUINOX_DASHBOARD_ROOT:-http://127.0.0.1:3100}"
 gpu_id="${EQUINOX_RUNPOD_GPU:-$default_gpu_id}"
 template_id="${EQUINOX_RUNPOD_TEMPLATE:-runpod-torch-v280}"
-cloud_type="${EQUINOX_RUNPOD_CLOUD_TYPE:-COMMUNITY}"
+cloud_type="${EQUINOX_RUNPOD_CLOUD_TYPE:-$default_cloud_type}"
 maximum_hourly_cost="${EQUINOX_RUNPOD_MAX_HOURLY_COST:-0.50}"
 maximum_lifetime_minutes="${EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES:-$default_maximum_lifetime_minutes}"
 boot_timeout_seconds="${EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS:-360}"
-target_runtime_seconds="${EQUINOX_RL_TARGET_SECONDS:-$default_target_runtime_seconds}"
-optimization_seed="${EQUINOX_RL_SEED:-73}"
 container_disk_in_gb="${EQUINOX_RUNPOD_CONTAINER_DISK_GB:-30}"
+persistent_volume_in_gb="${EQUINOX_RUNPOD_VOLUME_GB:-10}"
+persistent_work_directory="/workspace/equinox-state"
+if [[ "$experiment" == "sequence-ladder" ]]; then
+  model_id="$default_model_id"
+  target_runtime_seconds="$default_target_runtime_seconds"
+  optimization_seed="73"
+  maximum_updates="$default_maximum_updates"
+  validation_examples="$default_validation_examples"
+  test_examples="$default_test_examples"
+  mastery_windows="$default_mastery_windows"
+  training_tasks_per_update="$default_training_tasks_per_update"
+  replay_tasks_per_level="$default_replay_tasks_per_level"
+  retry_reserve_seconds="$default_retry_reserve_seconds"
+  maximum_final_evaluation_reserve_seconds="$default_maximum_final_evaluation_reserve_seconds"
+else
+  model_id="${EQUINOX_RL_MODEL_ID:-$default_model_id}"
+  target_runtime_seconds="${EQUINOX_RL_TARGET_SECONDS:-$default_target_runtime_seconds}"
+  optimization_seed="${EQUINOX_RL_SEED:-73}"
+  maximum_updates="${EQUINOX_RL_MAX_UPDATES:-$default_maximum_updates}"
+  validation_examples="${EQUINOX_RL_VALIDATION_EXAMPLES:-$default_validation_examples}"
+  test_examples="${EQUINOX_RL_TEST_EXAMPLES:-$default_test_examples}"
+  mastery_windows="${EQUINOX_RL_MASTERY_WINDOWS:-$default_mastery_windows}"
+  training_tasks_per_update="${EQUINOX_RL_TRAINING_TASKS_PER_UPDATE:-$default_training_tasks_per_update}"
+  replay_tasks_per_level="${EQUINOX_RL_REPLAY_TASKS_PER_LEVEL:-$default_replay_tasks_per_level}"
+  retry_reserve_seconds="${EQUINOX_RUNPOD_RETRY_RESERVE_SECONDS:-$default_retry_reserve_seconds}"
+  maximum_final_evaluation_reserve_seconds="${EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS:-$default_maximum_final_evaluation_reserve_seconds}"
+fi
+final_evaluation_generation_overshoot_seconds=0
+if [[ "$experiment" == "repository-repair" ]]; then
+  final_evaluation_generation_overshoot_seconds=900
+fi
 
 command -v runpodctl >/dev/null
 command -v jq >/dev/null
@@ -63,6 +108,12 @@ command -v timeout >/dev/null
 command -v base64 >/dev/null
 command -v python3 >/dev/null
 command -v tar >/dev/null
+runpod_create_help="$(runpodctl pod create --help)"
+if [[ "$runpod_create_help" != *"--env string"* ||
+  "$runpod_create_help" != *"environment variables as json object"* ]]; then
+  echo "This runpodctl version does not document the JSON --env contract required for result transport." >&2
+  exit 1
+fi
 test -f "$workload_path"
 test -f "$remote_runner_path"
 test -f "$result_server_path"
@@ -78,6 +129,26 @@ fi
 if [[ "$cloud_type" != "COMMUNITY" && "$cloud_type" != "SECURE" ]]; then
   echo "EQUINOX_RUNPOD_CLOUD_TYPE must be COMMUNITY or SECURE." >&2
   exit 1
+fi
+if [[ "$experiment" == "sequence-ladder" ]]; then
+  for configuration_name in \
+    EQUINOX_RL_MODEL_ID \
+    EQUINOX_RL_SEED \
+    EQUINOX_RL_TARGET_SECONDS \
+    EQUINOX_RL_MAX_RESUME_GAP_SECONDS \
+    EQUINOX_RL_MAX_UPDATES \
+    EQUINOX_RL_VALIDATION_EXAMPLES \
+    EQUINOX_RL_TEST_EXAMPLES \
+    EQUINOX_RL_MASTERY_WINDOWS \
+    EQUINOX_RL_TRAINING_TASKS_PER_UPDATE \
+    EQUINOX_RL_REPLAY_TASKS_PER_LEVEL \
+    EQUINOX_RUNPOD_RETRY_RESERVE_SECONDS \
+    EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS; do
+    if [[ -n "${!configuration_name+x}" ]]; then
+      echo "$configuration_name is pinned by the sequence-ladder workload." >&2
+      exit 1
+    fi
+  done
 fi
 if [[ ! "$boot_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
   echo "EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS must be a positive integer." >&2
@@ -95,12 +166,63 @@ if [[ ! "$container_disk_in_gb" =~ ^[1-9][0-9]*$ ]]; then
   echo "EQUINOX_RUNPOD_CONTAINER_DISK_GB must be a positive integer." >&2
   exit 1
 fi
+if [[ ! "$persistent_volume_in_gb" =~ ^[1-9][0-9]*$ ]] ||
+  ((persistent_volume_in_gb > 50)); then
+  echo "EQUINOX_RUNPOD_VOLUME_GB must be an integer between 1 and 50." >&2
+  exit 1
+fi
 if [[ ! "$maximum_lifetime_minutes" =~ ^[1-9][0-9]*$ ]]; then
   echo "EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES must be a positive integer." >&2
   exit 1
 fi
-if ((target_runtime_seconds + boot_timeout_seconds + 120 > maximum_lifetime_minutes * 60)); then
-  echo "The provider lifetime must cover boot + target runtime + a 2-minute cleanup reserve." >&2
+if [[ "$experiment" == "repository-repair" ]] &&
+  {
+    [[ ! "$retry_reserve_seconds" =~ ^[1-9][0-9]*$ ]] ||
+      [[ ! "$maximum_final_evaluation_reserve_seconds" =~ ^[1-9][0-9]*$ ]] ||
+      ((retry_reserve_seconds > 7200)) ||
+      ((maximum_final_evaluation_reserve_seconds > 7200)) ||
+      ((maximum_final_evaluation_reserve_seconds > retry_reserve_seconds))
+  }; then
+  echo "Repository-repair reserves must be positive, at most 7200 seconds, and final evaluation must not exceed the retry reserve." >&2
+  exit 1
+fi
+if [[ "$experiment" == "repository-repair" ]] &&
+  ((target_runtime_seconds <= maximum_final_evaluation_reserve_seconds + 60)); then
+  echo "EQUINOX_RL_TARGET_SECONDS must leave at least 60 seconds for training before final evaluation." >&2
+  exit 1
+fi
+for bounded_integer in \
+  "$maximum_updates" \
+  "$validation_examples" \
+  "$test_examples" \
+  "$mastery_windows" \
+  "$training_tasks_per_update" \
+  "$replay_tasks_per_level"; do
+  if [[ ! "$bounded_integer" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Research workload counts must be positive integers." >&2
+    exit 1
+  fi
+done
+if [[ "$experiment" == "repository-repair" ]]; then
+  EQUINOX_RL_MODEL_ID="$model_id" \
+    EQUINOX_RL_SEED="$optimization_seed" \
+    EQUINOX_RL_TARGET_SECONDS="$target_runtime_seconds" \
+    EQUINOX_RL_MAX_RESUME_GAP_SECONDS="$retry_reserve_seconds" \
+    EQUINOX_RL_MAX_UPDATES="$maximum_updates" \
+    EQUINOX_RL_VALIDATION_EXAMPLES="$validation_examples" \
+    EQUINOX_RL_TEST_EXAMPLES="$test_examples" \
+    EQUINOX_RL_MASTERY_WINDOWS="$mastery_windows" \
+    EQUINOX_RL_TRAINING_TASKS_PER_UPDATE="$training_tasks_per_update" \
+    EQUINOX_RL_REPLAY_TASKS_PER_LEVEL="$replay_tasks_per_level" \
+    EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS="$maximum_final_evaluation_reserve_seconds" \
+    python3 "$workload_path" --validate-configuration
+fi
+if ((
+  target_runtime_seconds + maximum_final_evaluation_reserve_seconds +
+    final_evaluation_generation_overshoot_seconds + boot_timeout_seconds +
+    retry_reserve_seconds + 120 > maximum_lifetime_minutes * 60
+)); then
+  echo "The provider lifetime must cover boot, target runtime, final evaluation, one bounded generation, retry, and cleanup reserves." >&2
   exit 1
 fi
 bundle_files=("$workload_file" "remote_runner.sh" "result_server.py")
@@ -115,7 +237,8 @@ bundle_source_b64="$(
     tr -d '\n'
 )"
 transport_token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-docker_args="bash -lc \"echo $bundle_source_b64 | base64 -d | tar -xzf - -C /tmp; EQUINOX_RESULT_TOKEN=$transport_token EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds bash /tmp/remote_runner.sh\""
+pod_environment="$(jq -cn --arg token "$transport_token" '{EQUINOX_RESULT_TOKEN: $token}')"
+docker_args="bash -lc \"mkdir -p $persistent_work_directory; echo $bundle_source_b64 | base64 -d | tar -xzf - -C $persistent_work_directory; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds bash $persistent_work_directory/remote_runner.sh\""
 
 mkdir -p "$receipt_directory"
 proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')"
@@ -142,7 +265,7 @@ terminal_published=false
 failure_message="The operator harness exited before the proof was persisted."
 last_progress="$(
   jq -cn \
-    --argjson maximum_updates "$default_maximum_updates" \
+    --argjson maximum_updates "$maximum_updates" \
     '{
       phase: "requesting_capacity",
       message: "Requesting one bounded RunPod worker.",
@@ -155,12 +278,14 @@ resource_profile="$(
     --arg gpu_id "$gpu_id" \
     --arg image "$image" \
     --arg cloud_type "$cloud_type" \
+    --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
     --argjson maximum_hourly_cost "$maximum_hourly_cost" \
     '{
       gpu_id: $gpu_id,
       gpu_count: 1,
       image: $image,
       cloud_type: $cloud_type,
+      persistent_volume_in_gb: $persistent_volume_in_gb,
       maximum_hourly_cost_usd: $maximum_hourly_cost
     }'
 )"
@@ -322,9 +447,11 @@ create_response="$(
     --gpu-count 1 \
     --cloud-type "$cloud_type" \
     --container-disk-in-gb "$container_disk_in_gb" \
-    --volume-in-gb 0 \
+    --volume-in-gb "$persistent_volume_in_gb" \
+    --volume-mount-path "/workspace" \
     --ports "8000/http" \
     --ssh=false \
+    --env "$pod_environment" \
     --docker-args "$docker_args" \
     --terminate-after "$terminate_after"
 )"
@@ -356,6 +483,7 @@ resource_profile="$(
     --arg gpu_id "$gpu_id" \
     --arg image "$image" \
     --arg cloud_type "$cloud_type" \
+    --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
     --argjson hourly_cost "$hourly_cost" \
     --argjson maximum_hourly_cost "$maximum_hourly_cost" \
     '{
@@ -363,13 +491,14 @@ resource_profile="$(
       gpu_count: 1,
       image: $image,
       cloud_type: $cloud_type,
+      persistent_volume_in_gb: $persistent_volume_in_gb,
       hourly_cost_usd: $hourly_cost,
       maximum_hourly_cost_usd: $maximum_hourly_cost
     }'
 )"
 last_progress="$(
   jq -cn \
-    --argjson maximum_updates "$default_maximum_updates" \
+    --argjson maximum_updates "$maximum_updates" \
     '{
       phase: "waiting_for_capacity",
       message: "Pod created; waiting for a live container endpoint.",
@@ -409,7 +538,7 @@ for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
       jq -cn \
         --arg message "Pod created; waiting for a live container endpoint." \
         --argjson elapsed_seconds "$elapsed_wait" \
-        --argjson maximum_updates "$default_maximum_updates" \
+        --argjson maximum_updates "$maximum_updates" \
         '{
           phase: "waiting_for_capacity",
           message: $message,
@@ -550,7 +679,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-loo-reinforce@2"
+    and .workload_revision == "runpod-repository-repair-loo-reinforce@4"
     and .algorithm == "leave-one-out-group-normalized-reinforce"
     and .objective_id == "leave-one-out-group-normalized-reinforce@1"
     and .objective_sequence_reduction == "sum_completion_token_log_probabilities"
@@ -563,42 +692,149 @@ else
     and .complexity_strategy == "adaptive"
     and .replay_enabled == true
     and .snapshot_fidelity == "logical_restore"
-    and .model_id == "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    and .model_id == $expected_model
     and .task_domains == ["micro_repository"]
     and (.complexity_levels | length) == 4
     and .complexity_levels[0].repair_horizon < .complexity_levels[3].repair_horizon
-    and .updates_completed >= 1
-    and .optimizer_update_count >= 1
-    and .policy_update_count >= 1
-    and .total_task_groups >= 1
-    and .replay_task_groups >= 1
-    and .promotion_count >= 1
-    and .evaluation_examples == 4
-    and .total_sampled_actions >= 4
-    and .total_post_branch_actions >= 4
-    and .restored_branching_observed == true
-    and .adapter_manifest.digest != null
-    and .claim_strength == "EXPLORATORY_SINGLE_SEED"
-    and (.branch_snapshots | length) >= 1
+    and (.updates_completed | type) == "number"
+    and (.optimizer_update_count | type) == "number"
+    and (.policy_update_count | type) == "number"
+    and (.total_task_groups | type) == "number"
+    and (.replay_task_groups | type) == "number"
+    and (.promotion_count | type) == "number"
+    and .validation_examples == $expected_validation_examples
+    and .test_examples == $expected_test_examples
+    and .mastery_windows == $expected_mastery_windows
+    and .training_tasks_per_update == $expected_training_tasks_per_update
+    and .replay_tasks_per_level == $expected_replay_tasks_per_level
+    and .training_configuration.maximum_updates == $expected_maximum_updates
+    and .training_configuration.maximum_final_evaluation_reserve_seconds == $expected_final_evaluation_reserve
+    and .evaluation_interval_method == "wilson-score-95"
+    and (.attempt_count == 1 or .attempt_count == 2)
+    and .resumed_from_checkpoint == (.attempt_count == 2)
+    and (.paired_test_change.examples | type) == "number"
+    and (.final_evaluation_complete | type) == "boolean"
+    and .final_evaluation_partial == (.final_evaluation_complete | not)
+    and ([.initial_by_level[], .final_by_level[]
+      | .examples == .distinct_semantic_examples
+        and .semantic_universe_size >= $expected_test_examples
+    ] | all)
     and (
-      [.branch_snapshots[]
-        | select(
-          .checkpoint != null
-          and .checkpoint.static_branch_width == 4
-          and (.shared_prefix.steps | length) >= 2
-          and (.siblings | length) == 4
-          and ([.siblings[].steps | length] | all(. >= 1))
+      (
+        .final_evaluation_complete == true
+        and (
+          (
+            .probative_post_training == false
+            and .claim_strength == "NONPROBATIVE_RESERVE_STOP"
+          )
+          or (
+            .probative_post_training == true
+            and .claim_strength == "EXPLORATORY_SINGLE_SEED"
+          )
         )
-      ] | length
-    ) >= 1
+        and ([.initial_by_level[], .final_by_level[]
+          | .examples == $expected_test_examples
+            and .complete == true
+            and (.exact_rate_95ci | length) == 2
+        ] | all)
+      )
+      or (
+        .final_evaluation_partial == true
+        and .claim_strength == "INCOMPLETE_FINAL_EVALUATION"
+        and .hypothesis_passed == false
+        and .reward_gain == null
+        and ([.initial_by_level[], .final_by_level[]
+          | .examples <= $expected_test_examples
+        ] | all)
+      )
+    )
+    and (.total_sampled_actions | type) == "number"
+    and (.total_post_branch_actions | type) == "number"
+    and (.branch_snapshots | type) == "array"
+    and .probative_post_training == (
+      .updates_completed >= 1
+      and .policy_update_count >= 1
+      and .restored_branching_observed == true
+    )
+    and (.discarded_task_groups | type) == "number"
+    and (.discarded_sampled_actions | type) == "number"
+    and .discarded_sampled_actions <= .total_sampled_actions
+    and (.discarded_post_branch_actions | type) == "number"
+    and .discarded_post_branch_actions <= .total_post_branch_actions
+    and (.structural_mirror_disclosures | type) == "array"
+    and (.structural_mirror_disclosures | length) >= 7
+    and .adapter_manifest.digest != null
+    and ([.adapter_manifest.files[].path
+      | startswith("checkpoints/")
+      | not
+    ] | all)
+    and (
+      if .probative_post_training == false then
+        .stop_reason == "final_evaluation_reserve_ceiling"
+        and .updates_completed >= 0
+        and .optimizer_update_count >= 0
+        and .policy_update_count >= 0
+        and .total_task_groups >= 0
+        and .total_sampled_actions >= 0
+        and .total_post_branch_actions >= 0
+      else
+        .probative_post_training == true
+        and .updates_completed >= 1
+        and .policy_update_count >= 1
+        and .total_task_groups >= 1
+        and .total_sampled_actions >= 4
+        and .total_post_branch_actions >= 4
+        and .restored_branching_observed == true
+        and
+        (.branch_snapshots | length) >= 1
+        and (
+          [.branch_snapshots[]
+            | select(
+              .checkpoint != null
+              and .checkpoint.static_branch_width == 4
+              and (.shared_prefix.steps | length) >= 2
+              and (.siblings | length) == 4
+              and ([.siblings[].steps | length] | all(. >= 1))
+            )
+          ] | length
+        ) >= 1
+      end
+    )
     and (.hypothesis_passed | type) == "boolean"
   '
 fi
-if ! jq -e "$proof_assertion" >/dev/null <<<"$metrics"; then
+if ! jq -e \
+  --arg expected_model "$model_id" \
+  --argjson expected_validation_examples "$validation_examples" \
+  --argjson expected_test_examples "$test_examples" \
+  --argjson expected_mastery_windows "$mastery_windows" \
+  --argjson expected_training_tasks_per_update "$training_tasks_per_update" \
+  --argjson expected_replay_tasks_per_level "$replay_tasks_per_level" \
+  --argjson expected_maximum_updates "$maximum_updates" \
+  --argjson expected_final_evaluation_reserve "$maximum_final_evaluation_reserve_seconds" \
+  "$proof_assertion" >/dev/null <<<"$metrics"; then
   failure_message="The remote result did not satisfy the declared proof contract."
   echo "The remote workload completed but did not meet the proof assertions." >&2
   jq . <<<"$metrics" >&2
   exit 1
+fi
+if [[ "$experiment" == "repository-repair" ]] &&
+  [[ "$(jq -r '.stop_reason' <<<"$metrics")" == "final_evaluation_reserve_ceiling" ]]; then
+  if [[ "$(jq -r '.probative_post_training' <<<"$metrics")" == "true" ]]; then
+    echo \
+      "Remote result is probative: training stopped early after the evaluation reserve exceeded its ceiling." \
+      >&2
+  else
+    if [[ "$(jq -r '.updates_completed' <<<"$metrics")" == "0" ]]; then
+      echo \
+        "Remote result is valid but non-probative: evaluation reserve exceeded its ceiling before training." \
+        >&2
+    else
+      echo \
+        "Remote result is valid but non-probative: reserve ceiling stopped training before enough learning evidence accrued." \
+        >&2
+    fi
+  fi
 fi
 
 last_progress="$(
@@ -657,6 +893,7 @@ jq -n \
   --arg gpu_id "$gpu_id" \
   --arg image "$image" \
   --arg cloud_type "$cloud_type" \
+  --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
   --argjson hourly_cost "$hourly_cost" \
   --arg started_at "$started_at" \
   --arg completed_at "$completed_at" \
@@ -670,7 +907,8 @@ jq -n \
       gpu_count: 1,
       image: $image,
       hourly_cost_usd: $hourly_cost,
-      cloud_type: $cloud_type
+      cloud_type: $cloud_type,
+      persistent_volume_in_gb: $persistent_volume_in_gb
     },
     workload: {
       id: $result.workload,
