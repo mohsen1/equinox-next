@@ -80,7 +80,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_400
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@4"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@5"
 OBJECTIVE_ID = "leave-one-out-group-normalized-reinforce@1"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -99,10 +99,22 @@ VALIDATION_WINDOW_SEED_STRIDE = 1_000_003
 TEST_SEED_BASE = 90_000
 MAX_INPUT_TOKENS = 4_096
 MAX_NEW_TOKENS = 192
+ACTION_RESPONSE_PREFIX = '{"tool":'
 LEARNING_RATE = 8e-5
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
 PROGRESS_PATH = os.environ.get("EQUINOX_PROGRESS_PATH")
+
+
+def render_action_prompt(tokenizer: Any, prompt: str) -> str:
+    rendered = tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    if not isinstance(rendered, str):
+        raise TypeError("the tokenizer did not render a text prompt")
+    return rendered + ACTION_RESPONSE_PREFIX
 
 
 def positive_environment_integer(
@@ -1206,11 +1218,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     model_parameters = sum(parameter.numel() for parameter in model.parameters())
 
     def render_prompt(prompt: str) -> str:
-        return tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        return render_action_prompt(tokenizer, prompt)
 
     def sample_one(prompt: str, stochastic: bool, sampling_seed: int) -> GeneratedAction:
         rendered = render_prompt(prompt)
@@ -1237,7 +1245,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             sequence = model.generate(**encoded, **generation_options)
         model.config.use_cache = False
         continuation = sequence[0, input_width:]
-        response = tokenizer.decode(continuation, skip_special_tokens=True).strip()
+        response = (
+            ACTION_RESPONSE_PREFIX
+            + tokenizer.decode(continuation, skip_special_tokens=True).strip()
+        )
         eos_hits = continuation.eq(tokenizer.eos_token_id)
         eos_count = eos_hits.cumsum(dim=0)
         continuation_mask = ((eos_count == 0) | (eos_hits & eos_count.eq(1))).long()

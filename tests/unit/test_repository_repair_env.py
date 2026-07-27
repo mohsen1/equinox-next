@@ -322,8 +322,6 @@ def test_teacher_continuation_solves_without_executing_repository_code() -> None
     "response",
     (
         "",
-        ' {"tool":"test"}',
-        '{"tool":"test"}\n',
         '```json\n{"tool":"test"}\n```',
         '{"tool":"read","path":"README.md","extra":"x"}',
         '{"tool":"shell","command":"pytest"}',
@@ -331,6 +329,17 @@ def test_teacher_continuation_solves_without_executing_repository_code() -> None
 )
 def test_action_parser_rejects_noncanonical_or_untrusted_shapes(response: str) -> None:
     assert parse_action(response) is None
+
+
+@pytest.mark.parametrize(
+    "response",
+    (
+        ' {"tool":"test"}',
+        '{"tool":\n"read",\n"path":"README.md"}\n',
+    ),
+)
+def test_action_parser_accepts_json_whitespace(response: str) -> None:
+    assert parse_action(response) is not None
 
 
 def test_paths_and_edits_are_bounded() -> None:

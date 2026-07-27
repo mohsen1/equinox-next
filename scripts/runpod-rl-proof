@@ -679,7 +679,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-loo-reinforce@4"
+    and .workload_revision == "runpod-repository-repair-loo-reinforce@5"
     and .algorithm == "leave-one-out-group-normalized-reinforce"
     and .objective_id == "leave-one-out-group-normalized-reinforce@1"
     and .objective_sequence_reduction == "sum_completion_token_log_probabilities"

@@ -165,7 +165,7 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
     fidelity: "logical_restore",
     environment_revision: "repository-repair-simulator@1",
     verifier_revision: "repository-repair-hidden-state@1",
-    action_protocol_revision: "repository-repair-json-tools@1",
+    action_protocol_revision: "repository-repair-json-tools@2",
     static_branch_width: 4,
   },
   shared_prefix: {

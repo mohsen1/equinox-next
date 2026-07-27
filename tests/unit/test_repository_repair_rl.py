@@ -36,6 +36,7 @@ from research.runpod.repository_repair_rl import (
     post_training_claim_strength,
     remove_orphan_checkpoint_target,
     remove_stale_checkpoint_targets,
+    render_action_prompt,
     resumed_crash_tail_actions_unaccounted,
     select_representative_collection,
     serialize_branch_group,
@@ -79,6 +80,23 @@ def test_sibling_advantage_is_leave_one_out_centered_and_zero_for_ties() -> None
     assert all(value < 0 for value in advantages[1:])
     assert abs(sum(advantages)) < 1e-7
     assert sibling_advantages([0.25] * BRANCH_WIDTH) == [0.0] * BRANCH_WIDTH
+
+
+def test_action_prompt_prefills_the_parser_contract() -> None:
+    class Tokenizer:
+        def apply_chat_template(
+            self,
+            messages: list[dict[str, str]],
+            *,
+            tokenize: bool,
+            add_generation_prompt: bool,
+        ) -> str:
+            assert messages == [{"role": "user", "content": "repair"}]
+            assert tokenize is False
+            assert add_generation_prompt is True
+            return "<assistant>"
+
+    assert render_action_prompt(Tokenizer(), "repair") == '<assistant>{"tool":'
 
 
 def test_wilson_interval_preserves_uncertainty_at_zero_and_perfect_rates() -> None:
