@@ -22,6 +22,8 @@ ENVIRONMENT_REVISION = "repository-repair-simulator@3"
 VERIFIER_REVISION = "repository-repair-hidden-state@3"
 ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@2"
 BRANCH_WIDTH = 4
+MAXIMUM_EFFICIENCY_PENALTY = 0.05
+ACCEPTED_ACTION_PENALTY = 0.005
 MAX_OBSERVATION_CHARS = 3_000
 MAX_FILE_CHARS = 1_500
 MAX_EDIT_CHARS = 500
@@ -1010,13 +1012,34 @@ class RepositoryRepairEnvironment:
                 failing.append(fault.test_name)
         return len(self.task.faults) - len(failing), failing
 
-    def _reward(self) -> float:
+    def reward_components(self) -> dict[str, float | int | bool]:
         fixed, _ = self._test_results()
-        progress = fixed / len(self.task.faults)
-        action_cost = 0.01 * len(self.steps)
-        if fixed == len(self.task.faults):
-            return round(max(0.0, 1.0 - action_cost), 6)
-        return round(max(0.0, 0.2 * progress - action_cost), 6)
+        hidden_correctness = self.terminal and self.terminal_reason == "solved"
+        accepted_action_count = sum(step.accepted for step in self.steps)
+        malformed_action_count = sum(step.action is None for step in self.steps)
+        verifier_submission_count = sum(
+            step.accepted and step.tool in {"test", "finish"} for step in self.steps
+        )
+        accepted_action_cost = -min(
+            MAXIMUM_EFFICIENCY_PENALTY,
+            ACCEPTED_ACTION_PENALTY * accepted_action_count,
+        )
+        terminal_aggregate = round(1.0 + accepted_action_cost, 6) if hidden_correctness else 0.0
+        return {
+            "hidden_correctness": hidden_correctness,
+            "public_verifier_progress": round(fixed / len(self.task.faults), 6),
+            "accepted_action_cost": round(accepted_action_cost, 6),
+            "token_cost": 0.0,
+            "verifier_submission_cost": 0.0,
+            "malformed_action_penalty": 0.0,
+            "terminal_aggregate": terminal_aggregate,
+            "accepted_action_count": accepted_action_count,
+            "malformed_action_count": malformed_action_count,
+            "verifier_submission_count": verifier_submission_count,
+        }
+
+    def _reward(self) -> float:
+        return float(self.reward_components()["terminal_aggregate"])
 
     def initial_observation(self) -> str:
         value = {

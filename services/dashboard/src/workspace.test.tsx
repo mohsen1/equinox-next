@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProofDetailPage, ProofsPage } from "./pages/proofs";
-import { RunsPage } from "./pages/runs";
+import { ResearchRunPage, RunsPage } from "./pages/runs";
 import { BrowserRouter, Route, Routes } from "./router";
 
 function response(body: unknown) {
@@ -94,6 +94,117 @@ describe("Runs and Proofs workspaces", () => {
     const time = container.querySelector("time");
     expect(time?.textContent).toBe("4 min ago");
     expect(time?.getAttribute("aria-label")).not.toBe(time?.textContent);
+  });
+
+  it("shows validation history, protocol health, and provider reserves", async () => {
+    const timestamp = new Date().toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        response({
+          execution_id: "runpod-proof-observer",
+          name: "Repository repair post-training",
+          workload_id: "repository-repair",
+          model_id: "Qwen/Qwen2.5-Coder-3B-Instruct",
+          branch_width: 4,
+          complexity_strategy: "adaptive",
+          status: "RUNNING",
+          provider_name: "RunPod",
+          provider_handle: "runpod://pods/observer",
+          resource_profile: {
+            gpu_id: "NVIDIA A40",
+            cloud_type: "SECURE",
+            hourly_cost_usd: 0.44,
+            maximum_hourly_cost_usd: 0.5,
+          },
+          progress: {
+            phase: "training",
+            update: 6,
+            maximum_updates: 120,
+            policy_update_count: 4,
+            current_level: 0,
+            maximum_level: 3,
+            exact_rate: 0.75,
+            exact_rate_95ci: [0.40927, 0.928522],
+            validation_examples: 8,
+            evaluation_split: "validation",
+            informative_group_rate: 0.5,
+            action_protocol_validity_rate: 0.99,
+            recent_malformed_action_rate: 0.01,
+            total_sampled_actions: 214,
+            elapsed_seconds: 681,
+            training_remaining_seconds: 750,
+            final_evaluation_reserve_seconds: 2700,
+            active_complexity: {
+              level: 0,
+              file_count: 4,
+              fault_count: 1,
+              dependency_depth: 1,
+              repair_horizon: 8,
+            },
+            baseline_validation: {
+              level: 0,
+              examples: 8,
+              exact_successes: 5,
+              exact_rate: 0.625,
+              exact_rate_95ci: [0.305738, 0.863158],
+            },
+            best_validation: {
+              update: 5,
+              level: 0,
+              exact_successes: 6,
+              exact_rate: 0.75,
+              exact_rate_95ci: [0.40927, 0.928522],
+            },
+            validation_history: [
+              {
+                update: 5,
+                level: 0,
+                examples: 8,
+                exact_successes: 6,
+                exact_rate: 0.75,
+                exact_rate_95ci: [0.40927, 0.928522],
+                mastery_streak: 0,
+              },
+            ],
+          },
+          proof_id: null,
+          receipt_digest: null,
+          started_at: timestamp,
+          updated_at: timestamp,
+          completed_at: null,
+          teardown_confirmed: false,
+        }),
+      ),
+    );
+    window.history.replaceState(
+      null,
+      "",
+      "/runs/research/runpod-proof-observer",
+    );
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <BrowserRouter>
+          <Routes>
+            <Route
+              path="/runs/research/:executionId"
+              element={<ResearchRunPage />}
+            />
+          </Routes>
+        </BrowserRouter>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("6 / 120 · 4 policy");
+    expect(container.textContent).toContain("+12.5 pts vs baseline");
+    expect(container.textContent).toContain("99.0% valid");
+    expect(container.textContent).toContain("1.0% malformed recent");
+    expect(container.textContent).toContain("12m 30s training");
+    expect(container.textContent).toContain("45m 0s evaluation");
+    expect(container.textContent).toContain("Best retained");
   });
 
   it("links each proof row to focused proof evidence", async () => {

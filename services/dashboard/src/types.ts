@@ -93,6 +93,19 @@ export interface ResearchComputeExecution {
     post_training_completed?: boolean;
     informative_group_rate?: number;
     policy_update_count?: number;
+    action_protocol_validity_rate?: number;
+    recent_malformed_action_rate?: number;
+    consecutive_uninformative_groups?: number;
+    regression_streak?: number;
+    training_remaining_seconds?: number;
+    final_evaluation_reserve_seconds?: number;
+    provider_remaining_seconds?: number;
+    rollback_applied?: boolean;
+    baseline_validation?: ResearchValidationSummary;
+    best_validation?: ResearchValidationSummary;
+    validation_history?: ResearchValidationSummary[];
+    curriculum_history?: ResearchTrajectoryPromotion[];
+    active_complexity?: ResearchComplexity;
     evaluation_completed?: number;
     evaluation_total?: number;
     claim_strength?: string;
@@ -199,6 +212,32 @@ export interface ResearchLevelObservation {
   >;
 }
 
+export interface ResearchComplexity {
+  level: number;
+  file_count: number;
+  fault_count: number;
+  dependency_depth: number;
+  repair_horizon: number;
+}
+
+export interface ResearchValidationSummary {
+  update?: number;
+  level?: number;
+  examples?: number;
+  exact_successes?: number;
+  exact_rate?: number;
+  exact_rate_95ci?: [number, number];
+  checkpoint_successes?: number;
+  checkpoint_rate?: number;
+  checkpoint_rate_95ci?: [number, number];
+  action_protocol_validity_rate?: number;
+  mastered?: boolean;
+  mastery_streak?: number;
+  regression_streak?: number;
+  best_checkpoint?: number;
+  elapsed_seconds?: number;
+}
+
 export interface ResearchTrajectoryCheckpoint extends ResearchLevelObservation {
   update: number;
   training_branch_pass_rate?: number;
@@ -208,6 +247,8 @@ export interface ResearchTrajectoryCheckpoint extends ResearchLevelObservation {
   informative_group_rate?: number;
   policy_update_count?: number;
   mastery_streak?: number;
+  regression_streak?: number;
+  best_checkpoint?: number;
   elapsed_seconds?: number;
 }
 
@@ -219,6 +260,13 @@ export interface ResearchTrajectoryPromotion {
   minimum_domain_exact_rate?: number;
   checkpoint_rate?: number;
   mastery_windows: number;
+  reason?: string;
+  from_complexity?: ResearchComplexity;
+  to_complexity?: ResearchComplexity;
+  changed_dimensions?: Record<string, { from: number; to: number }>;
+  replay_probability?: number;
+  minimum_level?: number;
+  maximum_level?: number;
 }
 
 export interface ResearchBranchStep {
@@ -251,6 +299,24 @@ export interface ResearchBranchSibling {
   sampling_seed?: number;
   terminal_reason?: string | null;
   trajectory_digest?: string;
+  completion_tokens?: number;
+  effective_batch_weight?: number;
+  reward_components?: {
+    hidden_correctness: boolean;
+    public_verifier_progress: number;
+    accepted_action_cost: number;
+    token_cost: number;
+    verifier_submission_cost: number;
+    malformed_action_penalty: number;
+    terminal_aggregate: number;
+    accepted_action_count: number;
+    malformed_action_count: number;
+    verifier_submission_count: number;
+  };
+  failure_classification?: Array<{
+    category: string;
+    source: "typed" | "heuristic";
+  }>;
   steps?: ResearchBranchStep[];
 }
 
@@ -293,6 +359,17 @@ export interface ResearchBranchSnapshot {
   excluded?: boolean;
   exclusion_reason?: string | null;
   replay?: boolean;
+  optimizer_update?: {
+    applied: boolean;
+    objective_id?: string;
+    adapter_revision?: string;
+    learning_rate?: number;
+    policy_loss?: number;
+    gradient_norm?: number;
+    training_examples?: number;
+    effective_batch_weight?: number;
+    informative_group_count?: number;
+  } | null;
   siblings: ResearchBranchSibling[];
 }
 
@@ -315,6 +392,9 @@ export interface ResearchTrajectory {
   final_exact_rate?: number;
   exact_gain?: number;
   stop_reason?: string;
+  best_validation?: ResearchValidationSummary;
+  rollback_applied?: boolean;
+  action_protocol_validity_rate?: number;
   checkpoints: ResearchTrajectoryCheckpoint[];
   promotions: ResearchTrajectoryPromotion[];
   branch_snapshots: ResearchBranchSnapshot[];

@@ -55,6 +55,9 @@ simulator with real repositories and test commands.
 - Siblings use distinct sampling seeds.
 - Infrastructure failures are excluded rather than scored as candidate failure.
 - At least two trustworthy sibling returns are required.
+- Hidden-verifier correctness is lexicographic. Incorrect or unfinished trajectories
+  receive zero terminal reward. Correct trajectories receive `1.0` minus an
+  accepted-action adjustment capped at `0.05`.
 - Equal sibling returns produce exactly zero relative advantage.
 - The sibling standard-deviation denominator has a `0.1` floor, so small
   action-cost differences cannot be amplified into full-scale policy signals.
@@ -63,6 +66,14 @@ simulator with real repositories and test commands.
   merely because an action serialized to more tokens.
 - The optimizer consumes policy samples only; no teacher targets or fallback updates are
   allowed.
+- The active-level held-out baseline must show at least `99%` parseable, schema-valid
+  actions before strategic RL begins.
+- The adapter is checkpointed before each validation window. Equinox retains the best
+  exact-solve checkpoint for the active level and uses it for final evaluation.
+- Two consecutive validation windows below the retained exact-solve count stop training
+  and restore the best checkpoint. Five consecutive groups without trustworthy relative
+  signal also stop training. A complete recent window above `5%` malformed actions stops
+  the run before another optimizer update.
 - Rotating validation windows control curriculum decisions. A level advances only after
   two consecutive windows whose 95% Wilson lower bounds exceed the mastery threshold for
   both exact solve rate and checkpoint rate. Validation-window seeds use a `1,000,003`
@@ -120,6 +131,14 @@ four continuation lanes, every action and observation, terminal verifier results
 returns, sibling advantages, exclusions, complexity level, replay status, and the update
 that consumed the trajectories.
 
+The run overview also shows the baseline and rotating validation history, best retained
+checkpoint, regression streak, action-protocol validity, recent malformed-action rate,
+policy-update count, active complexity vector, and remaining training and evaluation
+reserves. Branch detail records hidden correctness, public-verifier progress, bounded
+action cost, malformed actions, verifier submissions, completion tokens, effective batch
+weight, learning rate, loss, gradient norm, and typed or explicitly heuristic failure
+classification.
+
 Research execution JSON is the initial persistence boundary because the current
 orchestrator contracts contain CAD-specific schema constants. The result must retain
 complete step lineage. Generalizing the core scientific schema is a follow-up informed by
@@ -171,6 +190,26 @@ repairs such as `combine`/`multiply`/`subtract`/`square`. Boolean operator repai
 also mirror across `different`/`negate`/`both`. This run therefore measures transfer to
 unseen fixtures within a narrow repair grammar; it is not evidence of broad
 repository-repair generalization.
+
+## 2026-07-27 stability revision
+
+Objective v2 removed amplified efficiency gradients but did not produce monotonic
+validation improvement. With seed `107`, exact solve moved from a `62.5%` active-level
+baseline to `75%`, `50%`, `62.5%`, `50%`, and `75%` at updates 5 through 25. This was
+materially more stable than objective v1, which fell to `12.5%` at updates 15 and 20,
+but v2 still trained past its best observed checkpoint.
+
+Objective v3 is `leave-one-out-correctness-gated-reinforce@3` under workload revision
+`runpod-repository-repair-loo-reinforce@9`. It adds correctness-gated reward, durable
+pre-validation and best-adapter checkpoints, best-checkpoint final evaluation,
+validation-regression rollback, no-signal and malformed-action stops, protocol validity,
+reward decomposition, optimizer provenance, curriculum decision history, and provider
+reserve telemetry.
+
+The v2 run ended at update 26 when a local API restart interrupted the ingestion
+transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
+partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and
+zero ongoing provider spend. It is not a completed paired evaluation.
 
 ## Non-goals
 

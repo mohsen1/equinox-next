@@ -653,6 +653,24 @@ function BranchInspector({
                   : "Prefix masked"
               }
             />
+            <Fact
+              label="Group"
+              value={
+                snapshot.excluded
+                  ? friendlyStatus(snapshot.exclusion_reason ?? "Excluded")
+                  : snapshot.learning_signal
+                    ? "Eligible"
+                    : "No relative signal"
+              }
+            />
+            <Fact
+              label="Batch weight"
+              value={
+                sibling?.effective_batch_weight === undefined
+                  ? "Masked"
+                  : formatSigned(sibling.effective_batch_weight)
+              }
+            />
           </dl>
           <div className="branch-evidence">
             <section>
@@ -667,6 +685,113 @@ function BranchInspector({
               <summary>State</summary>
               <code>{step.state_digest_after}</code>
             </details>
+            {sibling?.reward_components ? (
+              <details>
+                <summary>
+                  Reward ·{" "}
+                  {formatReward(sibling.reward_components.terminal_aggregate)}
+                </summary>
+                <dl className="branch-evidence-facts">
+                  <Fact
+                    label="Hidden correctness"
+                    value={
+                      sibling.reward_components.hidden_correctness
+                        ? "1.000"
+                        : "0.000"
+                    }
+                  />
+                  <Fact
+                    label="Public progress"
+                    value={formatReward(
+                      sibling.reward_components.public_verifier_progress,
+                    )}
+                  />
+                  <Fact
+                    label="Action cost"
+                    value={formatSigned(
+                      sibling.reward_components.accepted_action_cost,
+                    )}
+                  />
+                  <Fact
+                    label="Malformed"
+                    value={String(
+                      sibling.reward_components.malformed_action_count,
+                    )}
+                  />
+                  <Fact
+                    label="Submissions"
+                    value={String(
+                      sibling.reward_components.verifier_submission_count,
+                    )}
+                  />
+                  <Fact
+                    label="Completion tokens"
+                    value={String(sibling.completion_tokens ?? 0)}
+                  />
+                </dl>
+              </details>
+            ) : null}
+            {snapshot.optimizer_update ? (
+              <details>
+                <summary>
+                  Optimizer ·{" "}
+                  {snapshot.optimizer_update.applied ? "applied" : "skipped"}
+                </summary>
+                <dl className="branch-evidence-facts">
+                  <Fact
+                    label="Adapter"
+                    value={snapshot.optimizer_update.adapter_revision ?? "—"}
+                  />
+                  <Fact
+                    label="Learning rate"
+                    value={
+                      snapshot.optimizer_update.learning_rate?.toExponential(
+                        1,
+                      ) ?? "—"
+                    }
+                  />
+                  <Fact
+                    label="Gradient norm"
+                    value={
+                      snapshot.optimizer_update.gradient_norm?.toFixed(3) ?? "—"
+                    }
+                  />
+                  <Fact
+                    label="Policy loss"
+                    value={
+                      snapshot.optimizer_update.policy_loss?.toFixed(3) ?? "—"
+                    }
+                  />
+                  <Fact
+                    label="Examples"
+                    value={String(
+                      snapshot.optimizer_update.training_examples ?? 0,
+                    )}
+                  />
+                  <Fact
+                    label="Effective weight"
+                    value={
+                      snapshot.optimizer_update.effective_batch_weight?.toFixed(
+                        3,
+                      ) ?? "—"
+                    }
+                  />
+                </dl>
+              </details>
+            ) : null}
+            {sibling?.failure_classification?.length ? (
+              <details>
+                <summary>Failure classification</summary>
+                <ul className="branch-failure-list">
+                  {sibling.failure_classification.map((item) => (
+                    <li key={`${item.category}-${item.source}`}>
+                      {friendlyStatus(item.category)}
+                      <small>{item.source}</small>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
           </div>
         </>
       ) : sibling ? (

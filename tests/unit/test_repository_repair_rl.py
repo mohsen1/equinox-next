@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from research.runpod.repository_repair_rl import (
     WORKLOAD_REVISION,
     BranchCollection,
     GeneratedAction,
+    action_protocol_counts,
     bounded_final_evaluation_reserve,
     checkpoint_target_disposition,
     collect_branch_group,
@@ -29,12 +31,16 @@ from research.runpod.repository_repair_rl import (
     discarded_collection_accounting,
     emit_progress,
     evaluation_reward_summary,
+    lightweight_validation_history,
+    next_uninformative_group_streak,
     observation_mastered,
     paired_change_summary,
     persist_checkpoint,
+    persist_named_adapter,
     policy_examples,
     positive_environment_integer,
     post_training_claim_strength,
+    recent_action_protocol_summary,
     remove_orphan_checkpoint_target,
     remove_stale_checkpoint_targets,
     render_action_prompt,
@@ -45,6 +51,7 @@ from research.runpod.repository_repair_rl import (
     training_loop_entry,
     training_stop_decision,
     validate_resume_state,
+    validation_regression_decision,
     validation_window_seed,
     wilson_interval,
     workload_attempt_from_environment,
@@ -87,6 +94,66 @@ def test_sibling_advantage_floor_does_not_amplify_tiny_efficiency_gaps() -> None
     advantages = sibling_advantages([0.95, 0.94, 0.94, 0.94])
 
     assert advantages == [0.1, -0.03333333, -0.03333333, -0.03333333]
+
+
+def test_recent_action_protocol_window_is_group_bounded() -> None:
+    summary = recent_action_protocol_summary(
+        [(20, 0), (12, 1), (30, 0)],
+        maximum_groups=2,
+    )
+
+    assert summary == {
+        "groups": 2,
+        "window_complete": True,
+        "total_actions": 42,
+        "malformed_actions": 1,
+        "validity_rate": 0.97619,
+        "malformed_rate": 0.02381,
+    }
+
+
+def test_validation_regression_requires_two_lower_windows() -> None:
+    assert validation_regression_decision(
+        best_exact_successes=6,
+        observed_exact_successes=5,
+        consecutive_regressions=0,
+    ) == (False, 6, 1)
+    assert validation_regression_decision(
+        best_exact_successes=6,
+        observed_exact_successes=4,
+        consecutive_regressions=1,
+    ) == (False, 6, 2)
+    assert validation_regression_decision(
+        best_exact_successes=6,
+        observed_exact_successes=7,
+        consecutive_regressions=2,
+    ) == (True, 7, 0)
+    assert validation_regression_decision(
+        best_exact_successes=6,
+        observed_exact_successes=6,
+        consecutive_regressions=1,
+    ) == (False, 6, 0)
+
+
+def test_lightweight_validation_history_drops_task_payloads() -> None:
+    assert lightweight_validation_history(
+        [
+            {
+                "update": 5,
+                "level": 0,
+                "exact_rate": 0.75,
+                "exact_successes": 6,
+                "task_outcomes": [{"task_id": "hidden"}],
+            }
+        ]
+    ) == [
+        {
+            "update": 5,
+            "level": 0,
+            "exact_successes": 6,
+            "exact_rate": 0.75,
+        }
+    ]
 
 
 def test_action_prompt_prefills_the_parser_contract() -> None:
@@ -659,6 +726,41 @@ def test_checkpoint_persistence_recovers_each_crash_window(
     assert not list(checkpoints_root.rglob("*.pending"))
 
 
+def test_named_adapter_checkpoint_replaces_atomically_with_metadata(
+    tmp_path: Path,
+) -> None:
+    checkpoints_root = tmp_path / "checkpoints"
+
+    def save_adapter(target: str) -> None:
+        Path(target, "adapter_config.json").write_text("{}", encoding="utf-8")
+        Path(target, "adapter_model.safetensors").write_text("weights", encoding="utf-8")
+
+    persist_named_adapter(
+        checkpoints_root=str(checkpoints_root),
+        name="best-validation",
+        metadata={"kind": "best_validation", "update": 5},
+        save_adapter=save_adapter,
+    )
+    persist_named_adapter(
+        checkpoints_root=str(checkpoints_root),
+        name="best-validation",
+        metadata={"kind": "best_validation", "update": 10},
+        save_adapter=save_adapter,
+    )
+
+    metadata = json.loads(
+        (checkpoints_root / "best-validation" / "checkpoint-metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metadata == {
+        "schema_version": 1,
+        "kind": "best_validation",
+        "update": 10,
+    }
+    assert not (checkpoints_root / "best-validation.pending").exists()
+
+
 def test_discarded_collection_accounting_includes_prefix_and_all_siblings() -> None:
     task = make_task(0, seed=31)
 
@@ -787,7 +889,11 @@ def test_serialized_branch_has_one_prefix_checkpoint_and_four_step_lanes() -> No
         stochastic=False,
         sampling_seed=100,
     )
-    serialized = serialize_branch_group(collection, update=3)
+    serialized = serialize_branch_group(
+        collection,
+        update=3,
+        optimizer_update={"applied": False, "effective_batch_weight": 0.0},
+    )
 
     assert serialized["checkpoint"]["fidelity"] == "logical_restore"
     assert serialized["checkpoint"]["static_branch_width"] == 4
@@ -796,6 +902,13 @@ def test_serialized_branch_has_one_prefix_checkpoint_and_four_step_lanes() -> No
     assert all(len(sibling["steps"]) == 4 for sibling in serialized["siblings"])
     assert len({sibling["sampling_seed"] for sibling in serialized["siblings"]}) == 4
     assert all(sibling["passed"] for sibling in serialized["siblings"])
+    assert all(
+        sibling["reward_components"]["terminal_aggregate"] == 0.97
+        for sibling in serialized["siblings"]
+    )
+    assert serialized["optimizer_update"]["applied"] is False
+    assert action_protocol_counts(collection) == (18, 0)
+    assert next_uninformative_group_streak(4, [collection]) == 5
 
 
 def test_policy_examples_never_include_prefix_and_split_weight_by_branch_actions() -> None:
@@ -809,8 +922,18 @@ def test_policy_examples_never_include_prefix_and_split_weight_by_branch_actions
     collection = BranchCollection(
         task=task,
         snapshot=None,
-        prefix=None,  # type: ignore[arg-type]
-        siblings=[],
+        prefix=SimpleNamespace(steps=[object(), object()]),  # type: ignore[arg-type]
+        siblings=[
+            SimpleNamespace(
+                steps=[
+                    object(),
+                    object(),
+                    SimpleNamespace(accepted=True),
+                    SimpleNamespace(accepted=True),
+                ]
+            )
+            for _ in range(4)
+        ],  # type: ignore[list-item]
         generated_by_sibling=[[generated, generated] for _ in range(4)],
         sampling_seeds=[1, 2, 3, 4],
         returns=[1.0, 0.0, 0.0, 0.0],
@@ -824,6 +947,50 @@ def test_policy_examples_never_include_prefix_and_split_weight_by_branch_actions
     assert len(examples) == 8
     assert [example.weight for example in examples[:2]] == [1.5, 1.5]
     assert all(example.weight == -0.5 for example in examples[2:])
+
+
+def test_policy_examples_exclude_rejected_post_branch_actions() -> None:
+    task = make_task(0, seed=8)
+    accepted = GeneratedAction(
+        response='{"tool":"test"}',
+        input_ids=(1, 2),
+        attention_mask=(1, 1),
+        completion_mask=(0, 1),
+    )
+    rejected = GeneratedAction(
+        response='{"tool":"finish"}',
+        input_ids=(3, 4),
+        attention_mask=(1, 1),
+        completion_mask=(0, 1),
+    )
+    collection = BranchCollection(
+        task=task,
+        snapshot=None,
+        prefix=SimpleNamespace(steps=[object(), object()]),  # type: ignore[arg-type]
+        siblings=[
+            SimpleNamespace(
+                steps=[
+                    object(),
+                    object(),
+                    SimpleNamespace(accepted=True),
+                    SimpleNamespace(accepted=False),
+                ]
+            )
+            for _ in range(4)
+        ],  # type: ignore[list-item]
+        generated_by_sibling=[[accepted, rejected] for _ in range(4)],
+        sampling_seeds=[1, 2, 3, 4],
+        returns=[1.0, 0.0, 0.0, 0.0],
+        advantages=[3.0, -1.0, -1.0, -1.0],
+        exclusion_reason=None,
+        replay=False,
+    )
+
+    examples = policy_examples(collection)
+
+    assert len(examples) == 4
+    assert all(example.generated is accepted for example in examples)
+    assert [example.weight for example in examples] == [3.0, -1.0, -1.0, -1.0]
 
 
 def test_representative_branch_prefers_informative_frontier_over_replay_and_exclusion() -> None:

@@ -214,6 +214,20 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "post_training_completed": result.get("post_training_completed"),
         "informative_group_rate": result.get("informative_group_rate"),
         "policy_update_count": result.get("policy_update_count"),
+        "action_protocol_validity_rate": result.get("action_protocol_validity_rate"),
+        "recent_malformed_action_rate": (
+            result.get("recent_action_protocol", {}).get("malformed_rate")
+            if isinstance(result.get("recent_action_protocol"), dict)
+            else None
+        ),
+        "best_validation": result.get("best_validation"),
+        "rollback_applied": result.get("rollback_applied"),
+        "validation_history": result.get("history"),
+        "curriculum_history": result.get("promotions"),
+        "reward_contract": result.get("reward_contract"),
+        "optimizer_contract": result.get("optimizer_contract"),
+        "final_evaluation_reserve_seconds": result.get("final_evaluation_reserve_seconds"),
+        "target_runtime_seconds": result.get("target_runtime_seconds"),
         "claim_strength": result.get("claim_strength"),
         "seed_count": result.get("seed_count", result.get("optimization_seed_count")),
         "objective": result.get("objective", result.get("objective_id")),
@@ -269,8 +283,8 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
 def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
     initial_by_level = result.get("initial_by_level")
     final_by_level = result.get("final_by_level")
-    history = result.get("history")
-    promotions = result.get("promotions")
+    history = result.get("history", result.get("validation_history"))
+    promotions = result.get("promotions", result.get("curriculum_history"))
     branch_snapshots = result.get("branch_snapshots")
     latest_branch_snapshot = result.get("latest_branch_snapshot")
     persisted_branch_snapshots = (
@@ -305,6 +319,11 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
             None if result.get("final_evaluation_partial") is True else result.get("reward_gain")
         ),
         "stop_reason": result.get("stop_reason"),
+        "best_validation": result.get("best_validation"),
+        "rollback_applied": result.get("rollback_applied"),
+        "action_protocol_validity_rate": result.get("action_protocol_validity_rate"),
+        "reward_contract": result.get("reward_contract"),
+        "optimizer_contract": result.get("optimizer_contract"),
         "checkpoints": (
             [item for item in history if isinstance(item, dict)]
             if isinstance(history, list)

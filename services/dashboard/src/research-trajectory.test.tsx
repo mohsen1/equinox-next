@@ -4,7 +4,11 @@ import {
   buildTrajectorySteps,
   TrajectoryOutline,
 } from "./pages/research-trajectory";
-import { BranchOutline, buildBranchFlow } from "./pages/research-branches";
+import {
+  BranchOutline,
+  buildBranchFlow,
+  ResearchBranchWorkspace,
+} from "./pages/research-branches";
 import type {
   ResearchBranchSnapshot,
   ResearchBranchStep,
@@ -176,6 +180,17 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
   best_sibling_index: 0,
   learning_signal: true,
   replay: false,
+  optimizer_update: {
+    applied: true,
+    objective_id: "leave-one-out-correctness-gated-reinforce@3",
+    adapter_revision: "update-5",
+    learning_rate: 0.00002,
+    policy_loss: 0.12,
+    gradient_norm: 0.34,
+    training_examples: 8,
+    effective_batch_weight: 2.5,
+    informative_group_count: 1,
+  },
   siblings: Array.from({ length: 4 }, (_, index) => ({
     index,
     sampling_seed: 100 + index,
@@ -185,6 +200,24 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
     policy_signal: true,
     terminal_reason: index === 0 ? "solved" : "finished_with_failures",
     trajectory_digest: `sha256:sibling-${index}`,
+    completion_tokens: 24,
+    effective_batch_weight: index === 0 ? 0.75 : -0.25,
+    reward_components: {
+      hidden_correctness: index === 0,
+      public_verifier_progress: index === 0 ? 1 : 0,
+      accepted_action_cost: index === 0 ? -0.03 : -0.02,
+      token_cost: 0,
+      verifier_submission_cost: 0,
+      malformed_action_penalty: 0,
+      terminal_aggregate: index === 0 ? 0.97 : 0,
+      accepted_action_count: index === 0 ? 6 : 4,
+      malformed_action_count: 0,
+      verifier_submission_count: 1,
+    },
+    failure_classification:
+      index === 0
+        ? []
+        : [{ category: "valid_candidate_failure", source: "typed" as const }],
     steps: [branchStep(2, "edit"), branchStep(3, "finish", true)],
   })),
 };
@@ -278,5 +311,24 @@ describe("research trajectory", () => {
     expect(html.match(/>Shared</g)).toHaveLength(2);
     expect(html.match(/Sibling [1-4]/g)).toHaveLength(8);
     expect(html).toContain('class="selected"');
+  });
+
+  it("exposes reward and optimizer provenance in the branch inspector", () => {
+    const html = renderToStaticMarkup(
+      <ResearchBranchWorkspace
+        snapshot={multiStepSnapshot}
+        selectedSibling={multiStepSnapshot.siblings[0]}
+        selectedActionId="sibling-0-3"
+        view="outline"
+        selectSibling={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Reward · 0.970");
+    expect(html).toContain("Hidden correctness");
+    expect(html).toContain("Optimizer · applied");
+    expect(html).toContain("update-5");
+    expect(html).toContain("Batch weight");
   });
 });

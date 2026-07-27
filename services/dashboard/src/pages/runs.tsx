@@ -29,7 +29,10 @@ import {
   shortModelName,
   stringValue,
 } from "../runs-helpers";
-import type { ResearchComputeExecution } from "../types";
+import type {
+  ResearchComputeExecution,
+  ResearchValidationSummary,
+} from "../types";
 import { ResearchRunTabs } from "./research-trajectory";
 
 export function RunsPage() {
@@ -216,6 +219,15 @@ export function ResearchRunPage() {
                 </Section>
               </div>
 
+              {validationRows(run).length ? (
+                <Section title="Validation">
+                  <ValidationHistory
+                    rows={validationRows(run)}
+                    best={run.progress.best_validation}
+                  />
+                </Section>
+              ) : null}
+
               {run.status === "SUCCEEDED" ? (
                 <Section title="Result">
                   <KeyValue items={resultItems(run, claimStrength)} />
@@ -277,6 +289,18 @@ function progressItems(run: ResearchComputeExecution) {
   const sampledCompletions = numberValue(progress.sampled_completions);
   const elapsed = numberValue(progress.elapsed_seconds);
   const informativeGroupRate = numberValue(progress.informative_group_rate);
+  const policyUpdates = numberValue(progress.policy_update_count);
+  const protocolValidity = numberValue(progress.action_protocol_validity_rate);
+  const recentMalformedRate = numberValue(
+    progress.recent_malformed_action_rate,
+  );
+  const totalActions = numberValue(progress.total_sampled_actions);
+  const trainingRemaining = numberValue(progress.training_remaining_seconds);
+  const evaluationReserve = numberValue(
+    progress.final_evaluation_reserve_seconds,
+  );
+  const baselineRate = progress.baseline_validation?.exact_rate ?? null;
+  const activeComplexity = progress.active_complexity;
   const evaluationCompleted = numberValue(progress.evaluation_completed);
   const evaluationTotal = numberValue(progress.evaluation_total);
   const progressPhase = stringValue(progress.phase);
@@ -300,14 +324,24 @@ function progressItems(run: ResearchComputeExecution) {
         ? `${evaluationCompleted} / ${evaluationTotal} tasks`
         : update === null
           ? "Not started"
-          : `${update}${maximumUpdates !== null ? ` / ${maximumUpdates}` : ""}`,
+          : `${update}${maximumUpdates !== null ? ` / ${maximumUpdates}` : ""}${
+              policyUpdates !== null ? ` · ${policyUpdates} policy` : ""
+            }`,
     },
     {
       label: "Curriculum",
       value:
         currentLevel === null
           ? "Awaiting evaluation"
-          : `Level ${currentLevel}${maximumLevel !== null ? ` of ${maximumLevel}` : ""}`,
+          : `Level ${currentLevel}${
+              maximumLevel !== null ? ` of ${maximumLevel}` : ""
+            }${
+              activeComplexity
+                ? ` · ${activeComplexity.file_count} files · ${activeComplexity.fault_count} fault${
+                    activeComplexity.fault_count === 1 ? "" : "s"
+                  } · horizon ${activeComplexity.repair_horizon}`
+                : ""
+            }`,
     },
     {
       label: aggregateTestMean
@@ -319,27 +353,143 @@ function progressItems(run: ResearchComputeExecution) {
             : evaluationSplit === "validation"
               ? "Validation solve"
               : "Solve rate",
-      value: formatRateInterval(
+      value: `${formatRateInterval(
         validationRate,
         validationInterval,
         evaluationExamples,
         "Awaiting evaluation",
-      ),
+      )}${
+        baselineRate !== null && validationRate !== null
+          ? ` · ${formatSignedPoints(validationRate - baselineRate)} vs baseline`
+          : ""
+      }`,
     },
     ...(informativeGroupRate === null
       ? []
       : [
           { label: "Informative groups", value: percent(informativeGroupRate) },
         ]),
+    ...(protocolValidity === null && recentMalformedRate === null
+      ? []
+      : [
+          {
+            label: "Action protocol",
+            value: `${
+              protocolValidity === null
+                ? "Validity pending"
+                : `${percent(protocolValidity)} valid`
+            }${
+              recentMalformedRate === null
+                ? ""
+                : ` · ${percent(recentMalformedRate)} malformed recent`
+            }`,
+          },
+        ]),
     {
-      label: "Completions",
-      value: sampledCompletions?.toLocaleString() ?? "0",
+      label: totalActions === null ? "Completions" : "Actions",
+      value:
+        totalActions?.toLocaleString() ??
+        sampledCompletions?.toLocaleString() ??
+        "0",
+    },
+    {
+      label: "Reserve",
+      value:
+        trainingRemaining === null && evaluationReserve === null
+          ? "Measuring"
+          : `${
+              trainingRemaining === null
+                ? "Training closed"
+                : `${formatDuration(trainingRemaining)} training`
+            }${
+              evaluationReserve === null
+                ? ""
+                : ` · ${formatDuration(evaluationReserve)} evaluation`
+            }`,
     },
     {
       label: "Elapsed",
       value: elapsed === null ? "—" : formatDuration(elapsed),
     },
   ];
+}
+
+function validationRows(
+  run: ResearchComputeExecution,
+): ResearchValidationSummary[] {
+  const baseline = run.progress.baseline_validation;
+  const history = run.progress.validation_history ?? [];
+  return [...(baseline ? [{ ...baseline, update: 0 }] : []), ...history];
+}
+
+function ValidationHistory({
+  rows,
+  best,
+}: {
+  rows: ResearchValidationSummary[];
+  best?: ResearchValidationSummary;
+}) {
+  return (
+    <div className="validation-history">
+      <table>
+        <thead>
+          <tr>
+            <th>Checkpoint</th>
+            <th>Exact</th>
+            <th>95% interval</th>
+            <th>Decision</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => {
+            const isBaseline = index === 0 && row.update === 0;
+            const isBest =
+              best?.update !== undefined && row.update === best.update;
+            return (
+              <tr key={`${row.update ?? "baseline"}-${row.level ?? 0}`}>
+                <td>
+                  {isBaseline ? "Baseline" : `Update ${row.update ?? "—"}`}
+                  <small>Level {row.level ?? 0}</small>
+                </td>
+                <td>
+                  {row.exact_rate === undefined ? "—" : percent(row.exact_rate)}
+                  {row.exact_successes !== undefined &&
+                  row.examples !== undefined ? (
+                    <small>
+                      {row.exact_successes} / {row.examples}
+                    </small>
+                  ) : null}
+                </td>
+                <td>{formatInterval(row.exact_rate_95ci)}</td>
+                <td>
+                  {isBest
+                    ? "Best retained"
+                    : row.mastered
+                      ? `Mastery ${row.mastery_streak ?? 1}`
+                      : row.regression_streak
+                        ? `Regression ${row.regression_streak}`
+                        : isBaseline
+                          ? "Reference"
+                          : "Continue"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function formatInterval(value?: [number, number]): string {
+  if (!value) return "—";
+  return `${percent(value[0])}–${percent(value[1])}`;
+}
+
+function formatSignedPoints(value: number): string {
+  const points = value * 100;
+  if (Math.abs(points) < 0.05) return "0.0 pts";
+  return `${points > 0 ? "+" : ""}${points.toFixed(1)} pts`;
 }
 
 function allocationItems(run: ResearchComputeExecution) {

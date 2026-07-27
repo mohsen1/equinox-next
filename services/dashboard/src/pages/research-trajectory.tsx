@@ -729,6 +729,26 @@ function TrajectoryInspector({
               label="Elapsed"
               value={formatDuration(checkpoint.elapsed_seconds)}
             />
+            <Fact
+              label="Regression"
+              value={
+                checkpoint.regression_streak
+                  ? `${checkpoint.regression_streak} window${
+                      checkpoint.regression_streak === 1 ? "" : "s"
+                    }`
+                  : "None"
+              }
+            />
+            <Fact
+              label="Retained"
+              value={
+                checkpoint.best_checkpoint === undefined
+                  ? "—"
+                  : checkpoint.best_checkpoint === 0
+                    ? "Baseline"
+                    : `Update ${checkpoint.best_checkpoint}`
+              }
+            />
           </dl>
           <DomainResults observation={checkpoint} />
         </>
@@ -749,11 +769,24 @@ function TrajectoryInspector({
             Level {step.promotion.from_level} → {step.promotion.to_level}
           </strong>
           <small>
-            {step.promotion.mastery_windows} mastery windows · minimum domain{" "}
-            {step.promotion.minimum_domain_exact_rate === undefined
-              ? "—"
-              : formatPercent(step.promotion.minimum_domain_exact_rate)}
+            {step.promotion.reason
+              ? friendlyStatus(step.promotion.reason)
+              : `${step.promotion.mastery_windows} mastery windows`}
           </small>
+          {step.promotion.changed_dimensions ? (
+            <dl>
+              {Object.entries(step.promotion.changed_dimensions).map(
+                ([dimension, change]) => (
+                  <div key={dimension}>
+                    <dt>{friendlyStatus(dimension)}</dt>
+                    <dd>
+                      {change.from} → {change.to}
+                    </dd>
+                  </div>
+                ),
+              )}
+            </dl>
+          ) : null}
         </div>
       ) : null}
       {step.kind === "final" ? (

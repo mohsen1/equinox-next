@@ -316,6 +316,18 @@ def test_teacher_continuation_solves_without_executing_repository_code() -> None
     assert last_step.terminal_reason == "solved"
     assert last_step.verifier_passed
     assert 0 < last_step.reward <= 1
+    assert environment.reward_components() == {
+        "hidden_correctness": True,
+        "public_verifier_progress": 1.0,
+        "accepted_action_cost": -0.05,
+        "token_cost": 0.0,
+        "verifier_submission_cost": 0.0,
+        "malformed_action_penalty": 0.0,
+        "terminal_aggregate": 0.95,
+        "accepted_action_count": 10,
+        "malformed_action_count": 0,
+        "verifier_submission_count": 2,
+    }
 
 
 @pytest.mark.parametrize(
@@ -389,5 +401,28 @@ def test_horizon_terminates_unsolved_trajectory() -> None:
     assert last_step.terminal
     assert last_step.terminal_reason == "horizon_exhausted"
     assert last_step.reward == 0
+    assert environment.reward_components()["public_verifier_progress"] == 0.0
+    assert environment.reward_components()["terminal_aggregate"] == 0.0
     with pytest.raises(RuntimeError):
         environment.step('{"tool":"test"}')
+
+
+def test_partial_progress_never_earns_terminal_reward() -> None:
+    task = make_task(2, seed=31)
+    environment = RepositoryRepairEnvironment(task)
+    first_fault = task.faults[0]
+    environment.step(
+        encode_action(
+            {
+                "tool": "edit",
+                "path": first_fault.path,
+                "old": first_fault.old,
+                "new": first_fault.new,
+            }
+        )
+    )
+    terminal = environment.step(encode_action({"tool": "finish"}))
+
+    assert terminal.terminal_reason == "finished_with_failures"
+    assert terminal.reward == 0.0
+    assert environment.reward_components()["public_verifier_progress"] == 0.5

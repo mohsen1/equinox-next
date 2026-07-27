@@ -80,8 +80,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@8"
-OBJECTIVE_ID = "leave-one-out-group-normalized-reinforce@2"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@9"
+OBJECTIVE_ID = "leave-one-out-correctness-gated-reinforce@3"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -104,6 +104,10 @@ LEARNING_RATE = 2e-5
 ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
+MINIMUM_PROTOCOL_VALIDITY_RATE = 0.99
+MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS = 5
+MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS = 2
+MAXIMUM_RECENT_MALFORMED_ACTION_RATE = 0.05
 PROGRESS_PATH = os.environ.get("EQUINOX_PROGRESS_PATH")
 
 
@@ -334,6 +338,89 @@ def post_branch_action_count(collections: list[BranchCollection]) -> int:
     )
 
 
+def action_protocol_counts(collection: BranchCollection) -> tuple[int, int]:
+    steps = [
+        *collection.prefix.steps,
+        *(
+            step
+            for sibling in collection.siblings
+            for step in sibling.steps[len(collection.prefix.steps) :]
+        ),
+    ]
+    return len(steps), sum(step.action is None for step in steps)
+
+
+def recent_action_protocol_summary(
+    group_counts: list[tuple[int, int]],
+    *,
+    maximum_groups: int,
+) -> dict[str, Any]:
+    recent = group_counts[-maximum_groups:]
+    total_actions = sum(total for total, _ in recent)
+    malformed_actions = sum(malformed for _, malformed in recent)
+    return {
+        "groups": len(recent),
+        "window_complete": len(recent) == maximum_groups,
+        "total_actions": total_actions,
+        "malformed_actions": malformed_actions,
+        "validity_rate": (
+            round((total_actions - malformed_actions) / total_actions, 6) if total_actions else None
+        ),
+        "malformed_rate": (round(malformed_actions / total_actions, 6) if total_actions else None),
+    }
+
+
+def next_uninformative_group_streak(
+    current: int,
+    collections: list[BranchCollection],
+) -> int:
+    streak = current
+    for collection in collections:
+        streak = 0 if collection.informative else streak + 1
+    return streak
+
+
+def validation_regression_decision(
+    *,
+    best_exact_successes: int,
+    observed_exact_successes: int,
+    consecutive_regressions: int,
+) -> tuple[bool, int, int]:
+    if observed_exact_successes > best_exact_successes:
+        return True, observed_exact_successes, 0
+    if observed_exact_successes < best_exact_successes:
+        return (
+            False,
+            best_exact_successes,
+            consecutive_regressions + 1,
+        )
+    return False, best_exact_successes, 0
+
+
+def lightweight_validation_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keys = (
+        "update",
+        "level",
+        "exact_successes",
+        "exact_rate",
+        "exact_rate_95ci",
+        "checkpoint_successes",
+        "checkpoint_rate",
+        "checkpoint_rate_95ci",
+        "examples",
+        "mastered",
+        "mastery_streak",
+        "policy_loss",
+        "gradient_norm",
+        "elapsed_seconds",
+        "validation_elapsed_seconds",
+        "final_evaluation_reserve_seconds",
+        "regression_streak",
+        "best_checkpoint",
+    )
+    return [{key: item[key] for key in keys if key in item} for item in history]
+
+
 def discarded_collection_accounting(
     collections: list[BranchCollection],
 ) -> tuple[int, int, int]:
@@ -458,6 +545,40 @@ def persist_checkpoint(
     fsync_directory(checkpoints_root)
 
 
+def persist_named_adapter(
+    *,
+    checkpoints_root: str,
+    name: str,
+    metadata: dict[str, Any],
+    save_adapter: Callable[[str], None],
+) -> None:
+    if not name or "/" in name or name.startswith("."):
+        raise ValueError("named adapter checkpoint is invalid")
+    os.makedirs(checkpoints_root, exist_ok=True)
+    target = os.path.join(checkpoints_root, name)
+    pending = target + ".pending"
+    if os.path.exists(pending):
+        remove_orphan_checkpoint_target(pending)
+    os.makedirs(pending)
+    save_adapter(pending)
+    metadata_path = os.path.join(pending, "checkpoint-metadata.json")
+    with open(metadata_path, "w", encoding="utf-8") as handle:
+        json.dump(
+            {"schema_version": 1, **metadata},
+            handle,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    fsync_tree(pending)
+    if os.path.exists(target):
+        remove_orphan_checkpoint_target(target)
+    os.replace(pending, target)
+    fsync_directory(checkpoints_root)
+
+
 def emit_progress(
     phase: str,
     message: str,
@@ -481,6 +602,8 @@ def emit_progress(
                 "current_level",
                 "maximum_updates",
                 "elapsed_seconds",
+                "action_protocol_validity_rate",
+                "minimum_protocol_validity_rate",
             ):
                 if key in previous:
                     preserved[key] = previous[key]
@@ -529,8 +652,7 @@ def sibling_advantages(returns: list[float]) -> list[float]:
     )
     total = sum(returns)
     advantages = [
-        (value - (total - value) / (BRANCH_WIDTH - 1)) / advantage_scale
-        for value in returns
+        (value - (total - value) / (BRANCH_WIDTH - 1)) / advantage_scale for value in returns
     ]
     centered = sum(advantages) / BRANCH_WIDTH
     return [round(value - centered, 8) for value in advantages]
@@ -804,6 +926,8 @@ def collect_greedy_trajectory(
             "solved": False,
             "checkpoint_reached": False,
             "actions": len(prefix.steps),
+            "accepted_actions": sum(step.accepted for step in prefix.steps),
+            "malformed_actions": sum(step.action is None for step in prefix.steps),
             "reward": 0.0,
         }
 
@@ -821,6 +945,8 @@ def collect_greedy_trajectory(
         "solved": continuation.terminal_reason == "solved",
         "checkpoint_reached": True,
         "actions": len(continuation.steps),
+        "accepted_actions": sum(step.accepted for step in continuation.steps),
+        "malformed_actions": sum(step.action is None for step in continuation.steps),
         "reward": continuation.terminal_reward,
     }
 
@@ -830,13 +956,22 @@ def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
         return []
     examples: list[WeightedAction] = []
     for sibling_index, generated_actions in enumerate(collection.generated_by_sibling):
-        if not generated_actions:
+        post_branch_steps = collection.siblings[sibling_index].steps[len(collection.prefix.steps) :]
+        accepted_actions = [
+            generated
+            for generated, step in zip(
+                generated_actions,
+                post_branch_steps,
+                strict=True,
+            )
+            if step.accepted and generated.input_ids
+        ]
+        if not accepted_actions:
             continue
-        per_action_weight = collection.advantages[sibling_index] / len(generated_actions)
+        per_action_weight = collection.advantages[sibling_index] / len(accepted_actions)
         examples.extend(
             WeightedAction(generated=generated, weight=per_action_weight)
-            for generated in generated_actions
-            if generated.input_ids
+            for generated in accepted_actions
         )
     return examples
 
@@ -847,10 +982,42 @@ def serialize_step(step: Any) -> dict[str, Any]:
     return value
 
 
+def sibling_failure_classification(
+    sibling: RepositoryRepairEnvironment,
+) -> list[dict[str, str]]:
+    classifications: list[dict[str, str]] = []
+    if any(step.action is None for step in sibling.steps):
+        classifications.append({"category": "malformed_policy_action", "source": "typed"})
+    if sibling.terminal_reason == "finished_with_failures":
+        classifications.append({"category": "valid_candidate_failure", "source": "typed"})
+        last_test = next(
+            (
+                step
+                for step in reversed(sibling.steps[:-1])
+                if step.accepted and step.tool == "test"
+            ),
+            None,
+        )
+        classifications.append(
+            {
+                "category": (
+                    "strategy_persistence_despite_negative_feedback"
+                    if last_test is not None and not last_test.verifier_passed
+                    else "insufficient_verification_before_finish"
+                ),
+                "source": "heuristic",
+            }
+        )
+    elif sibling.terminal_reason == "horizon_exhausted":
+        classifications.append({"category": "unproductive_action_loop", "source": "typed"})
+    return classifications
+
+
 def serialize_branch_group(
     collection: BranchCollection,
     *,
     update: int,
+    optimizer_update: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot_id = (
         collection.snapshot.snapshot_id
@@ -871,6 +1038,21 @@ def serialize_branch_group(
         sibling_advantage = (
             collection.advantages[index] if index < len(collection.advantages) else None
         )
+        generated_actions = (
+            collection.generated_by_sibling[index]
+            if index < len(collection.generated_by_sibling)
+            else []
+        )
+        post_branch_steps = sibling.steps[len(collection.prefix.steps) :]
+        accepted_training_actions = sum(
+            step.accepted and bool(generated.input_ids)
+            for generated, step in zip(
+                generated_actions,
+                post_branch_steps,
+                strict=True,
+            )
+        )
+        reward_components = sibling.reward_components()
         return {
             "index": index,
             "sampling_seed": collection.sampling_seeds[index],
@@ -880,6 +1062,16 @@ def serialize_branch_group(
             "passed": sibling.terminal_reason == "solved",
             "terminal_reason": sibling.terminal_reason,
             "trajectory_digest": sibling.trajectory_digest,
+            "reward_components": reward_components,
+            "completion_tokens": sum(
+                sum(generated.completion_mask) for generated in generated_actions
+            ),
+            "failure_classification": sibling_failure_classification(sibling),
+            "effective_batch_weight": (
+                round(sibling_advantage / accepted_training_actions, 8)
+                if sibling_advantage is not None and accepted_training_actions
+                else 0.0
+            ),
             "steps": [
                 serialize_step(step) for step in sibling.steps[len(collection.prefix.steps) :]
             ],
@@ -923,6 +1115,7 @@ def serialize_branch_group(
         "excluded": collection.exclusion_reason is not None,
         "exclusion_reason": collection.exclusion_reason,
         "replay": collection.replay,
+        "optimizer_update": optimizer_update,
         "siblings": [
             serialized_sibling(index, sibling) for index, sibling in enumerate(collection.siblings)
         ],
@@ -1110,6 +1303,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "evaluation_interval": EVALUATION_INTERVAL,
         "mastery_threshold": MASTERY_THRESHOLD,
         "mastery_windows": runtime.mastery_windows,
+        "minimum_protocol_validity_rate": MINIMUM_PROTOCOL_VALIDITY_RATE,
+        "learning_rate": LEARNING_RATE,
+        "advantage_standard_deviation_floor": ADVANTAGE_STANDARD_DEVIATION_FLOOR,
+        "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
+        "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
+        "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
+        "reward_contract_revision": "correctness-gated-efficiency@1",
         "maximum_final_evaluation_reserve_seconds": (
             runtime.maximum_final_evaluation_reserve_seconds
         ),
@@ -1358,6 +1558,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 )
         successes = sum(outcome["solved"] for outcome in outcomes)
         checkpoint_successes = sum(outcome["checkpoint_reached"] for outcome in outcomes)
+        total_actions = sum(outcome["actions"] for outcome in outcomes)
+        malformed_actions = sum(outcome["malformed_actions"] for outcome in outcomes)
         semantic_task_ids = {outcome["semantic_task_id"] for outcome in outcomes}
         if len(semantic_task_ids) != len(outcomes):
             raise RuntimeError("evaluation task set contains duplicate semantic repairs")
@@ -1381,6 +1583,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "checkpoint_rate": (round(checkpoint_successes / examples, 6) if examples else None),
             "checkpoint_rate_95ci": (
                 wilson_interval(checkpoint_successes, examples) if examples else None
+            ),
+            "total_actions": total_actions,
+            "accepted_actions": sum(outcome["accepted_actions"] for outcome in outcomes),
+            "malformed_actions": malformed_actions,
+            "action_protocol_validity_rate": (
+                round((total_actions - malformed_actions) / total_actions, 6)
+                if total_actions
+                else None
             ),
             "mean_reward": round(
                 sum(outcome["reward"] for outcome in outcomes) / examples,
@@ -1462,15 +1672,34 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 torch.log_softmax(logits, dim=-1).gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
             )
             completion_token_count = target_mask.sum(dim=1).clamp_min(1.0)
-            sequence_log_probability = (
-                (token_log_probabilities * target_mask).sum(dim=1) / completion_token_count
-            )
+            sequence_log_probability = (token_log_probabilities * target_mask).sum(
+                dim=1
+            ) / completion_token_count
             weight_tensor = torch.tensor(weights, device=device)
             loss = -(weight_tensor.detach() * sequence_log_probability).sum() / denominator
             loss.backward()
             loss_value += float(loss.detach().item())
             del output, logits, token_log_probabilities
         return loss_value
+
+    def capture_trainable_state() -> dict[str, Any]:
+        return {
+            name: parameter.detach().cpu().clone()
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        }
+
+    def restore_trainable_state(state: dict[str, Any]) -> None:
+        trainable = {
+            name: parameter
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        }
+        if trainable.keys() != state.keys():
+            raise RuntimeError("best validation checkpoint parameter identity changed")
+        with torch.no_grad():
+            for name, parameter in trainable.items():
+                parameter.copy_(state[name].to(device=parameter.device, dtype=parameter.dtype))
 
     emit_progress(
         "resuming" if resume_state else "baseline_evaluation",
@@ -1497,6 +1726,25 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             )
         }
     )
+    baseline_protocol_validity = validation_baseline_by_level["0"].get(
+        "action_protocol_validity_rate"
+    )
+    emit_progress(
+        "protocol_evaluation",
+        "Action protocol evaluated on the held-out active-level baseline.",
+        runtime_configuration=runtime,
+        elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
+        current_level=0,
+        evaluation_split="validation",
+        evaluation_examples=runtime.validation_examples,
+        action_protocol_validity_rate=baseline_protocol_validity,
+        minimum_protocol_validity_rate=MINIMUM_PROTOCOL_VALIDITY_RATE,
+    )
+    if (
+        baseline_protocol_validity is None
+        or baseline_protocol_validity < MINIMUM_PROTOCOL_VALIDITY_RATE
+    ):
+        raise RuntimeError("ACTION_PROTOCOL_VALIDITY_BELOW_THRESHOLD")
     maximum_final_evaluation_actions = (
         2 * runtime.test_examples * sum(item.repair_horizon for item in COMPLEXITY_LEVELS)
     )
@@ -1571,6 +1819,20 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     total_post_branch_actions = (
         int(resume_state["total_post_branch_actions"]) if resume_state else 0
     )
+    recent_action_protocol_groups = (
+        [tuple(item) for item in resume_state.get("recent_action_protocol_groups", [])]
+        if resume_state
+        else []
+    )
+    total_malformed_actions = (
+        int(resume_state.get("total_malformed_actions", 0)) if resume_state else 0
+    )
+    consecutive_uninformative_groups = (
+        int(resume_state.get("consecutive_uninformative_groups", 0)) if resume_state else 0
+    )
+    consecutive_regression_windows = (
+        int(resume_state.get("consecutive_regression_windows", 0)) if resume_state else 0
+    )
     training_complete, stop_reason, first_update = training_loop_entry(
         resume_state,
         updates_completed=updates_completed,
@@ -1584,6 +1846,44 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     last_observation = (
         resume_state["last_observation"] if resume_state else validation_baseline_by_level["0"]
     )
+    best_validation = (
+        dict(resume_state["best_validation"])
+        if resume_state
+        else {
+            "update": 0,
+            "level": 0,
+            "exact_successes": int(last_observation["exact_successes"]),
+            "exact_rate": last_observation["exact_rate"],
+            "exact_rate_95ci": last_observation["exact_rate_95ci"],
+            "checkpoint_rate": last_observation["checkpoint_rate"],
+            "checkpoint_rate_95ci": last_observation["checkpoint_rate_95ci"],
+            "source": "active_level_baseline",
+        }
+    )
+    best_trainable_state = (
+        {
+            name: tensor.detach().cpu().clone()
+            for name, tensor in resume_state["best_trainable_state"].items()
+        }
+        if resume_state
+        else capture_trainable_state()
+    )
+    rollback_applied = bool(resume_state.get("rollback_applied", False)) if resume_state else False
+    if checkpoints_root and not resume_state:
+        persist_named_adapter(
+            checkpoints_root=checkpoints_root,
+            name="best-validation",
+            metadata={
+                "kind": "best_validation",
+                "update": 0,
+                "level": 0,
+                "exact_successes": best_validation["exact_successes"],
+            },
+            save_adapter=lambda target: model.save_pretrained(
+                target,
+                safe_serialization=True,
+            ),
+        )
     if resume_state:
         random.setstate(resume_state["python_rng_state"])
         torch.set_rng_state(resume_state["torch_rng_state"].cpu())
@@ -1632,6 +1932,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "discarded_post_branch_actions": discarded_post_branch_actions,
             "total_sampled_actions": total_sampled_actions,
             "total_post_branch_actions": total_post_branch_actions,
+            "recent_action_protocol_groups": recent_action_protocol_groups,
+            "total_malformed_actions": total_malformed_actions,
+            "consecutive_uninformative_groups": consecutive_uninformative_groups,
+            "consecutive_regression_windows": consecutive_regression_windows,
+            "best_validation": best_validation,
+            "best_trainable_state": best_trainable_state,
+            "rollback_applied": rollback_applied,
             "last_observation": last_observation,
             "validation_baseline_by_level": validation_baseline_by_level,
             "optimizer": optimizer.state_dict(),
@@ -1747,6 +2054,20 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             policy_update_count += 1
 
         updates_completed = update
+        group_protocol_counts = [action_protocol_counts(collection) for collection in collections]
+        recent_action_protocol_groups.extend(group_protocol_counts)
+        recent_action_protocol_groups = recent_action_protocol_groups[
+            -runtime.validation_examples :
+        ]
+        total_malformed_actions += sum(malformed for _, malformed in group_protocol_counts)
+        recent_protocol = recent_action_protocol_summary(
+            recent_action_protocol_groups,
+            maximum_groups=runtime.validation_examples,
+        )
+        consecutive_uninformative_groups = next_uninformative_group_streak(
+            consecutive_uninformative_groups,
+            collections,
+        )
         total_task_groups += len(collections)
         replay_task_groups += sum(collection.replay for collection in collections)
         informative_task_groups += informative_collections
@@ -1762,6 +2083,20 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         latest_snapshot = serialize_branch_group(
             representative_collection,
             update=update,
+            optimizer_update={
+                "applied": bool(policy_training_examples),
+                "objective_id": OBJECTIVE_ID,
+                "adapter_revision": f"update-{update}",
+                "learning_rate": LEARNING_RATE,
+                "policy_loss": round(policy_loss, 6),
+                "gradient_norm": round(float(gradient_norm), 6),
+                "training_examples": len(policy_training_examples),
+                "effective_batch_weight": round(
+                    sum(abs(example.weight) for example in policy_training_examples),
+                    8,
+                ),
+                "informative_group_count": informative_collections,
+            },
         )
         branch_snapshots.append(latest_snapshot)
         branch_snapshots = branch_snapshots[-40:]
@@ -1773,6 +2108,17 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             update=update,
             current_level=level,
             promotion_count=len(promotions),
+            active_complexity=asdict(COMPLEXITY_LEVELS[level]),
+            curriculum_decision={
+                "reason": "active_level_frontier_with_mastered_level_replay",
+                "replay_probability": round(
+                    len(replay_tasks) / max(1, len(task_specs)),
+                    6,
+                ),
+                "minimum_level": 0,
+                "maximum_level": MAXIMUM_COMPLEXITY_LEVEL,
+                "mastery_streak": mastery_streak,
+            },
             exact_rate=last_observation["exact_rate"],
             exact_rate_95ci=last_observation["exact_rate_95ci"],
             checkpoint_rate=last_observation["checkpoint_rate"],
@@ -1788,8 +2134,52 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 informative_task_groups / total_task_groups,
                 6,
             ),
+            action_protocol_validity_rate=(
+                round(
+                    (total_sampled_actions - total_malformed_actions) / total_sampled_actions,
+                    6,
+                )
+                if total_sampled_actions
+                else None
+            ),
+            recent_malformed_action_rate=recent_protocol["malformed_rate"],
+            recent_action_protocol_groups=recent_protocol["groups"],
+            recent_action_protocol_window_complete=recent_protocol["window_complete"],
+            consecutive_uninformative_groups=consecutive_uninformative_groups,
             total_sampled_actions=total_sampled_actions,
             policy_update_count=policy_update_count,
+            baseline_validation={
+                key: validation_baseline_by_level["0"].get(key)
+                for key in (
+                    "level",
+                    "examples",
+                    "exact_successes",
+                    "exact_rate",
+                    "exact_rate_95ci",
+                    "checkpoint_successes",
+                    "checkpoint_rate",
+                    "checkpoint_rate_95ci",
+                    "action_protocol_validity_rate",
+                )
+            },
+            validation_history=lightweight_validation_history(history),
+            curriculum_history=promotions,
+            best_validation=best_validation,
+            regression_streak=consecutive_regression_windows,
+            training_remaining_seconds=round(
+                max(0.0, training_deadline_seconds - cumulative_elapsed_seconds()),
+                3,
+            ),
+            final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
+            provider_remaining_seconds=round(
+                max(
+                    0.0,
+                    target_seconds
+                    + runtime.maximum_final_evaluation_reserve_seconds
+                    - cumulative_elapsed_seconds(),
+                ),
+                3,
+            ),
             latest_branch_snapshot=latest_snapshot,
             elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
             evaluation_completed=None,
@@ -1808,7 +2198,31 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         )
         if decision_reason is not None:
             stop_reason = decision_reason
+        if consecutive_uninformative_groups >= MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS:
+            stop_after_checkpoint = True
+            stop_reason = "consecutive_uninformative_groups"
+        if (
+            recent_protocol["window_complete"]
+            and recent_protocol["malformed_rate"] is not None
+            and recent_protocol["malformed_rate"] > MAXIMUM_RECENT_MALFORMED_ACTION_RATE
+        ):
+            stop_after_checkpoint = True
+            stop_reason = "recent_malformed_action_rate"
         if update % EVALUATION_INTERVAL == 0 and not stop_after_checkpoint:
+            if checkpoints_root:
+                persist_named_adapter(
+                    checkpoints_root=checkpoints_root,
+                    name="prevalidation",
+                    metadata={
+                        "kind": "prevalidation",
+                        "update": update,
+                        "level": level,
+                    },
+                    save_adapter=lambda target: model.save_pretrained(
+                        target,
+                        safe_serialization=True,
+                    ),
+                )
             validation_seed = validation_window_seed(level, update)
             validation_tasks = make_tasks(
                 level,
@@ -1899,6 +2313,47 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             )
             mastered = observation_mastered(observation)
             mastery_streak = mastery_streak + 1 if mastered else 0
+            if int(best_validation["level"]) != level:
+                candidate_is_best = True
+                best_exact_successes = int(observation["exact_successes"])
+                consecutive_regression_windows = 0
+            else:
+                (
+                    candidate_is_best,
+                    best_exact_successes,
+                    consecutive_regression_windows,
+                ) = validation_regression_decision(
+                    best_exact_successes=int(best_validation["exact_successes"]),
+                    observed_exact_successes=int(observation["exact_successes"]),
+                    consecutive_regressions=consecutive_regression_windows,
+                )
+            if candidate_is_best:
+                best_validation = {
+                    "update": update,
+                    "level": level,
+                    "exact_successes": best_exact_successes,
+                    "exact_rate": observation["exact_rate"],
+                    "exact_rate_95ci": observation["exact_rate_95ci"],
+                    "checkpoint_rate": observation["checkpoint_rate"],
+                    "checkpoint_rate_95ci": observation["checkpoint_rate_95ci"],
+                    "source": "rotating_validation",
+                }
+                best_trainable_state = capture_trainable_state()
+                if checkpoints_root:
+                    persist_named_adapter(
+                        checkpoints_root=checkpoints_root,
+                        name="best-validation",
+                        metadata={
+                            "kind": "best_validation",
+                            "update": update,
+                            "level": level,
+                            "exact_successes": best_exact_successes,
+                        },
+                        save_adapter=lambda target: model.save_pretrained(
+                            target,
+                            safe_serialization=True,
+                        ),
+                    )
             history.append(
                 {
                     "update": update,
@@ -1911,6 +2366,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     ),
                     "mastery_streak": mastery_streak,
                     "mastered": mastered,
+                    "regression_streak": consecutive_regression_windows,
+                    "best_checkpoint": best_validation["update"],
                     "validation_elapsed_seconds": round(
                         validation_elapsed_seconds,
                         3,
@@ -1923,11 +2380,30 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             )
             last_observation = observation
             if mastery_streak >= runtime.mastery_windows and level < MAXIMUM_COMPLEXITY_LEVEL:
+                current_complexity = asdict(COMPLEXITY_LEVELS[level])
+                next_complexity = asdict(COMPLEXITY_LEVELS[level + 1])
                 promotions.append(
                     {
                         "update": update,
                         "from_level": level,
                         "to_level": level + 1,
+                        "reason": "two_disjoint_mastery_windows",
+                        "from_complexity": current_complexity,
+                        "to_complexity": next_complexity,
+                        "changed_dimensions": {
+                            key: {
+                                "from": current_complexity[key],
+                                "to": next_complexity[key],
+                            }
+                            for key in current_complexity
+                            if current_complexity[key] != next_complexity[key]
+                        },
+                        "replay_probability": round(
+                            len(replay_tasks) / max(1, len(task_specs)),
+                            6,
+                        ),
+                        "minimum_level": 0,
+                        "maximum_level": MAXIMUM_COMPLEXITY_LEVEL,
                         "exact_rate": observation["exact_rate"],
                         "exact_rate_95ci": observation["exact_rate_95ci"],
                         "checkpoint_rate": observation["checkpoint_rate"],
@@ -1942,8 +2418,15 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             maximum_level_mastered = (
                 level == MAXIMUM_COMPLEXITY_LEVEL and mastery_streak >= runtime.mastery_windows
             )
+            regression_stop = (
+                consecutive_regression_windows >= MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS
+            )
+            if regression_stop:
+                stop_reason = "validation_regression"
+                restore_trainable_state(best_trainable_state)
+                rollback_applied = True
             (
-                stop_after_checkpoint,
+                provider_stop_after_checkpoint,
                 decision_reason,
                 training_deadline_seconds,
             ) = training_stop_decision(
@@ -1955,12 +2438,17 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 ),
                 maximum_level_mastered=maximum_level_mastered,
             )
-            if decision_reason is not None:
+            stop_after_checkpoint = regression_stop or provider_stop_after_checkpoint
+            if decision_reason is not None and not regression_stop:
                 stop_reason = decision_reason
         training_complete = stop_after_checkpoint
         persist_training_checkpoint(update)
         if stop_after_checkpoint:
             break
+
+    if best_validation["update"] != updates_completed:
+        restore_trainable_state(best_trainable_state)
+        rollback_applied = True
 
     emit_progress(
         "finalizing",
@@ -1969,6 +2457,21 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         update=updates_completed,
         current_level=level,
         promotion_count=len(promotions),
+        best_validation=best_validation,
+        rollback_applied=rollback_applied,
+        stop_reason=stop_reason,
+        validation_history=lightweight_validation_history(history),
+        curriculum_history=promotions,
+        final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
+        provider_remaining_seconds=round(
+            max(
+                0.0,
+                target_seconds
+                + runtime.maximum_final_evaluation_reserve_seconds
+                - cumulative_elapsed_seconds(),
+            ),
+            3,
+        ),
         elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
     )
     final_evaluation_deadline_seconds = (
@@ -2131,6 +2634,19 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "algorithm": "leave-one-out-group-normalized-reinforce",
         "objective_id": OBJECTIVE_ID,
         "objective_sequence_reduction": "mean_completion_token_log_probabilities",
+        "reward_contract": {
+            "revision": "correctness-gated-efficiency@1",
+            "hidden_correctness_reward": 1.0,
+            "incorrect_terminal_reward": 0.0,
+            "efficiency_adjustment_bounds": [-0.05, 0.0],
+            "accepted_action_penalty": 0.005,
+        },
+        "optimizer_contract": {
+            "learning_rate": LEARNING_RATE,
+            "maximum_gradient_norm": 1.0,
+            "advantage_standard_deviation_floor": (ADVANTAGE_STANDARD_DEVIATION_FLOOR),
+            "sequence_reduction": "mean_completion_token_log_probabilities",
+        },
         "teacher_data_used": False,
         "branch_width": BRANCH_WIDTH,
         "static_branch_width": BRANCH_WIDTH,
@@ -2171,6 +2687,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "reached_complexity_level": level,
         "promotion_count": len(promotions),
         "promotions": promotions,
+        "best_validation": best_validation,
+        "rollback_applied": rollback_applied,
+        "validation_regression_limit": MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS,
+        "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
+        "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
         "initial_reward": round(initial_reward, 6) if initial_reward is not None else None,
         "final_reward": round(final_reward, 6) if final_reward is not None else None,
         "reward_gain": round(reward_gain, 6) if reward_gain is not None else None,
@@ -2195,6 +2716,21 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             6,
         ),
         "total_sampled_actions": total_sampled_actions,
+        "total_malformed_actions": total_malformed_actions,
+        "action_protocol_validity_rate": (
+            round(
+                (total_sampled_actions - total_malformed_actions) / total_sampled_actions,
+                6,
+            )
+            if total_sampled_actions
+            else None
+        ),
+        "recent_action_protocol": recent_action_protocol_summary(
+            recent_action_protocol_groups,
+            maximum_groups=runtime.validation_examples,
+        ),
+        "consecutive_uninformative_groups": consecutive_uninformative_groups,
+        "consecutive_regression_windows": consecutive_regression_windows,
         "total_post_branch_actions": total_post_branch_actions,
         "stop_reason": stop_reason,
         "target_runtime_seconds": target_seconds,
@@ -2259,6 +2795,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         mastery_windows=runtime.mastery_windows,
         teacher_data_used=False,
         informative_group_rate=result["informative_group_rate"],
+        action_protocol_validity_rate=result["action_protocol_validity_rate"],
+        recent_malformed_action_rate=result["recent_action_protocol"]["malformed_rate"],
+        best_validation=best_validation,
+        rollback_applied=rollback_applied,
+        validation_history=lightweight_validation_history(history),
+        curriculum_history=promotions,
         total_sampled_actions=total_sampled_actions,
         policy_update_count=policy_update_count,
         hypothesis_passed=hypothesis_passed,
