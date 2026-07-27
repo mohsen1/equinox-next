@@ -241,7 +241,7 @@ bundle_source_path="$(
   mktemp "${TMPDIR:-/tmp}/equinox-runpod-bundle.XXXXXX"
 )"
 trap 'rm -f -- "$bundle_source_path"' EXIT
-tar -czf "$bundle_source_path" \
+COPYFILE_DISABLE=1 tar -czf "$bundle_source_path" \
   -C "$repository_root/research/runpod" \
   "${bundle_files[@]}"
 bundle_size_bytes="$(wc -c <"$bundle_source_path" | tr -d ' ')"
