@@ -82,7 +82,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@13"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@14"
 OBJECTIVE_ID = "leave-one-out-paired-validation-reinforce@6"
 DEPENDENCIES = (
     "transformers==5.14.1",

@@ -4,7 +4,6 @@ import pytest
 
 import research.runpod.repository_repair_env as repository_repair_env
 from research.runpod.repository_repair_env import (
-    ACTION_REMINDER,
     BRANCH_WIDTH,
     COMPLEXITY_LEVELS,
     DIAGNOSTIC_TOOLS,
@@ -353,20 +352,6 @@ def test_action_parser_rejects_noncanonical_or_untrusted_shapes(response: str) -
 )
 def test_action_parser_accepts_json_whitespace(response: str) -> None:
     assert parse_action(response) is not None
-
-
-def test_policy_prompt_repeats_the_prefilled_json_contract_near_the_generation_boundary() -> None:
-    environment = RepositoryRepairEnvironment(make_task(0, seed=7))
-
-    prompt = environment.policy_prompt("continuation")
-    normalized_prompt = " ".join(prompt.split())
-
-    assert prompt.endswith(ACTION_REMINDER)
-    assert 'already prefilled with {"tool":' in normalized_prompt
-    assert "do not repeat the prefix" in normalized_prompt
-    assert '"test"}' in normalized_prompt
-    assert '"finish"}' in normalized_prompt
-    assert "Emit no prose, Markdown, comments, or second object." in normalized_prompt
 
 
 def test_paths_and_edits_are_bounded() -> None:

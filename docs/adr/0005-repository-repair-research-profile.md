@@ -255,6 +255,16 @@ at each generation boundary and calibrates stochastic sibling sampling from temp
 `0.8`, top-p `0.95` to temperature `0.6`, top-p `0.9`. Static K remains four; the lower
 entropy targets schema drift while retaining independent seeded continuations.
 
+The seed `107` revision-13 run reduced the rolling malformed-action rate to `1.6807%`
+through update 4, but the expanded reminder also reduced the fixed greedy validation
+baseline from `5/8` to `1/8`. The operator stopped the run before checkpoint selection so
+that later gains could not be measured against an artificially weakened baseline. The
+worker was deleted and teardown confirmed.
+
+Workload revision `runpod-repository-repair-loo-reinforce@14` restores the v6 prompt
+verbatim and retains only the lower-entropy stochastic sibling sampling. This isolates
+protocol calibration from greedy task competence.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and

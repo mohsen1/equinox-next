@@ -52,21 +52,8 @@ Rules:
 - Never wrap the object in Markdown.
 - Do not add keys that are not in the selected action schema."""
 
-ACTION_REMINDER = """Complete exactly one allowed JSON action.
-The assistant response is already prefilled with {"tool":. Continue after the colon; do not repeat
-the prefix. The next characters must be a quoted tool name.
-
-Valid completions have exactly one of these shapes:
-"list","path":"relative/path"}
-"read","path":"relative/path.py"}
-"search","query":"literal text"}
-"edit","path":"relative/path.py","old":"exact text","new":"replacement text"}
-"test"}
-"finish"}
-
-Emit no prose, Markdown, comments, or second object. Stop immediately after the closing }.
-If the latest test reports zero failures, use "finish"}; otherwise choose one action that advances
-the repair."""
+ACTION_REMINDER = """Return one allowed JSON action now.
+The response already begins with {"tool":. Complete that object and stop after its closing }."""
 
 
 @dataclass(frozen=True)
