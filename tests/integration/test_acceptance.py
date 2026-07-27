@@ -572,6 +572,24 @@ def test_concurrent_duplicate_delivery_accepts_one_activity_result() -> None:
             ).fetchone()[0]
             == 1
         )
+    session = next(response.json() for response in responses if response.status_code == 200)
+    cancel_input = {"cursor_id": session["cursor_id"]}
+    cancel_id = f"op_cancel_concurrent_{suffix}"
+    canceled = httpx.post(
+        f"{EXECUTION}/v1/sessions/cancel",
+        json={
+            "operation_id": cancel_id,
+            "idempotency_key": cancel_id,
+            "request_digest": canonical_digest(
+                {"operation_type": "cancel_session", "input": cancel_input}
+            ),
+            "expected_version": session["version"],
+            "correlation_id": f"run_test_{suffix}",
+            **cancel_input,
+        },
+        timeout=10,
+    )
+    assert canceled.status_code == 200
 
 
 @pytest.mark.integration
