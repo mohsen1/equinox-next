@@ -71,7 +71,7 @@ SUPPORTED_MODELS = {
 }
 DEFAULT_MODEL_ID = "Qwen/Qwen2.5-Coder-3B-Instruct"
 DEFAULT_VALIDATION_EXAMPLES = 8
-DEFAULT_TEST_EXAMPLES = 12
+DEFAULT_TEST_EXAMPLES = 6
 DEFAULT_TRAINING_TASKS_PER_UPDATE = 2
 DEFAULT_REPLAY_TASKS_PER_LEVEL = 1
 DEFAULT_MAX_UPDATES = 120
@@ -79,8 +79,8 @@ DEFAULT_MASTERY_WINDOWS = 2
 DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
-DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_400
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@6"
+DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@7"
 OBJECTIVE_ID = "leave-one-out-group-normalized-reinforce@1"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -1480,14 +1480,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         resume_state["validation_baseline_by_level"]
         if resume_state
         else {
-            str(level): evaluate(
-                level,
+            "0": evaluate(
+                0,
                 runtime.validation_examples,
-                VALIDATION_SEED_BASE + level * 1_000,
+                VALIDATION_SEED_BASE,
                 split="validation",
                 progress_phase="baseline_evaluation",
             )
-            for level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
         }
     )
     maximum_final_evaluation_actions = (

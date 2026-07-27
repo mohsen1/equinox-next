@@ -92,7 +92,7 @@ simulator with real repositories and test commands.
   and failure before the first checkpoint remains distinct from exhausted retry budget.
   The provider lifetime includes a separate
   2,700-second retry reserve. The measured final-evaluation reserve is capped separately
-  at 2,400 seconds. Exceeding that ceiling stops training and proceeds to final
+  at 2,700 seconds. Exceeding that ceiling stops training and proceeds to final
   evaluation; the receipt retains the unclamped measurement and the ceiling event.
   Resumed accounting includes the wall-clock tail after the latest checkpoint, capped
   by the declared 2,700-second retry reserve to bound cross-host clock skew. The raw
@@ -148,13 +148,15 @@ as a generalization result.
 
 The next bounded run uses the pinned 3B model revision on one A40. It removes teacher
 updates, doubles current-level task collection per update, uses eight-example rotating
-validation windows, retains twelve test tasks per level for paired baseline and adapter
-evaluation, and caps the workload at 120 updates or 7,200 cumulative seconds. The run
+validation windows, retains six test tasks per level for paired baseline and adapter
+evaluation, and caps the workload at 120 updates or 7,200 cumulative seconds. Initial
+reserve calibration evaluates only the current curriculum level; later levels are
+evaluated when reached and remain present in the final paired test. The run
 has a 240-minute provider ceiling so boot, one retry, final-evaluation overrun, and
 teardown do not compete with the 7,200-second workload budget. It remains a
 single-seed exploration and cannot
 establish a replicated gain. Validation has 16 distinct one-fault semantic cases and
-test has 12; larger multi-fault levels draw unique combinations from those held-out
+test samples six of 12; larger multi-fault levels draw unique combinations from those held-out
 families.
 
 The split is disjoint by fixture family ID, not by abstract program transformation.

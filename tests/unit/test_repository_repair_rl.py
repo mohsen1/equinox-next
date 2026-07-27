@@ -158,21 +158,21 @@ def test_consecutive_mastery_windows_use_disjoint_validation_tasks() -> None:
 
 def test_final_evaluation_reserve_is_bounded_with_provenance() -> None:
     assert bounded_final_evaluation_reserve(200) == (300, False)
-    assert bounded_final_evaluation_reserve(2_400) == (2_400, False)
-    assert bounded_final_evaluation_reserve(2_401) == (2_400, True)
+    assert bounded_final_evaluation_reserve(2_700) == (2_700, False)
+    assert bounded_final_evaluation_reserve(2_701) == (2_700, True)
     reserve_seconds, exceeded_ceiling = bounded_final_evaluation_reserve(9_000)
     assert exceeded_ceiling is True
     assert training_stop_decision(
         elapsed_seconds=100,
         target_seconds=3_000,
         final_evaluation_reserve_seconds=reserve_seconds,
-    ) == (False, None, 600)
+    ) == (False, None, 300)
     assert training_stop_decision(
         elapsed_seconds=100,
         target_seconds=3_000,
         final_evaluation_reserve_seconds=reserve_seconds,
         final_evaluation_reserve_exceeded_ceiling=True,
-    ) == (True, "final_evaluation_reserve_ceiling", 600)
+    ) == (True, "final_evaluation_reserve_ceiling", 300)
 
 
 def test_partial_final_evaluation_has_no_headline_reward() -> None:
@@ -433,14 +433,14 @@ def test_paired_change_summary_tracks_improvement_and_regression() -> None:
 
 
 def test_paired_change_summary_pins_significant_improvement() -> None:
-    initial = [{"task_id": f"task-{index}", "solved": False} for index in range(8)]
-    final = [{"task_id": f"task-{index}", "solved": True} for index in range(8)]
+    initial = [{"task_id": f"task-{index}", "solved": False} for index in range(6)]
+    final = [{"task_id": f"task-{index}", "solved": True} for index in range(6)]
 
     summary = paired_change_summary(initial, final)
 
-    assert summary["improved"] == 8
+    assert summary["improved"] == 6
     assert summary["regressed"] == 0
-    assert summary["mcnemar_exact_p_value"] == 0.0078125
+    assert summary["mcnemar_exact_p_value"] == 0.03125
 
 
 def test_paired_change_summary_never_rounds_nonzero_probability_to_zero() -> None:

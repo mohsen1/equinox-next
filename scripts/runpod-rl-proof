@@ -42,10 +42,10 @@ case "$experiment" in
     default_target_runtime_seconds="7200"
     default_maximum_lifetime_minutes="240"
     default_retry_reserve_seconds="2700"
-    default_maximum_final_evaluation_reserve_seconds="2400"
+    default_maximum_final_evaluation_reserve_seconds="2700"
     default_maximum_updates="120"
     default_validation_examples="8"
-    default_test_examples="12"
+    default_test_examples="6"
     default_mastery_windows="2"
     default_training_tasks_per_update="2"
     default_replay_tasks_per_level="1"
@@ -679,7 +679,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-loo-reinforce@6"
+    and .workload_revision == "runpod-repository-repair-loo-reinforce@7"
     and .algorithm == "leave-one-out-group-normalized-reinforce"
     and .objective_id == "leave-one-out-group-normalized-reinforce@1"
     and .objective_sequence_reduction == "sum_completion_token_log_probabilities"
