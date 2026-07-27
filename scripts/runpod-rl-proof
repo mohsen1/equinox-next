@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-experiment="${EQUINOX_RUNPOD_EXPERIMENT:-sequence-ladder}"
+experiment="${EQUINOX_RUNPOD_EXPERIMENT:-repository-repair}"
 support_file=""
 case "$experiment" in
   sequence-ladder)
@@ -15,18 +15,8 @@ case "$experiment" in
     default_maximum_lifetime_minutes="15"
     default_maximum_updates="1200"
     ;;
-  model-repair)
-    workload_file="model_repair_grpo.py"
-    workload_id="model-repair-verifier-guided-post-training"
-    execution_name="Verified repair post-training"
-    model_id="Qwen/Qwen2.5-Coder-1.5B-Instruct"
-    default_gpu_id="NVIDIA GeForce RTX 3090"
-    default_target_runtime_seconds="2700"
-    default_maximum_lifetime_minutes="60"
-    default_maximum_updates="1200"
-    ;;
   repository-repair)
-    workload_file="repository_repair_grpo.py"
+    workload_file="repository_repair_rl.py"
     support_file="repository_repair_env.py"
     workload_id="repository-repair-restored-continuation-post-training"
     execution_name="Repository repair post-training"
@@ -37,13 +27,14 @@ case "$experiment" in
     default_maximum_updates="80"
     ;;
   *)
-    echo "EQUINOX_RUNPOD_EXPERIMENT must be sequence-ladder, model-repair, or repository-repair." >&2
+    echo "EQUINOX_RUNPOD_EXPERIMENT must be sequence-ladder or repository-repair." >&2
     exit 1
     ;;
 esac
 workload_path="$repository_root/research/runpod/$workload_file"
 support_path="$repository_root/research/runpod/$support_file"
 remote_runner_path="$repository_root/research/runpod/remote_runner.sh"
+result_server_path="$repository_root/research/runpod/result_server.py"
 receipt_directory="$repository_root/var/research-proofs"
 api_root="${EQUINOX_API_ROOT:-http://127.0.0.1:8180}"
 dashboard_root="${EQUINOX_DASHBOARD_ROOT:-http://127.0.0.1:3100}"
@@ -54,6 +45,7 @@ maximum_hourly_cost="${EQUINOX_RUNPOD_MAX_HOURLY_COST:-0.50}"
 maximum_lifetime_minutes="${EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES:-$default_maximum_lifetime_minutes}"
 boot_timeout_seconds="${EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS:-360}"
 target_runtime_seconds="${EQUINOX_RL_TARGET_SECONDS:-$default_target_runtime_seconds}"
+optimization_seed="${EQUINOX_RL_SEED:-73}"
 container_disk_in_gb="${EQUINOX_RUNPOD_CONTAINER_DISK_GB:-30}"
 
 command -v runpodctl >/dev/null
@@ -65,6 +57,7 @@ command -v python3 >/dev/null
 command -v tar >/dev/null
 test -f "$workload_path"
 test -f "$remote_runner_path"
+test -f "$result_server_path"
 if [[ -n "$support_file" ]]; then
   test -f "$support_path"
 fi
@@ -86,6 +79,10 @@ if [[ ! "$target_runtime_seconds" =~ ^[1-9][0-9]*$ ]]; then
   echo "EQUINOX_RL_TARGET_SECONDS must be a positive integer." >&2
   exit 1
 fi
+if [[ ! "$optimization_seed" =~ ^[0-9]+$ ]] || ((optimization_seed > 2147483647)); then
+  echo "EQUINOX_RL_SEED must be an integer between 0 and 2147483647." >&2
+  exit 1
+fi
 if [[ ! "$container_disk_in_gb" =~ ^[1-9][0-9]*$ ]]; then
   echo "EQUINOX_RUNPOD_CONTAINER_DISK_GB must be a positive integer." >&2
   exit 1
@@ -98,7 +95,7 @@ if ((target_runtime_seconds + boot_timeout_seconds + 120 > maximum_lifetime_minu
   echo "The provider lifetime must cover boot + target runtime + a 2-minute cleanup reserve." >&2
   exit 1
 fi
-bundle_files=("$workload_file" "remote_runner.sh")
+bundle_files=("$workload_file" "remote_runner.sh" "result_server.py")
 if [[ -n "$support_file" ]]; then
   bundle_files+=("$support_file")
 fi
@@ -109,7 +106,8 @@ bundle_source_b64="$(
     base64 |
     tr -d '\n'
 )"
-docker_args="bash -lc \"echo $bundle_source_b64 | base64 -d | tar -xzf - -C /tmp; EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds bash /tmp/remote_runner.sh\""
+transport_token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+docker_args="bash -lc \"echo $bundle_source_b64 | base64 -d | tar -xzf - -C /tmp; EQUINOX_RESULT_TOKEN=$transport_token EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds bash /tmp/remote_runner.sh\""
 
 mkdir -p "$receipt_directory"
 proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')"
@@ -374,13 +372,15 @@ publish_execution "PROVISIONING" "$last_progress"
 echo "Worker $pod_id allocated at \$$hourly_cost/hour; waiting for container readiness." >&2
 proxy_root="https://${pod_id}-8000.proxy.runpod.net"
 progress_url="$proxy_root/progress.json"
+remote_authorization="Authorization: Bearer $transport_token"
 exit_code=""
 readiness_attempts=$(( (boot_timeout_seconds + 4) / 5 ))
 container_ready=false
 failure_message="The RunPod worker never exposed a live container endpoint."
 for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
   remote_progress="$(
-    curl --fail --silent --show-error --max-time 10 "$progress_url" 2>/dev/null || true
+    curl --fail --silent --show-error --max-time 10 \
+      -H "$remote_authorization" "$progress_url" 2>/dev/null || true
   )"
   if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
     last_progress="$(
@@ -423,13 +423,14 @@ failure_message="The remote workload did not finish before the provider cleanup 
 while (( $(date +%s) < result_deadline_epoch )); do
   exit_code="$(
     curl --fail --silent --show-error --max-time 10 \
-      "$proxy_root/exit_code" 2>/dev/null || true
+      -H "$remote_authorization" "$proxy_root/exit_code" 2>/dev/null || true
   )"
   if [[ -n "$exit_code" ]]; then
     break
   fi
   remote_progress="$(
-    curl --fail --silent --show-error --max-time 10 "$progress_url" 2>/dev/null || true
+    curl --fail --silent --show-error --max-time 10 \
+      -H "$remote_authorization" "$progress_url" 2>/dev/null || true
   )"
   if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
     last_progress="$(
@@ -449,11 +450,15 @@ fi
 if [[ "$exit_code" != "0" ]]; then
   failure_message="The remote workload failed with exit code $exit_code."
   echo "The remote workload failed with exit code $exit_code." >&2
-  curl --fail --silent --show-error "$proxy_root/error.log" 2>/dev/null |
+  curl --fail --silent --show-error -H "$remote_authorization" \
+    "$proxy_root/error.log" 2>/dev/null |
     tail -40 >&2 || true
   exit 1
 fi
-metrics="$(curl --fail --silent --show-error "$proxy_root/result.json")"
+metrics="$(
+  curl --fail --silent --show-error \
+    -H "$remote_authorization" "$proxy_root/result.json"
+)"
 if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
   failure_message="The remote workload result was missing or invalid."
   echo "The remote workload did not return a valid metrics object." >&2
@@ -461,10 +466,11 @@ if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
 fi
 result_path="$receipt_directory/$proof_id.result.json"
 jq . <<<"$metrics" >"$result_path"
-if [[ "$experiment" == "model-repair" || "$experiment" == "repository-repair" ]]; then
+if [[ "$experiment" == "repository-repair" ]]; then
   adapter_path="$receipt_directory/$proof_id.adapter.tgz"
   adapter_pending_path="$adapter_path.pending"
   curl --fail --silent --show-error --max-time 120 \
+    -H "$remote_authorization" \
     "$proxy_root/adapter.tgz" >"$adapter_pending_path"
   if [[ ! -s "$adapter_pending_path" ]]; then
     failure_message="The trained LoRA adapter could not be persisted before teardown."
@@ -472,6 +478,41 @@ if [[ "$experiment" == "model-repair" || "$experiment" == "repository-repair" ]]
     exit 1
   fi
   mv "$adapter_pending_path" "$adapter_path"
+  python3 - "$adapter_path" "$(jq -r '.adapter_manifest.digest // empty' <<<"$metrics")" <<'PY'
+import hashlib
+import json
+import sys
+import tarfile
+
+archive_path, expected_digest = sys.argv[1:]
+if not expected_digest.startswith("sha256:"):
+    raise SystemExit("result omitted the adapter manifest digest")
+with tarfile.open(archive_path, "r:gz") as archive:
+    members = {
+        member.name: member
+        for member in archive.getmembers()
+        if member.isfile()
+    }
+    manifest_member = members.get("adapter/adapter-manifest.json")
+    if manifest_member is None:
+        raise SystemExit("adapter archive omitted its manifest")
+    manifest = json.load(archive.extractfile(manifest_member))
+    content = {key: value for key, value in manifest.items() if key != "digest"}
+    digest = "sha256:" + hashlib.sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if digest != expected_digest or manifest.get("digest") != expected_digest:
+        raise SystemExit("adapter manifest digest mismatch")
+    for item in manifest["files"]:
+        member = members.get("adapter/" + item["path"])
+        if member is None:
+            raise SystemExit(f"adapter archive omitted {item['path']}")
+        payload = archive.extractfile(member).read()
+        if len(payload) != item["size_bytes"]:
+            raise SystemExit(f"adapter size mismatch for {item['path']}")
+        if hashlib.sha256(payload).hexdigest() != item["sha256"]:
+            raise SystemExit(f"adapter digest mismatch for {item['path']}")
+PY
 fi
 if [[ "$experiment" == "sequence-ladder" ]]; then
   proof_assertion='
@@ -492,42 +533,6 @@ if [[ "$experiment" == "sequence-ladder" ]]; then
     and .promotion_count >= 5
     and .reward_gain >= 0.20
   '
-elif [[ "$experiment" == "model-repair" ]]; then
-  proof_assertion='
-    .device == "cuda"
-    and .experiment_completed == true
-    and .post_training_completed == true
-    and .adapter_persisted == true
-    and .workload == "model-repair-verifier-guided-post-training"
-    and .workload_revision == "runpod-model-repair-grpo@4"
-    and .algorithm == "verifier-guided-group-policy-optimization"
-    and .branch_width == 4
-    and .complexity_strategy == "adaptive"
-    and .model_id == "Qwen/Qwen2.5-Coder-1.5B-Instruct"
-    and (.task_domains | sort) == ([
-      "filesystem_cli",
-      "micro_repository",
-      "sqlite_repair"
-    ] | sort)
-    and .updates_completed >= 1
-    and .optimizer_update_count >= 1
-    and .policy_update_count >= 1
-    and .teacher_update_count >= 1
-    and .total_task_groups >= 6
-    and .replay_task_groups >= 3
-    and .evaluation_examples == 60
-    and .total_sampled_completions >= 4
-    and (.branch_snapshots | length) >= 3
-    and ([.branch_snapshots[].siblings | length] | all(. == 4))
-    and (
-      [.branch_snapshots[].domain] | unique | sort
-    ) == ([
-      "filesystem_cli",
-      "micro_repository",
-      "sqlite_repair"
-    ] | sort)
-    and (.hypothesis_passed | type) == "boolean"
-  '
 else
   proof_assertion='
     .device == "cuda"
@@ -535,8 +540,11 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-grpo@1"
-    and .algorithm == "shared-prefix-sibling-relative-policy-optimization"
+    and .workload_revision == "runpod-repository-repair-loo-reinforce@2"
+    and .algorithm == "leave-one-out-group-normalized-reinforce"
+    and .objective_id == "leave-one-out-group-normalized-reinforce@1"
+    and .objective_sequence_reduction == "sum_completion_token_log_probabilities"
+    and .teacher_data_used == false
     and .branch_width == 4
     and .static_branch_width == 4
     and .multi_step == true
@@ -552,7 +560,6 @@ else
     and .updates_completed >= 1
     and .optimizer_update_count >= 1
     and .policy_update_count >= 1
-    and .teacher_update_count >= 1
     and .total_task_groups >= 1
     and .replay_task_groups >= 1
     and .promotion_count >= 1
@@ -560,6 +567,8 @@ else
     and .total_sampled_actions >= 4
     and .total_post_branch_actions >= 4
     and .restored_branching_observed == true
+    and .adapter_manifest.digest != null
+    and .claim_strength == "EXPLORATORY_SINGLE_SEED"
     and (.branch_snapshots | length) >= 1
     and (
       [.branch_snapshots[]

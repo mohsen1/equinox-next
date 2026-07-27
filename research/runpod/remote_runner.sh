@@ -14,12 +14,13 @@ adapter_path="$work_directory/adapter"
 printf '%s\n' \
   '{"schema_version":1,"phase":"container_starting","message":"RunPod container started; preparing the workload.","branch_width":4,"complexity_strategy":"adaptive"}' \
   >"$progress_path"
-python3 -m http.server 8000 --directory "$work_directory" \
+python3 "$work_directory/result_server.py" \
   >"$work_directory/http.log" 2>&1 &
 http_server_pid="$!"
 
 EQUINOX_PROGRESS_PATH="$progress_path" \
   EQUINOX_ADAPTER_PATH="$adapter_path" \
+  EQUINOX_RL_SEED="${EQUINOX_RL_SEED:-73}" \
   EQUINOX_RL_TARGET_SECONDS="$target_runtime_seconds" \
   PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
   python3 "$work_directory/$workload_file" \

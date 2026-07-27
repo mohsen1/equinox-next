@@ -1,4 +1,4 @@
-"""Restored-continuation post-training for deterministic repository repair.
+"""Restored-continuation REINFORCE post-training for repository repair.
 
 This workload collects one policy-generated diagnostic prefix, snapshots the
 repository and transcript, restores four continuations, and applies
@@ -9,11 +9,14 @@ is verified as inert simulator state and is never executed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
+import importlib.metadata
 import json
 import math
 import os
 import random
+import shutil
 import statistics
 import subprocess
 import sys
@@ -57,28 +60,32 @@ except ModuleNotFoundError:
         teacher_continuation_actions,
     )
 
-SEED = 73
+DEFAULT_SEED = 73
 MODEL_ID = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 MODEL_REVISION = "2e1fd397ee46e1388853d2af2c993145b0f1098a"
-WORKLOAD_REVISION = "runpod-repository-repair-grpo@1"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@2"
+OBJECTIVE_ID = "leave-one-out-group-normalized-reinforce@1"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
     "accelerate==1.14.0",
 )
+DEPENDENCY_VERSIONS = {
+    requirement.split("==", 1)[0]: requirement.split("==", 1)[1] for requirement in DEPENDENCIES
+}
 MAXIMUM_COMPLEXITY_LEVEL = len(COMPLEXITY_LEVELS) - 1
 PREFIX_ACCEPTED_ACTIONS = 2
 PREFIX_MAX_ATTEMPTS = 5
 EVALUATION_INTERVAL = 5
 EVALUATION_EXAMPLES = 4
-EVALUATION_SEED_BASE = 40_000
+VALIDATION_SEED_BASE = 40_000
+TEST_SEED_BASE = 90_000
 TRAINING_TASKS_PER_UPDATE = 1
 REPLAY_TASKS_PER_LEVEL = 1
 MAX_UPDATES = 80
 MAX_INPUT_TOKENS = 4_096
 MAX_NEW_TOKENS = 192
 LEARNING_RATE = 8e-5
-TEACHER_LOSS_WEIGHT = 0.35
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
 MASTERY_WINDOWS = 1
@@ -97,12 +104,6 @@ class GeneratedAction:
 class WeightedAction:
     generated: GeneratedAction
     weight: float
-
-
-@dataclass(frozen=True)
-class TeacherExample:
-    prompt: str
-    completion: str
 
 
 @dataclass
@@ -282,39 +283,6 @@ def collect_greedy_trajectory(
     }
 
 
-def teacher_examples(collection: BranchCollection) -> list[TeacherExample]:
-    if collection.snapshot is None:
-        environment = RepositoryRepairEnvironment(collection.task)
-        examples: list[TeacherExample] = []
-        for action in diagnostic_actions(collection.task):
-            examples.append(
-                TeacherExample(
-                    prompt=environment.policy_prompt("shared_prefix"),
-                    completion=encode_action(action),
-                )
-            )
-            environment.step(
-                encode_action(action),
-                allowed_tools=DIAGNOSTIC_TOOLS,
-            )
-    else:
-        environment = RepositoryRepairEnvironment.restore(
-            collection.task,
-            collection.snapshot,
-        )
-        examples = []
-
-    for action in teacher_continuation_actions(collection.task):
-        examples.append(
-            TeacherExample(
-                prompt=environment.policy_prompt("continuation"),
-                completion=encode_action(action),
-            )
-        )
-        environment.step(encode_action(action))
-    return examples
-
-
 def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
     if collection.exclusion_reason or not collection.informative:
         return []
@@ -389,7 +357,6 @@ def serialize_branch_group(
         },
         "best_sibling_index": best_sibling_index,
         "learning_signal": collection.informative,
-        "teacher_fallback": collection.solved_siblings == 0,
         "excluded": collection.exclusion_reason is not None,
         "exclusion_reason": collection.exclusion_reason,
         "replay": collection.replay,
@@ -428,7 +395,7 @@ def self_test() -> dict[str, Any]:
     if sibling_advantages([0.5] * BRANCH_WIDTH) != [0.0] * BRANCH_WIDTH:
         raise AssertionError("equal sibling returns must produce exact zero advantage")
 
-    task = make_task(2, seed=SEED)
+    task = make_task(2, seed=DEFAULT_SEED)
     continuation = teacher_continuation_actions(task)
     calls = 0
 
@@ -448,7 +415,7 @@ def self_test() -> dict[str, Any]:
         task,
         scripted_sample,
         stochastic=False,
-        sampling_seed=SEED,
+        sampling_seed=DEFAULT_SEED,
     )
     if collection.snapshot is None or len(collection.siblings) != BRANCH_WIDTH:
         raise AssertionError("collector did not restore four siblings")
@@ -461,10 +428,6 @@ def self_test() -> dict[str, Any]:
         not sibling["steps"] for sibling in serialized["siblings"]
     ):
         raise AssertionError("serialized lineage omitted multi-step trajectory evidence")
-    examples = teacher_examples(collection)
-    if len(examples) != len(teacher_continuation_actions(task)):
-        raise AssertionError("teacher continuation does not start at the restored checkpoint")
-
     result = {
         "self_test_passed": True,
         "workload_revision": WORKLOAD_REVISION,
@@ -478,17 +441,25 @@ def self_test() -> dict[str, Any]:
 
 
 def ensure_dependencies() -> None:
-    try:
-        importlib.import_module("transformers")
-        importlib.import_module("peft")
+    def versions_match() -> bool:
+        try:
+            return all(
+                importlib.metadata.version(package) == version
+                for package, version in DEPENDENCY_VERSIONS.items()
+            )
+        except importlib.metadata.PackageNotFoundError:
+            return False
+
+    if versions_match():
         return
-    except ImportError:
-        pass
     subprocess.run(
         [sys.executable, "-m", "pip", "install", "--quiet", *DEPENDENCIES],
         check=True,
         stdout=sys.stderr,
     )
+    importlib.invalidate_caches()
+    if not versions_match():
+        raise RuntimeError("pinned research dependency versions were not installed exactly")
 
 
 def run_experiment() -> None:
@@ -496,15 +467,24 @@ def run_experiment() -> None:
     emit_progress("dependency_setup", "Preparing model runtime.", elapsed_seconds=0)
     ensure_dependencies()
     import torch
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, PeftModel, get_peft_model
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for repository repair post-training")
 
     target_seconds = int(os.environ.get("EQUINOX_RL_TARGET_SECONDS", "2700"))
-    random.seed(SEED)
-    torch.manual_seed(SEED)
+    experiment_seed = int(os.environ.get("EQUINOX_RL_SEED", str(DEFAULT_SEED)))
+    if not 0 <= experiment_seed <= 2**31 - 1:
+        raise ValueError("EQUINOX_RL_SEED must be between 0 and 2^31 - 1")
+    random.seed(experiment_seed)
+    torch.manual_seed(experiment_seed)
+    torch.cuda.manual_seed_all(experiment_seed)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True, warn_only=True)
     device = torch.device("cuda")
     emit_progress(
         "model_loading",
@@ -521,30 +501,69 @@ def run_experiment() -> None:
         dtype=torch.bfloat16,
         use_safetensors=True,
     ).to(device)
-    model = get_peft_model(
-        base_model,
-        LoraConfig(
-            r=16,
-            lora_alpha=32,
-            lora_dropout=0.0,
-            target_modules=(
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ),
-            task_type="CAUSAL_LM",
-        ),
+    adapter_path = os.environ.get("EQUINOX_ADAPTER_PATH")
+    checkpoints_root = os.path.join(adapter_path, "checkpoints") if adapter_path else None
+    latest_checkpoint_path = (
+        os.path.join(checkpoints_root, "latest.json") if checkpoints_root else None
     )
+    checkpoint_directory: str | None = None
+    if latest_checkpoint_path and os.path.isfile(latest_checkpoint_path):
+        with open(latest_checkpoint_path, encoding="utf-8") as handle:
+            checkpoint_metadata = json.load(handle)
+        checkpoint_name = checkpoint_metadata.get("checkpoint")
+        if (
+            not isinstance(checkpoint_name, str)
+            or not checkpoint_name.startswith("update-")
+            or "/" in checkpoint_name
+        ):
+            raise RuntimeError("training checkpoint pointer is invalid")
+        checkpoint_directory = os.path.join(checkpoints_root, checkpoint_name)
+    if checkpoint_directory:
+        model = PeftModel.from_pretrained(
+            base_model,
+            checkpoint_directory,
+            is_trainable=True,
+        )
+    else:
+        model = get_peft_model(
+            base_model,
+            LoraConfig(
+                r=16,
+                lora_alpha=32,
+                lora_dropout=0.0,
+                target_modules=(
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                ),
+                task_type="CAUSAL_LM",
+            ),
+        )
     model.config.use_cache = False
     optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
         lr=LEARNING_RATE,
         betas=(0.9, 0.95),
     )
+    resume_state: dict[str, Any] | None = None
+    if checkpoint_directory:
+        resume_state = torch.load(
+            os.path.join(checkpoint_directory, "training-state.pt"),
+            map_location=device,
+            weights_only=False,
+        )
+        if (
+            resume_state.get("seed") != experiment_seed
+            or resume_state.get("workload_revision") != WORKLOAD_REVISION
+            or resume_state.get("model_revision") != MODEL_REVISION
+            or resume_state.get("objective_id") != OBJECTIVE_ID
+        ):
+            raise RuntimeError("training checkpoint identity does not match this workload")
+        optimizer.load_state_dict(resume_state["optimizer"])
     trainable_parameters = sum(
         parameter.numel() for parameter in model.parameters() if parameter.requires_grad
     )
@@ -602,22 +621,34 @@ def run_experiment() -> None:
         del encoded, sequence, continuation
         return generated
 
-    def evaluate(level: int, count: int, seed: int) -> dict[str, Any]:
+    def evaluate(
+        level: int,
+        count: int,
+        seed: int,
+        *,
+        split: str,
+    ) -> dict[str, Any]:
         outcomes = [
             collect_greedy_trajectory(
                 task,
                 sample_one,
                 sampling_seed=seed + index * 101,
             )
-            for index, task in enumerate(make_tasks(level, count, seed))
+            for index, task in enumerate(make_tasks(level, count, seed, split=split))
         ]
+        successes = sum(outcome["solved"] for outcome in outcomes)
+        exact_rate = successes / len(outcomes)
+        interval_radius = 1.96 * math.sqrt(max(exact_rate * (1 - exact_rate), 0.0) / len(outcomes))
         return {
             "level": level,
+            "split": split,
             "examples": count,
-            "exact_rate": round(
-                sum(outcome["solved"] for outcome in outcomes) / len(outcomes),
-                6,
-            ),
+            "exact_successes": successes,
+            "exact_rate": round(exact_rate, 6),
+            "exact_rate_95ci": [
+                round(max(0.0, exact_rate - interval_radius), 6),
+                round(min(1.0, exact_rate + interval_radius), 6),
+            ],
             "checkpoint_rate": round(
                 sum(outcome["checkpoint_reached"] for outcome in outcomes) / len(outcomes),
                 6,
@@ -672,9 +703,7 @@ def run_experiment() -> None:
             token_log_probabilities = (
                 torch.log_softmax(logits, dim=-1).gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
             )
-            sequence_log_probability = (token_log_probabilities * target_mask).sum(
-                dim=1
-            ) / target_mask.sum(dim=1).clamp_min(1.0)
+            sequence_log_probability = (token_log_probabilities * target_mask).sum(dim=1)
             weight_tensor = torch.tensor(weights, device=device)
             loss = -(weight_tensor.detach() * sequence_log_probability).sum() / denominator
             loss.backward()
@@ -682,82 +711,124 @@ def run_experiment() -> None:
             del output, logits, token_log_probabilities
         return loss_value
 
-    def train_teacher(examples: list[TeacherExample]) -> float:
-        if not examples:
-            return 0.0
-        loss_value = 0.0
-        for example in examples:
-            prompt_ids = tokenizer(
-                render_prompt(example.prompt),
-                add_special_tokens=False,
-            )["input_ids"]
-            target_ids = tokenizer(
-                example.completion + tokenizer.eos_token,
-                add_special_tokens=False,
-            )["input_ids"]
-            prompt_ids = prompt_ids[-(MAX_INPUT_TOKENS - len(target_ids)) :]
-            input_ids = torch.tensor([prompt_ids + target_ids], device=device)
-            attention_mask = torch.ones_like(input_ids)
-            labels = torch.tensor(
-                [[-100] * len(prompt_ids) + target_ids],
-                device=device,
-            )
-            output = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-                use_cache=False,
-            )
-            loss = output.loss.float() * TEACHER_LOSS_WEIGHT / len(examples)
-            loss.backward()
-            loss_value += float(loss.detach().item())
-            del output
-        return loss_value
-
     emit_progress(
         "baseline_evaluation",
-        "Evaluating held-out multi-step tasks.",
+        "Evaluating the validation split.",
         elapsed_seconds=round(time.monotonic() - started, 3),
         current_level=0,
     )
-    initial_by_level = {
-        str(level): evaluate(
-            level,
-            EVALUATION_EXAMPLES,
-            EVALUATION_SEED_BASE + level * 1_000,
-        )
-        for level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
-    }
-    initial_reward = statistics.mean(
-        observation["exact_rate"] for observation in initial_by_level.values()
+    validation_baseline_by_level = (
+        resume_state["validation_baseline_by_level"]
+        if resume_state
+        else {
+            str(level): evaluate(
+                level,
+                EVALUATION_EXAMPLES,
+                VALIDATION_SEED_BASE + level * 1_000,
+                split="validation",
+            )
+            for level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
+        }
     )
-    level = 0
-    history: list[dict[str, Any]] = []
-    promotions: list[dict[str, Any]] = []
-    branch_snapshots: list[dict[str, Any]] = []
-    mastery_streak = 0
-    updates_completed = 0
-    optimizer_update_count = 0
-    policy_update_count = 0
-    teacher_update_count = 0
-    total_task_groups = 0
-    replay_task_groups = 0
-    informative_task_groups = 0
-    excluded_task_groups = 0
-    teacher_fallback_groups = 0
-    total_sampled_actions = 0
-    total_post_branch_actions = 0
+    level = int(resume_state["level"]) if resume_state else 0
+    history = list(resume_state["history"]) if resume_state else []
+    promotions = list(resume_state["promotions"]) if resume_state else []
+    branch_snapshots = list(resume_state["branch_snapshots"]) if resume_state else []
+    mastery_streak = int(resume_state["mastery_streak"]) if resume_state else 0
+    updates_completed = int(resume_state["updates_completed"]) if resume_state else 0
+    optimizer_update_count = int(resume_state["optimizer_update_count"]) if resume_state else 0
+    policy_update_count = int(resume_state["policy_update_count"]) if resume_state else 0
+    total_task_groups = int(resume_state["total_task_groups"]) if resume_state else 0
+    replay_task_groups = int(resume_state["replay_task_groups"]) if resume_state else 0
+    informative_task_groups = int(resume_state["informative_task_groups"]) if resume_state else 0
+    excluded_task_groups = int(resume_state["excluded_task_groups"]) if resume_state else 0
+    total_sampled_actions = int(resume_state["total_sampled_actions"]) if resume_state else 0
+    total_post_branch_actions = (
+        int(resume_state["total_post_branch_actions"]) if resume_state else 0
+    )
     stop_reason = "maximum_updates"
-    last_observation = initial_by_level["0"]
+    last_observation = (
+        resume_state["last_observation"] if resume_state else validation_baseline_by_level["0"]
+    )
+    if resume_state:
+        random.setstate(resume_state["python_rng_state"])
+        torch.set_rng_state(resume_state["torch_rng_state"].cpu())
+        torch.cuda.set_rng_state_all(resume_state["cuda_rng_states"])
+    first_update = updates_completed + 1
 
-    for update in range(1, MAX_UPDATES + 1):
+    def persist_training_checkpoint(update: int) -> None:
+        if not checkpoints_root or not latest_checkpoint_path:
+            return
+        os.makedirs(checkpoints_root, exist_ok=True)
+        checkpoint_name = f"update-{update:04d}"
+        target = os.path.join(checkpoints_root, checkpoint_name)
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        os.makedirs(target)
+        model.save_pretrained(target, safe_serialization=True)
+        state = {
+            "schema_version": 1,
+            "workload_revision": WORKLOAD_REVISION,
+            "model_revision": MODEL_REVISION,
+            "objective_id": OBJECTIVE_ID,
+            "seed": experiment_seed,
+            "updates_completed": updates_completed,
+            "level": level,
+            "history": history,
+            "promotions": promotions,
+            "branch_snapshots": branch_snapshots,
+            "mastery_streak": mastery_streak,
+            "optimizer_update_count": optimizer_update_count,
+            "policy_update_count": policy_update_count,
+            "total_task_groups": total_task_groups,
+            "replay_task_groups": replay_task_groups,
+            "informative_task_groups": informative_task_groups,
+            "excluded_task_groups": excluded_task_groups,
+            "total_sampled_actions": total_sampled_actions,
+            "total_post_branch_actions": total_post_branch_actions,
+            "last_observation": last_observation,
+            "validation_baseline_by_level": validation_baseline_by_level,
+            "optimizer": optimizer.state_dict(),
+            "python_rng_state": random.getstate(),
+            "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_states": torch.cuda.get_rng_state_all(),
+        }
+        temporary_state = os.path.join(target, "training-state.pt.pending")
+        torch.save(state, temporary_state)
+        os.replace(temporary_state, os.path.join(target, "training-state.pt"))
+        previous = None
+        if os.path.isfile(latest_checkpoint_path):
+            with open(latest_checkpoint_path, encoding="utf-8") as handle:
+                previous = json.load(handle).get("checkpoint")
+        temporary_pointer = latest_checkpoint_path + ".pending"
+        with open(temporary_pointer, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"schema_version": 1, "checkpoint": checkpoint_name},
+                handle,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            handle.write("\n")
+        os.replace(temporary_pointer, latest_checkpoint_path)
+        if (
+            isinstance(previous, str)
+            and previous != checkpoint_name
+            and previous.startswith("update-")
+            and "/" not in previous
+        ):
+            previous_path = os.path.join(checkpoints_root, previous)
+            if os.path.isdir(previous_path):
+                shutil.rmtree(previous_path)
+
+    for update in range(first_update, MAX_UPDATES + 1):
         if time.monotonic() - started >= target_seconds:
             stop_reason = "target_runtime"
             break
         current_tasks = make_tasks(
             level,
             TRAINING_TASKS_PER_UPDATE,
-            SEED * 100_000 + update * 17,
+            experiment_seed * 100_000 + update * 17,
+            split="train",
         )
         replay_tasks = [
             task
@@ -765,35 +836,26 @@ def run_experiment() -> None:
             for task in make_tasks(
                 replay_level,
                 REPLAY_TASKS_PER_LEVEL,
-                SEED * 1_000_000 + update * 101 + replay_level,
+                experiment_seed * 1_000_000 + update * 101 + replay_level,
+                split="train",
             )
         ]
         task_specs = [(task, False) for task in current_tasks] + [
             (task, True) for task in replay_tasks
         ]
-        random.Random(SEED + update).shuffle(task_specs)
+        random.Random(experiment_seed + update).shuffle(task_specs)
         collections = [
             collect_branch_group(
                 task,
                 sample_one,
                 stochastic=True,
-                sampling_seed=SEED * 10_000_000 + update * 100_000 + index * 1_000,
+                sampling_seed=(experiment_seed * 10_000_000 + update * 100_000 + index * 1_000),
                 replay=replay,
             )
             for index, (task, replay) in enumerate(task_specs)
         ]
         policy_training_examples = [
             example for collection in collections for example in policy_examples(collection)
-        ]
-        teacher_collections = [
-            collection
-            for collection in collections
-            if collection.exclusion_reason is not None or collection.solved_siblings == 0
-        ]
-        supervised_examples = [
-            example
-            for collection in teacher_collections
-            for example in teacher_examples(collection)
         ]
         informative_collections = sum(collection.informative for collection in collections)
 
@@ -803,8 +865,7 @@ def run_experiment() -> None:
             policy_training_examples,
             max(1, informative_collections * BRANCH_WIDTH),
         )
-        teacher_loss = train_teacher(supervised_examples)
-        if policy_training_examples or supervised_examples:
+        if policy_training_examples:
             gradient_norm = torch.nn.utils.clip_grad_norm_(
                 (parameter for parameter in model.parameters() if parameter.requires_grad),
                 max_norm=1.0,
@@ -815,8 +876,6 @@ def run_experiment() -> None:
             gradient_norm = 0.0
         if policy_training_examples:
             policy_update_count += 1
-        if supervised_examples:
-            teacher_update_count += 1
 
         updates_completed = update
         total_task_groups += len(collections)
@@ -825,7 +884,6 @@ def run_experiment() -> None:
         excluded_task_groups += sum(
             collection.exclusion_reason is not None for collection in collections
         )
-        teacher_fallback_groups += len(teacher_collections)
         total_sampled_actions += sum(
             len(collection.prefix.steps)
             + sum(
@@ -853,22 +911,19 @@ def run_experiment() -> None:
                 informative_task_groups / total_task_groups,
                 6,
             ),
-            teacher_fallback_rate=round(
-                teacher_fallback_groups / total_task_groups,
-                6,
-            ),
             total_sampled_actions=total_sampled_actions,
             policy_update_count=policy_update_count,
-            teacher_update_count=teacher_update_count,
             latest_branch_snapshot=latest_snapshot,
             elapsed_seconds=round(time.monotonic() - started, 3),
         )
 
+        stop_after_checkpoint = False
         if update % EVALUATION_INTERVAL == 0:
             observation = evaluate(
                 level,
                 EVALUATION_EXAMPLES,
-                EVALUATION_SEED_BASE + level * 1_000,
+                VALIDATION_SEED_BASE + level * 1_000,
+                split="validation",
             )
             mastered = observation_mastered(observation)
             mastery_streak = mastery_streak + 1 if mastered else 0
@@ -877,14 +932,9 @@ def run_experiment() -> None:
                     "update": update,
                     **observation,
                     "policy_loss": round(policy_loss, 6),
-                    "teacher_loss": round(teacher_loss, 6),
                     "gradient_norm": round(float(gradient_norm), 6),
                     "informative_group_rate": round(
                         informative_task_groups / total_task_groups,
-                        6,
-                    ),
-                    "teacher_fallback_rate": round(
-                        teacher_fallback_groups / total_task_groups,
                         6,
                     ),
                     "mastery_streak": mastery_streak,
@@ -907,7 +957,10 @@ def run_experiment() -> None:
                 mastery_streak = 0
             elif level == MAXIMUM_COMPLEXITY_LEVEL and mastery_streak >= MASTERY_WINDOWS:
                 stop_reason = "maximum_level_mastered"
-                break
+                stop_after_checkpoint = True
+        persist_training_checkpoint(update)
+        if stop_after_checkpoint:
+            break
 
     emit_progress(
         "finalizing",
@@ -917,14 +970,28 @@ def run_experiment() -> None:
         promotion_count=len(promotions),
         elapsed_seconds=round(time.monotonic() - started, 3),
     )
+    with model.disable_adapter():
+        initial_by_level = {
+            str(candidate_level): evaluate(
+                candidate_level,
+                EVALUATION_EXAMPLES,
+                TEST_SEED_BASE + candidate_level * 1_000,
+                split="test",
+            )
+            for candidate_level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
+        }
     final_by_level = {
         str(candidate_level): evaluate(
             candidate_level,
             EVALUATION_EXAMPLES,
-            EVALUATION_SEED_BASE + candidate_level * 1_000,
+            TEST_SEED_BASE + candidate_level * 1_000,
+            split="test",
         )
         for candidate_level in range(MAXIMUM_COMPLEXITY_LEVEL + 1)
     }
+    initial_reward = statistics.mean(
+        observation["exact_rate"] for observation in initial_by_level.values()
+    )
     final_reward = statistics.mean(
         observation["exact_rate"] for observation in final_by_level.values()
     )
@@ -946,9 +1013,50 @@ def run_experiment() -> None:
         and retention_passed
         and reward_gain > 0
     )
-    adapter_path = os.environ.get("EQUINOX_ADAPTER_PATH")
+    adapter_manifest: dict[str, Any] | None = None
     if adapter_path:
         model.save_pretrained(adapter_path, safe_serialization=True)
+        files = []
+        for directory, _, names in os.walk(adapter_path):
+            for name in sorted(names):
+                path = os.path.join(directory, name)
+                relative_path = os.path.relpath(path, adapter_path)
+                if relative_path == "adapter-manifest.json":
+                    continue
+                with open(path, "rb") as handle:
+                    payload = handle.read()
+                files.append(
+                    {
+                        "path": relative_path,
+                        "size_bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                    }
+                )
+        if not files or not any(item["size_bytes"] > 0 for item in files):
+            raise RuntimeError("adapter persistence produced no durable bytes")
+        adapter_manifest_content = {
+            "schema_version": 1,
+            "model_id": MODEL_ID,
+            "model_revision": MODEL_REVISION,
+            "objective_id": OBJECTIVE_ID,
+            "files": files,
+        }
+        manifest_bytes = json.dumps(
+            adapter_manifest_content,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        adapter_manifest = {
+            **adapter_manifest_content,
+            "digest": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest(),
+        }
+        manifest_path = os.path.join(adapter_path, "adapter-manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(adapter_manifest, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+        with open(manifest_path, encoding="utf-8") as handle:
+            if json.load(handle) != adapter_manifest:
+                raise RuntimeError("adapter manifest failed its read-after-write check")
     result = {
         "schema_version": 2,
         "experiment_completed": True,
@@ -956,7 +1064,10 @@ def run_experiment() -> None:
         "hypothesis_passed": hypothesis_passed,
         "workload": "repository-repair-restored-continuation-post-training",
         "workload_revision": WORKLOAD_REVISION,
-        "algorithm": "shared-prefix-sibling-relative-policy-optimization",
+        "algorithm": "leave-one-out-group-normalized-reinforce",
+        "objective_id": OBJECTIVE_ID,
+        "objective_sequence_reduction": "sum_completion_token_log_probabilities",
+        "teacher_data_used": False,
         "branch_width": BRANCH_WIDTH,
         "static_branch_width": BRANCH_WIDTH,
         "multi_step": True,
@@ -973,7 +1084,14 @@ def run_experiment() -> None:
         "model_revision": MODEL_REVISION,
         "model_parameters": model_parameters,
         "trainable_parameters": trainable_parameters,
-        "seed": SEED,
+        "seed": experiment_seed,
+        "determinism": {
+            "cuda_seeded_all_devices": True,
+            "deterministic_algorithms": "warn_on_unavailable_kernel",
+            "cudnn_benchmark": False,
+            "cudnn_deterministic": True,
+            "tf32": False,
+        },
         "mastery_threshold": MASTERY_THRESHOLD,
         "mastery_windows": MASTERY_WINDOWS,
         "maximum_complexity_level": MAXIMUM_COMPLEXITY_LEVEL,
@@ -988,27 +1106,21 @@ def run_experiment() -> None:
         "final_reward": round(final_reward, 6),
         "reward_gain": round(reward_gain, 6),
         "initial_by_level": initial_by_level,
+        "validation_baseline_by_level": validation_baseline_by_level,
         "final_by_level": final_by_level,
         "history": history,
         "branch_snapshots": branch_snapshots,
         "updates_completed": updates_completed,
         "optimizer_update_count": optimizer_update_count,
         "policy_update_count": policy_update_count,
-        "teacher_update_count": teacher_update_count,
         "total_task_groups": total_task_groups,
         "replay_task_groups": replay_task_groups,
         "informative_task_groups": informative_task_groups,
         "excluded_task_groups": excluded_task_groups,
-        "teacher_fallback_groups": teacher_fallback_groups,
         "informative_group_rate": round(
             informative_task_groups / max(1, total_task_groups),
             6,
         ),
-        "teacher_fallback_rate": round(
-            teacher_fallback_groups / max(1, total_task_groups),
-            6,
-        ),
-        "teacher_loss_weight": TEACHER_LOSS_WEIGHT,
         "total_sampled_actions": total_sampled_actions,
         "total_post_branch_actions": total_post_branch_actions,
         "stop_reason": stop_reason,
@@ -1016,9 +1128,19 @@ def run_experiment() -> None:
         "device": device.type,
         "gpu_name": torch.cuda.get_device_name(0),
         "torch_version": torch.__version__,
+        "dependency_versions": {
+            package: importlib.metadata.version(package) for package in sorted(DEPENDENCY_VERSIONS)
+        },
         "cuda_version": torch.version.cuda,
         "elapsed_seconds": round(time.monotonic() - started, 3),
-        "adapter_persisted": bool(adapter_path),
+        "adapter_persisted": adapter_manifest is not None,
+        "adapter_manifest": adapter_manifest,
+        "resumed_from_checkpoint": resume_state is not None,
+        "training_state_checkpointed": bool(
+            latest_checkpoint_path and os.path.isfile(latest_checkpoint_path)
+        ),
+        "optimization_seed_count": 1,
+        "claim_strength": "EXPLORATORY_SINGLE_SEED",
         "retention_passed": retention_passed,
         "restored_branching_observed": restored_branching_observed,
     }
@@ -1032,10 +1154,8 @@ def run_experiment() -> None:
         exact_rate=reached["exact_rate"],
         checkpoint_rate=reached["checkpoint_rate"],
         informative_group_rate=result["informative_group_rate"],
-        teacher_fallback_rate=result["teacher_fallback_rate"],
         total_sampled_actions=total_sampled_actions,
         policy_update_count=policy_update_count,
-        teacher_update_count=teacher_update_count,
         hypothesis_passed=hypothesis_passed,
         elapsed_seconds=result["elapsed_seconds"],
         stop_reason=stop_reason,

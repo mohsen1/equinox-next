@@ -24,6 +24,45 @@ def test_complexity_changes_repository_faults_depth_and_horizon() -> None:
     assert [task.complexity.repair_horizon for task in tasks] == [8, 10, 14, 18]
 
 
+def test_task_families_are_disjoint_across_train_validation_and_test() -> None:
+    families = {
+        split: {
+            fault.family_id
+            for task in (make_task(3, seed, split=split) for seed in range(20))
+            for fault in task.faults
+        }
+        for split in ("train", "validation", "test")
+    }
+
+    assert families["train"].isdisjoint(families["validation"])
+    assert families["train"].isdisjoint(families["test"])
+    assert families["validation"].isdisjoint(families["test"])
+
+
+def test_hidden_verifier_accepts_semantically_equivalent_bounded_expression() -> None:
+    task = next(
+        make_task(0, seed)
+        for seed in range(100)
+        if make_task(0, seed).faults[0].family_id == "combine"
+    )
+    environment = RepositoryRepairEnvironment(task)
+    fault = task.faults[0]
+    equivalent = encode_action(
+        {
+            "tool": "edit",
+            "path": fault.path,
+            "old": fault.old,
+            "new": "return sum((left, right))",
+        }
+    )
+
+    edited = environment.step(equivalent)
+    tested = environment.step('{"tool":"test"}')
+
+    assert edited.accepted
+    assert tested.verifier_passed
+
+
 def test_snapshot_restores_identical_isolated_continuations() -> None:
     task = make_task(2, seed=17)
     prefix = RepositoryRepairEnvironment(task)

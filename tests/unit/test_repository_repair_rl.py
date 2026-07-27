@@ -1,5 +1,5 @@
 from research.runpod.repository_repair_env import BRANCH_WIDTH, encode_action, make_task
-from research.runpod.repository_repair_grpo import (
+from research.runpod.repository_repair_rl import (
     BranchCollection,
     GeneratedAction,
     collect_branch_group,

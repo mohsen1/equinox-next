@@ -8,6 +8,7 @@ compare bounded simulator state with a deterministic expected state.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import random
@@ -63,6 +64,7 @@ COMPLEXITY_LEVELS = (
 
 @dataclass(frozen=True)
 class Fault:
+    family_id: str
     path: str
     old: str
     new: str
@@ -78,6 +80,7 @@ class RepairTask:
     expected_files: dict[str, str]
     faults: tuple[Fault, ...]
     complexity: Complexity
+    split: Literal["train", "validation", "test"]
 
     @property
     def failing_tests(self) -> tuple[str, ...]:
@@ -172,22 +175,111 @@ FAULT_TEMPLATES = (
         "return label.strip().lower()",
         "test_normalize_strips_outer_space",
     ),
+    (
+        "is_even",
+        "def is_even(value):\n    return value % 2 == 1\n",
+        "return value % 2 == 1",
+        "return value % 2 == 0",
+        "test_is_even_handles_signed_values",
+    ),
+    (
+        "absolute",
+        "def absolute(value):\n    return -value\n",
+        "return -value",
+        "return abs(value)",
+        "test_absolute_never_returns_negative",
+    ),
+    (
+        "contains",
+        "def contains(items, needle):\n    return needle not in items\n",
+        "return needle not in items",
+        "return needle in items",
+        "test_contains_reports_membership",
+    ),
+    (
+        "nonempty",
+        "def nonempty(value):\n    return len(value) == 0\n",
+        "return len(value) == 0",
+        "return len(value) > 0",
+        "test_nonempty_distinguishes_empty_values",
+    ),
+    (
+        "prefix",
+        "def prefix(value, expected):\n    return value.endswith(expected)\n",
+        "return value.endswith(expected)",
+        "return value.startswith(expected)",
+        "test_prefix_matches_the_start",
+    ),
+    (
+        "multiply",
+        "def multiply(left, right):\n    return left + right\n",
+        "return left + right",
+        "return left * right",
+        "test_multiply_handles_zero_and_signs",
+    ),
+    (
+        "maximum",
+        "def maximum(left, right):\n    return min(left, right)\n",
+        "return min(left, right)",
+        "return max(left, right)",
+        "test_maximum_returns_the_larger_value",
+    ),
+    (
+        "default_zero",
+        "def default_zero(value):\n    return value or 1\n",
+        "return value or 1",
+        "return value or 0",
+        "test_default_zero_preserves_truthy_values",
+    ),
+    (
+        "bounded_lower",
+        "def bounded_lower(value, minimum):\n    return min(value, minimum)\n",
+        "return min(value, minimum)",
+        "return max(value, minimum)",
+        "test_bounded_lower_enforces_the_floor",
+    ),
+    (
+        "has_key",
+        "def has_key(records, key):\n    return key not in records\n",
+        "return key not in records",
+        "return key in records",
+        "test_has_key_reports_mapping_membership",
+    ),
 )
 
+TEMPLATE_SPLITS = {
+    "train": FAULT_TEMPLATES[:5],
+    "validation": FAULT_TEMPLATES[5:10],
+    "test": FAULT_TEMPLATES[10:15],
+}
 
-def make_task(level: int, seed: int) -> RepairTask:
+
+def make_task(
+    level: int,
+    seed: int,
+    *,
+    split: Literal["train", "validation", "test"] = "train",
+) -> RepairTask:
     if not 0 <= level < len(COMPLEXITY_LEVELS):
         raise ValueError(f"level must be between 0 and {len(COMPLEXITY_LEVELS) - 1}")
     complexity = COMPLEXITY_LEVELS[level]
     rng = random.Random(seed)
-    selected = rng.sample(list(FAULT_TEMPLATES), complexity.fault_count)
+    selected = rng.sample(list(TEMPLATE_SPLITS[split]), complexity.fault_count)
     files: dict[str, str] = {}
     faults: list[Fault] = []
 
     for index, (name, source, old, new, test_name) in enumerate(selected):
         path = f"src/{name}_{seed % 97}_{index}.py"
         files[path] = source
-        faults.append(Fault(path=path, old=old, new=new, test_name=test_name))
+        faults.append(
+            Fault(
+                family_id=name,
+                path=path,
+                old=old,
+                new=new,
+                test_name=test_name,
+            )
+        )
 
     previous_module = faults[0].path.removeprefix("src/").removesuffix(".py")
     for depth in range(1, complexity.dependency_depth + 1):
@@ -220,6 +312,8 @@ def make_task(level: int, seed: int) -> RepairTask:
     task_material = {
         "level": level,
         "seed": seed,
+        "split": split,
+        "family_ids": [fault.family_id for fault in faults],
         "files": files,
         "expected_digest": _digest(expected_files),
     }
@@ -237,11 +331,181 @@ def make_task(level: int, seed: int) -> RepairTask:
         expected_files=expected_files,
         faults=tuple(faults),
         complexity=complexity,
+        split=split,
     )
 
 
-def make_tasks(level: int, count: int, seed: int) -> list[RepairTask]:
-    return [make_task(level, seed + index * 7_919) for index in range(count)]
+def make_tasks(
+    level: int,
+    count: int,
+    seed: int,
+    *,
+    split: Literal["train", "validation", "test"] = "train",
+) -> list[RepairTask]:
+    tasks = [make_task(level, seed + index * 7_919, split=split) for index in range(count)]
+    if len({task.task_id for task in tasks}) != len(tasks):
+        raise RuntimeError("task generator produced an exact duplicate")
+    return tasks
+
+
+SEMANTIC_CASES: dict[str, tuple[tuple[Any, ...], ...]] = {
+    "combine": ((2, 3), (-2, 5), (0, 0)),
+    "is_missing": ((None,), (0,), ("",), ("value",)),
+    "clamp": ((5, 0, 10), (-2, 0, 10), (14, 0, 10)),
+    "lookup": (({"a": 1}, "a", 9), ({}, "a", 9)),
+    "normalize": ((" A ",), ("value",), ("",)),
+    "is_even": ((-3,), (-2,), (0,), (7,)),
+    "absolute": ((-7,), (0,), (5,)),
+    "contains": (((1, 2), 2), ((1, 2), 3), ((), 1)),
+    "nonempty": (("",), ("x",), ([],), ([0],)),
+    "prefix": (("alpha", "al"), ("alpha", "ha"), ("", "")),
+    "multiply": ((3, 4), (-2, 5), (0, 9)),
+    "maximum": ((3, 4), (-2, -5), (0, 0)),
+    "default_zero": ((None,), (0,), ("value",), (7,)),
+    "bounded_lower": ((5, 3), (1, 3), (-4, -2)),
+    "has_key": (({"a": 1}, "a"), ({"a": 1}, "b"), ({}, "a")),
+}
+
+
+def _return_expression(source: str) -> tuple[tuple[str, ...], ast.expr] | None:
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return None
+    if len(list(ast.walk(module))) > 80 or len(module.body) != 1:
+        return None
+    function = module.body[0]
+    if (
+        not isinstance(function, ast.FunctionDef)
+        or function.decorator_list
+        or function.args.vararg
+        or function.args.kwarg
+        or function.args.defaults
+        or function.args.kw_defaults
+        or len(function.body) != 1
+        or not isinstance(function.body[0], ast.Return)
+        or function.body[0].value is None
+    ):
+        return None
+    arguments = tuple(argument.arg for argument in function.args.args)
+    return arguments, function.body[0].value
+
+
+def _evaluate_expression(node: ast.expr, values: dict[str, Any]) -> Any:
+    if isinstance(node, ast.Constant) and isinstance(
+        node.value,
+        str | int | float | bool | type(None),
+    ):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in values:
+        return values[node.id]
+    if isinstance(node, ast.Tuple):
+        return tuple(_evaluate_expression(item, values) for item in node.elts)
+    if isinstance(node, ast.List):
+        return [_evaluate_expression(item, values) for item in node.elts]
+    if isinstance(node, ast.UnaryOp):
+        operand = _evaluate_expression(node.operand, values)
+        if isinstance(node.op, ast.Not):
+            return not operand
+        if isinstance(node.op, ast.USub):
+            return -operand
+    if isinstance(node, ast.BinOp):
+        left = _evaluate_expression(node.left, values)
+        right = _evaluate_expression(node.right, values)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Mod):
+            return left % right
+    if isinstance(node, ast.BoolOp):
+        evaluated = [_evaluate_expression(value, values) for value in node.values]
+        if isinstance(node.op, ast.And):
+            return next((value for value in evaluated if not value), evaluated[-1])
+        if isinstance(node.op, ast.Or):
+            return next((value for value in evaluated if value), evaluated[-1])
+    if isinstance(node, ast.Compare) and len(node.ops) == len(node.comparators) == 1:
+        left = _evaluate_expression(node.left, values)
+        right = _evaluate_expression(node.comparators[0], values)
+        operator = node.ops[0]
+        if isinstance(operator, ast.Eq):
+            return left == right
+        if isinstance(operator, ast.NotEq):
+            return left != right
+        if isinstance(operator, ast.Is):
+            return left is right
+        if isinstance(operator, ast.IsNot):
+            return left is not right
+        if isinstance(operator, ast.In):
+            return left in right
+        if isinstance(operator, ast.NotIn):
+            return left not in right
+        if isinstance(operator, ast.Gt):
+            return left > right
+        if isinstance(operator, ast.GtE):
+            return left >= right
+        if isinstance(operator, ast.Lt):
+            return left < right
+        if isinstance(operator, ast.LtE):
+            return left <= right
+    if isinstance(node, ast.Subscript):
+        return _evaluate_expression(node.value, values)[_evaluate_expression(node.slice, values)]
+    if isinstance(node, ast.IfExp):
+        branch = node.body if _evaluate_expression(node.test, values) else node.orelse
+        return _evaluate_expression(branch, values)
+    if isinstance(node, ast.Call) and not node.keywords:
+        arguments = [_evaluate_expression(argument, values) for argument in node.args]
+        if isinstance(node.func, ast.Name) and node.func.id in {
+            "abs",
+            "len",
+            "max",
+            "min",
+            "sum",
+        }:
+            return {
+                "abs": abs,
+                "len": len,
+                "max": max,
+                "min": min,
+                "sum": sum,
+            }[node.func.id](*arguments)
+        if isinstance(node.func, ast.Attribute):
+            receiver = _evaluate_expression(node.func.value, values)
+            if node.func.attr in {
+                "endswith",
+                "get",
+                "lower",
+                "startswith",
+                "strip",
+                "upper",
+            }:
+                return getattr(receiver, node.func.attr)(*arguments)
+    raise ValueError("expression is outside the inert semantic verifier subset")
+
+
+def _semantically_matches(candidate: str, expected: str, family_id: str) -> bool:
+    candidate_expression = _return_expression(candidate)
+    expected_expression = _return_expression(expected)
+    if not candidate_expression or not expected_expression:
+        return False
+    candidate_arguments, candidate_return = candidate_expression
+    expected_arguments, expected_return = expected_expression
+    if candidate_arguments != expected_arguments:
+        return False
+    for arguments in SEMANTIC_CASES[family_id]:
+        if len(candidate_arguments) != len(arguments):
+            return False
+        values = {name: arguments[index] for index, name in enumerate(candidate_arguments)}
+        try:
+            candidate_value = _evaluate_expression(candidate_return, values)
+            expected_value = _evaluate_expression(expected_return, values)
+        except (AttributeError, KeyError, TypeError, ValueError, ZeroDivisionError):
+            return False
+        if type(candidate_value) is not type(expected_value) or candidate_value != expected_value:
+            return False
+    return True
 
 
 ACTION_KEYS = {
@@ -309,7 +573,11 @@ class RepositoryRepairEnvironment:
     def _test_results(self) -> tuple[int, list[str]]:
         failing: list[str] = []
         for fault in self.task.faults:
-            if self.files.get(fault.path) != self.task.expected_files[fault.path]:
+            if not _semantically_matches(
+                self.files.get(fault.path, ""),
+                self.task.expected_files[fault.path],
+                fault.family_id,
+            ):
                 failing.append(fault.test_name)
         return len(self.task.faults) - len(failing), failing
 
