@@ -182,7 +182,7 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
   replay: false,
   optimizer_update: {
     applied: true,
-    objective_id: "leave-one-out-correctness-contrast-reinforce@5",
+    objective_id: "leave-one-out-paired-validation-reinforce@6",
     adapter_revision: "update-5",
     learning_rate: 0.00002,
     policy_loss: 0.12,

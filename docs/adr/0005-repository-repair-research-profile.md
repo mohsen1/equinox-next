@@ -228,6 +228,20 @@ frontier tasks per update replace two so each optimizer step aggregates more ind
 correctness contrasts. Efficiency-only differences remain evidence but no longer move
 the policy during this exact-solve milestone.
 
+The seed `107` v5 run completed ten optimizer updates with 16 informative groups out of
+40. The held-out protocol gate passed at `100%`, the final recent malformed-action rate
+was `2.521%`, and the run stopped after five consecutive uninformative groups. A rotating
+validation window scored `6/8`, but the retained adapter changed none of the 24 paired
+test outcomes. The run therefore demonstrates denser trustworthy signal and a clean
+no-signal stop, not model improvement. Estimated cost was `$0.145249`.
+
+Objective v6 is `leave-one-out-paired-validation-reinforce@6` under workload revision
+`runpod-repository-repair-loo-reinforce@12`. It raises the clipped LoRA learning rate from
+`2e-5` to `8e-5`, extends the no-signal limit to twelve groups, and evaluates both a fixed
+paired checkpoint-selection set and a separate rotating curriculum set. A random
+curriculum window can no longer become the retained checkpoint merely by scoring higher
+than an incomparable baseline window.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and

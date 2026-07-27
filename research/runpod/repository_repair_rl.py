@@ -82,8 +82,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@11"
-OBJECTIVE_ID = "leave-one-out-correctness-contrast-reinforce@5"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@12"
+OBJECTIVE_ID = "leave-one-out-paired-validation-reinforce@6"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -102,12 +102,12 @@ TEST_SEED_BASE = 90_000
 MAX_INPUT_TOKENS = 4_096
 MAX_NEW_TOKENS = 192
 ACTION_RESPONSE_PREFIX = '{"tool":'
-LEARNING_RATE = 2e-5
+LEARNING_RATE = 8e-5
 ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
 MINIMUM_PROTOCOL_VALIDITY_RATE = 0.99
-MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS = 5
+MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS = 12
 MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS = 2
 MAXIMUM_RECENT_MALFORMED_ACTION_RATE = 0.05
 PROGRESS_PATH = os.environ.get("EQUINOX_PROGRESS_PATH")
@@ -711,6 +711,10 @@ def validation_window_seed(level: int, update: int) -> int:
         + level * 1_000_000
         + update * VALIDATION_WINDOW_SEED_STRIDE
     )
+
+
+def checkpoint_validation_seed(level: int) -> int:
+    return VALIDATION_SEED_BASE + level * 1_000
 
 
 def bounded_final_evaluation_reserve(
@@ -1340,6 +1344,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "shared_prefix_sampling": "greedy",
         "policy_prompt_roles": ["system", "user"],
         "learning_signal": "mixed_hidden_correctness_within_sibling_group",
+        "checkpoint_selection_window": "fixed_paired_validation",
+        "curriculum_validation_window": "rotating_disjoint",
         "reward_contract_revision": "correctness-gated-efficiency@1",
         "maximum_final_evaluation_reserve_seconds": (
             runtime.maximum_final_evaluation_reserve_seconds
@@ -2293,7 +2299,42 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 persist_training_checkpoint(update)
                 break
             validation_started = time.monotonic()
-            observation = evaluate_tasks(
+            checkpoint_seed = checkpoint_validation_seed(level)
+            checkpoint_tasks = make_tasks(
+                level,
+                runtime.validation_examples,
+                checkpoint_seed,
+                split="validation",
+            )
+            checkpoint_observation = evaluate_tasks(
+                checkpoint_tasks,
+                level=level,
+                seed=checkpoint_seed,
+                split="validation",
+                deadline_seconds=training_deadline_seconds,
+                progress_phase="checkpoint_validation_evaluation",
+            )
+            if not checkpoint_observation["complete"]:
+                history.append(
+                    {
+                        "update": update,
+                        **checkpoint_observation,
+                        "mastery_streak": mastery_streak,
+                        "mastered": False,
+                        "selection_window": "fixed_paired_checkpoint",
+                        "validation_elapsed_seconds": round(
+                            time.monotonic() - validation_started,
+                            3,
+                        ),
+                        "incomplete_reason": "training_deadline",
+                        "elapsed_seconds": round(cumulative_elapsed_seconds(), 3),
+                    }
+                )
+                stop_reason = "final_evaluation_reserve"
+                training_complete = True
+                persist_training_checkpoint(update)
+                break
+            curriculum_observation = evaluate_tasks(
                 validation_tasks,
                 level=level,
                 seed=validation_seed,
@@ -2302,13 +2343,16 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 progress_phase="validation_evaluation",
             )
             validation_elapsed_seconds = time.monotonic() - validation_started
-            if not observation["complete"]:
+            if not curriculum_observation["complete"]:
                 history.append(
                     {
                         "update": update,
-                        **observation,
+                        **checkpoint_observation,
+                        "curriculum_complete": False,
+                        "curriculum_examples": curriculum_observation["examples"],
                         "mastery_streak": mastery_streak,
                         "mastered": False,
+                        "selection_window": "fixed_paired_checkpoint",
                         "validation_elapsed_seconds": round(
                             validation_elapsed_seconds,
                             3,
@@ -2323,7 +2367,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 break
             previous_validation_semantic_task_ids = validation_semantic_task_ids
             observed_validation_actions = sum(
-                outcome["actions"] for outcome in observation["task_outcomes"]
+                outcome["actions"]
+                for evaluation in (checkpoint_observation, curriculum_observation)
+                for outcome in evaluation["task_outcomes"]
             )
             measured_trained_policy_reserve = math.ceil(
                 validation_elapsed_seconds
@@ -2349,11 +2395,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 final_evaluation_reserve_seconds,
                 trained_policy_reserve,
             )
-            mastered = observation_mastered(observation)
+            mastered = observation_mastered(curriculum_observation)
             mastery_streak = mastery_streak + 1 if mastered else 0
             if int(best_validation["level"]) != level:
                 candidate_is_best = True
-                best_exact_successes = int(observation["exact_successes"])
+                best_exact_successes = int(checkpoint_observation["exact_successes"])
                 consecutive_regression_windows = 0
             else:
                 (
@@ -2362,7 +2408,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     consecutive_regression_windows,
                 ) = validation_regression_decision(
                     best_exact_successes=int(best_validation["exact_successes"]),
-                    observed_exact_successes=int(observation["exact_successes"]),
+                    observed_exact_successes=int(checkpoint_observation["exact_successes"]),
                     consecutive_regressions=consecutive_regression_windows,
                 )
             if candidate_is_best:
@@ -2370,11 +2416,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     "update": update,
                     "level": level,
                     "exact_successes": best_exact_successes,
-                    "exact_rate": observation["exact_rate"],
-                    "exact_rate_95ci": observation["exact_rate_95ci"],
-                    "checkpoint_rate": observation["checkpoint_rate"],
-                    "checkpoint_rate_95ci": observation["checkpoint_rate_95ci"],
-                    "source": "rotating_validation",
+                    "exact_rate": checkpoint_observation["exact_rate"],
+                    "exact_rate_95ci": checkpoint_observation["exact_rate_95ci"],
+                    "checkpoint_rate": checkpoint_observation["checkpoint_rate"],
+                    "checkpoint_rate_95ci": checkpoint_observation["checkpoint_rate_95ci"],
+                    "source": "fixed_paired_checkpoint_validation",
                 }
                 best_trainable_state = capture_trainable_state()
                 if checkpoints_root:
@@ -2395,7 +2441,20 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             history.append(
                 {
                     "update": update,
-                    **observation,
+                    **checkpoint_observation,
+                    "selection_window": "fixed_paired_checkpoint",
+                    "curriculum_seed": validation_seed,
+                    "curriculum_examples": curriculum_observation["examples"],
+                    "curriculum_exact_successes": curriculum_observation["exact_successes"],
+                    "curriculum_exact_rate": curriculum_observation["exact_rate"],
+                    "curriculum_exact_rate_95ci": curriculum_observation["exact_rate_95ci"],
+                    "curriculum_checkpoint_successes": (
+                        curriculum_observation["checkpoint_successes"]
+                    ),
+                    "curriculum_checkpoint_rate": curriculum_observation["checkpoint_rate"],
+                    "curriculum_checkpoint_rate_95ci": (
+                        curriculum_observation["checkpoint_rate_95ci"]
+                    ),
                     "policy_loss": round(policy_loss, 6),
                     "gradient_norm": round(float(gradient_norm), 6),
                     "informative_group_rate": round(
@@ -2416,7 +2475,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     "elapsed_seconds": round(cumulative_elapsed_seconds(), 3),
                 }
             )
-            last_observation = observation
+            last_observation = checkpoint_observation
             if mastery_streak >= runtime.mastery_windows and level < MAXIMUM_COMPLEXITY_LEVEL:
                 current_complexity = asdict(COMPLEXITY_LEVELS[level])
                 next_complexity = asdict(COMPLEXITY_LEVELS[level + 1])
@@ -2442,10 +2501,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         ),
                         "minimum_level": 0,
                         "maximum_level": MAXIMUM_COMPLEXITY_LEVEL,
-                        "exact_rate": observation["exact_rate"],
-                        "exact_rate_95ci": observation["exact_rate_95ci"],
-                        "checkpoint_rate": observation["checkpoint_rate"],
-                        "checkpoint_rate_95ci": observation["checkpoint_rate_95ci"],
+                        "exact_rate": curriculum_observation["exact_rate"],
+                        "exact_rate_95ci": curriculum_observation["exact_rate_95ci"],
+                        "checkpoint_rate": curriculum_observation["checkpoint_rate"],
+                        "checkpoint_rate_95ci": (
+                            curriculum_observation["checkpoint_rate_95ci"]
+                        ),
                         "validation_examples": runtime.validation_examples,
                         "validation_seed": validation_seed,
                         "mastery_windows": mastery_streak,

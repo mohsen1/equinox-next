@@ -67,6 +67,15 @@ solved siblings remain evidence but cannot consume a policy update. Each update 
 four frontier tasks to aggregate more independent correctness contrasts before applying
 one optimizer step.
 
+The seed `107` v5 run increased informative-group density from `27.8%` to `40%` and
+reduced the final recent malformed-action rate to `2.521%`. It stopped after ten
+optimizer updates when a five-group no-signal streak crossed an update boundary. The
+rotating validation count rose from `5/8` to `6/8`, but all 24 fixed paired test outcomes
+were unchanged. Objective v6 therefore uses a fixed paired window for checkpoint
+selection, keeps a separate disjoint rotating window for curriculum evidence, raises the
+clipped LoRA learning rate from `2e-5` to `8e-5`, and defines no-signal as twelve
+consecutive groups—three complete four-task updates.
+
 ## What we learned
 
 ### From the current Equinox runs
@@ -258,7 +267,8 @@ Add the following runtime protections:
 - checkpoint the adapter before every validation window;
 - retain the best validation checkpoint;
 - stop or roll back after two consecutive validation windows show material regression;
-- stop when five consecutive groups produce no trustworthy learning signal;
+- stop when twelve consecutive groups—three complete four-task updates—produce no
+  trustworthy learning signal;
 - stop when malformed actions exceed `5%` over the latest validation-sized window; and
 - reserve enough provider time for paired final evaluation and teardown.
 

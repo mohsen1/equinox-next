@@ -25,6 +25,7 @@ from research.runpod.repository_repair_rl import (
     action_protocol_counts,
     bounded_final_evaluation_reserve,
     checkpoint_target_disposition,
+    checkpoint_validation_seed,
     collect_branch_group,
     collect_greedy_trajectory,
     complete_json_object,
@@ -255,6 +256,11 @@ def test_consecutive_mastery_windows_use_disjoint_validation_tasks() -> None:
     }
 
     assert first.isdisjoint(second)
+
+
+def test_checkpoint_validation_seed_is_fixed_per_level() -> None:
+    assert checkpoint_validation_seed(0) == checkpoint_validation_seed(0)
+    assert checkpoint_validation_seed(0) != checkpoint_validation_seed(1)
 
 
 def test_final_evaluation_reserve_is_bounded_with_provenance() -> None:
