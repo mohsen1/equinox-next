@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "study_id": "repository-repair-causal-factorial-study@2",
+  "status": "preregistered",
+  "predecessor_study_id": "repository-repair-confirmatory-study@1",
+  "research_question": "Does static K=4 branching improve repository-repair post-training independently of the policy used to vary environment complexity?",
+  "model": {
+    "id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+    "revision": "488639f1ff808d1d3d0ba301aef8c11461451ec5"
+  },
+  "factors": {
+    "branch_width": [
+      1,
+      4
+    ],
+    "curriculum_policy": [
+      "scheduled_dynamic",
+      "adaptive"
+    ]
+  },
+  "optimization_seeds": [
+    {
+      "seed": 137,
+      "validation_seed_base": 731000000,
+      "test_seed_base": 831000000
+    },
+    {
+      "seed": 269,
+      "validation_seed_base": 732000000,
+      "test_seed_base": 832000000
+    },
+    {
+      "seed": 443,
+      "validation_seed_base": 733000000,
+      "test_seed_base": 833000000
+    },
+    {
+      "seed": 617,
+      "validation_seed_base": 734000000,
+      "test_seed_base": 834000000
+    },
+    {
+      "seed": 887,
+      "validation_seed_base": 735000000,
+      "test_seed_base": 835000000
+    }
+  ],
+  "shared_configuration": {
+    "completion_budget": 320,
+    "maximum_updates": 40,
+    "target_runtime_seconds": 10800,
+    "maximum_resume_gap_seconds": 2700,
+    "maximum_final_evaluation_reserve_seconds": 2700,
+    "validation_examples": 8,
+    "test_examples_per_level": 12,
+    "mastery_windows": 2,
+    "replay_tasks_per_level": 1,
+    "static_branch_width_within_run": true,
+    "training_tasks_per_update_by_k": {
+      "1": 16,
+      "4": 4
+    },
+    "completion_budget_matching": "exact across every factorial cell",
+    "hardware_preference": "NVIDIA A40",
+    "maximum_hourly_cost_usd": 0.5,
+    "provider": "RunPod"
+  },
+  "curriculum_policies": {
+    "scheduled_dynamic": {
+      "outcome_blinded": true,
+      "probe_rule": "nearest harder level",
+      "promotion_rule": "promote after every two completed validation windows",
+      "maximum_level_behavior": "remain at maximum level",
+      "validation_targeting": "shared revision-30 failure-directed sampler",
+      "reason": "Vary complexity dynamically while removing policy-outcome feedback from the level schedule."
+    },
+    "adaptive": {
+      "outcome_blinded": false,
+      "probe_rule": "revision-30 mixed-correctness frontier decision",
+      "promotion_rule": "two retained zero-regression mastery windows",
+      "maximum_level_behavior": "stop after maximum-level mastery",
+      "validation_targeting": "shared revision-30 failure-directed sampler",
+      "reason": "Retain the existing adaptive-complexity treatment."
+    }
+  },
+  "tool_contract_change": {
+    "revision": "repository-repair-json-tools@4",
+    "scope": [
+      "Remove fake file paths from action examples.",
+      "Require non-empty paths to be copied from an observation.",
+      "Return the current bounded file content when an exact edit target is stale or ambiguous.",
+      "Tell the policy to reread after a rejected edit before retrying."
+    ],
+    "motivating_evidence": [
+      "revision-30 trajectories copied relative/path.py literally",
+      "revision-30 trajectories repeated stale exact-edit targets"
+    ],
+    "excluded_changes": [
+      "reward",
+      "optimizer",
+      "policy-credit assignment",
+      "task templates",
+      "branch restore semantics",
+      "hidden verifier"
+    ]
+  },
+  "external_evaluation": {
+    "pack_size": 120,
+    "domains": [
+      "sqlite_data_repair",
+      "filesystem_cli_debugging",
+      "micro_repository_code_repair"
+    ],
+    "tasks_per_domain": 40,
+    "authoring_time": "after revision-31 trainer freeze",
+    "adapter_policy": "evaluate every completed adapter and the frozen base policy",
+    "disclosure_policy": "do not inspect aggregate or task-level external outcomes until all 20 training conditions are terminal"
+  },
+  "estimands": {
+    "branching_main_effect": "Within-seed K=4 minus K=1 exact-solve-rate difference, averaged across curriculum policies.",
+    "curriculum_main_effect": "Within-seed adaptive minus scheduled-dynamic exact-solve-rate difference, averaged across branch widths.",
+    "interaction": "Difference between the branching effects under adaptive and scheduled-dynamic curricula.",
+    "post_training_effect": "Each adapter's paired exact-solve change from the frozen base policy."
+  },
+  "graduation_gates": {
+    "operational": {
+      "required_completed_conditions": 20,
+      "required_verified_teardowns": 20,
+      "minimum_action_protocol_validity_rate": 0.99,
+      "maximum_conditions_with_incomplete_final_evaluation": 0
+    },
+    "internal_learning": {
+      "primary_cell": "k4_adaptive",
+      "minimum_positive_clean_gain_seeds": 4,
+      "required_seed_count": 5,
+      "minimum_median_paired_gain_tasks": 1,
+      "maximum_total_regressed_tasks_across_primary_seeds": 2
+    },
+    "external_transfer": {
+      "primary_cell": "k4_adaptive",
+      "minimum_positive_gain_seeds": 4,
+      "required_seed_count": 5,
+      "minimum_median_gain_tasks_out_of_120": 6,
+      "maximum_regressing_primary_seeds": 1,
+      "maximum_aggregate_mcnemar_exact_p_value": 0.05
+    },
+    "branching": {
+      "minimum_seeds_with_positive_k4_main_effect": 4,
+      "required_seed_count": 5,
+      "minimum_median_k4_main_effect_tasks_out_of_120": 3
+    },
+    "larger_model": {
+      "allowed_only_if": [
+        "operational",
+        "internal_learning",
+        "external_transfer",
+        "branching"
+      ],
+      "initial_scope": "one K=4 adaptive replication using the same completion budget and a new frozen split",
+      "forbidden_if_any_required_gate_fails": true
+    }
+  },
+  "reporting": {
+    "show_every_seed": true,
+    "show_every_adapter": true,
+    "show_every_external_regression": true,
+    "report_all_factorial_cells_before_aggregates": true,
+    "terminal_outcome": "PASS only when every required larger-model prerequisite gate passes; otherwise FAIL"
+  }
+}
