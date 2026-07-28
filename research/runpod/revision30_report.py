@@ -223,6 +223,63 @@ def evaluation_task_ids(result: dict[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(observed))
 
 
+def evaluation_outcomes(result: dict[str, Any]) -> dict[str, bool]:
+    observed: dict[str, bool] = {}
+    by_level = result.get("final_by_level")
+    if not isinstance(by_level, dict):
+        return {}
+    for evaluation in by_level.values():
+        outcomes = evaluation.get("task_outcomes") if isinstance(evaluation, dict) else None
+        if not isinstance(outcomes, list):
+            return {}
+        for outcome in outcomes:
+            if not isinstance(outcome, dict):
+                return {}
+            task_id = outcome.get("semantic_task_id")
+            solved = outcome.get("solved")
+            if not isinstance(task_id, str) or not isinstance(solved, bool):
+                return {}
+            if task_id in observed:
+                return {}
+            observed[task_id] = solved
+    return observed
+
+
+def paired_condition_change(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any] | None:
+    reference_outcomes = evaluation_outcomes(reference)
+    candidate_outcomes = evaluation_outcomes(candidate)
+    if not reference_outcomes or reference_outcomes.keys() != candidate_outcomes.keys():
+        return None
+    improved = sum(
+        not reference_outcomes[task_id] and candidate_outcomes[task_id]
+        for task_id in reference_outcomes
+    )
+    regressed = sum(
+        reference_outcomes[task_id] and not candidate_outcomes[task_id]
+        for task_id in reference_outcomes
+    )
+    discordant = improved + regressed
+    if discordant:
+        smaller_tail = (
+            sum(math.comb(discordant, count) for count in range(min(improved, regressed) + 1))
+            / 2**discordant
+        )
+        exact_p_value = min(1.0, 2 * smaller_tail)
+    else:
+        exact_p_value = 1.0
+    return {
+        "examples": len(reference_outcomes),
+        "improved": improved,
+        "regressed": regressed,
+        "unchanged": len(reference_outcomes) - discordant,
+        "net_improved": improved - regressed,
+        "mcnemar_exact_p_value": exact_p_value,
+    }
+
+
 def frozen_runtime_identity(result: dict[str, Any]) -> dict[str, Any]:
     return {
         key: result.get(key)
@@ -421,6 +478,7 @@ def compare_matched_conditions(
     trained_tasks = evaluation_task_ids(trained)
     control_tasks = evaluation_task_ids(control)
     matched_tasks = bool(trained_tasks) and trained_tasks == control_tasks
+    paired_trained_vs_control = paired_condition_change(control, trained)
     trained_identity = frozen_runtime_identity(trained)
     control_identity = frozen_runtime_identity(control)
     matched_runtime = (
@@ -482,6 +540,8 @@ def compare_matched_conditions(
         matched_splits
         and matched_completion_budget
         and matched_tasks
+        and paired_trained_vs_control is not None
+        and paired_trained_vs_control["net_improved"] > 0
         and matched_runtime
         and matched_start
         and branch_contract
@@ -500,6 +560,7 @@ def compare_matched_conditions(
             "completion_budget": trained_completion_budget,
             "matched_evaluation_tasks": matched_tasks,
             "evaluation_task_count": len(trained_tasks),
+            "paired_trained_vs_control": paired_trained_vs_control,
             "matched_frozen_runtime": matched_runtime,
             "matched_initial_score": matched_start,
             "branch_contract_verified": branch_contract,

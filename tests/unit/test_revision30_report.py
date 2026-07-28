@@ -56,6 +56,7 @@ def training_result(
     completions: int = 400,
     improved: int = 4,
     regressed: int = 0,
+    outcome_pattern: tuple[bool, bool] = (True, True),
 ) -> dict:
     validation_seed = 220_000_000 if seed == 307 else 620_000_000
     test_seed = 260_000_000 if seed == 307 else 660_000_000
@@ -103,8 +104,14 @@ def training_result(
         "final_by_level": {
             "0": {
                 "task_outcomes": [
-                    {"semantic_task_id": "shared-task-1"},
-                    {"semantic_task_id": "shared-task-2"},
+                    {
+                        "semantic_task_id": "shared-task-1",
+                        "solved": outcome_pattern[0],
+                    },
+                    {
+                        "semantic_task_id": "shared-task-2",
+                        "solved": outcome_pattern[1],
+                    },
                 ]
             }
         },
@@ -127,6 +134,7 @@ def complete_results() -> dict[str, dict]:
         mutation_enabled=False,
         final=11,
         improved=1,
+        outcome_pattern=(True, False),
     )
     k1 = training_result(
         "k1_train",
@@ -134,6 +142,7 @@ def complete_results() -> dict[str, dict]:
         branch_width=1,
         final=12,
         improved=2,
+        outcome_pattern=(True, False),
     )
     condition_ids = [
         "k4_train_seed113",
@@ -255,6 +264,7 @@ def test_failure_complete_report_passes_only_verified_causal_contracts() -> None
     no_update = report["decisions"]["k4_training_beats_frozen_policy_k4"]
     assert no_update["evidence"]["matched_completion_budget"] is True
     assert no_update["evidence"]["matched_evaluation_tasks"] is True
+    assert no_update["evidence"]["paired_trained_vs_control"]["net_improved"] == 1
     assert no_update["evidence"]["mutation_contract_verified"] is True
     assert report["conditions"]["k4_train_seed307"]["gain"] == 4
     assert report["external_evaluation"]["base"]["exact_successes"] == 1
