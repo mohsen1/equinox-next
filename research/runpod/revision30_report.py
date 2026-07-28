@@ -28,6 +28,7 @@ REPORT_ID = "repository-repair-confirmatory-study@1/failure-complete-report@1"
 TRAINING_WORKLOAD = "repository-repair-restored-continuation-post-training"
 SCREEN_WORKLOAD = "repository-repair-protocol-eligibility"
 REHEARSAL_EXECUTION_ID = "runpod-proof-ui-rehearsal"
+NUMERIC_TYPES = (int, float)
 
 
 def canonical_json(value: Any) -> bytes:
@@ -71,9 +72,9 @@ def estimated_cost(execution: dict[str, Any]) -> float | None:
     elapsed = progress.get("elapsed_seconds") if isinstance(progress, dict) else None
     if (
         isinstance(rate, bool)
-        or not isinstance(rate, int | float)
+        or not isinstance(rate, NUMERIC_TYPES)
         or isinstance(elapsed, bool)
-        or not isinstance(elapsed, int | float)
+        or not isinstance(elapsed, NUMERIC_TYPES)
         or not math.isfinite(float(rate))
         or not math.isfinite(float(elapsed))
     ):
@@ -321,7 +322,7 @@ def execution_rows(
             continue
         validity = progress.get("action_protocol_validity_rate")
         outcome = execution.get("status")
-        validity_is_numeric = isinstance(validity, int | float)
+        validity_is_numeric = isinstance(validity, NUMERIC_TYPES)
         if execution.get("workload_id") == SCREEN_WORKLOAD and validity_is_numeric:
             outcome = "ELIGIBLE" if float(validity) >= 0.99 else "INELIGIBLE"
         row = {
@@ -503,12 +504,12 @@ def clean_positive_gain(result: dict[str, Any] | None) -> bool:
     return (
         result.get("final_evaluation_complete") is True
         and not isinstance(gain, bool)
-        and isinstance(gain, int | float)
+        and isinstance(gain, NUMERIC_TYPES)
         and math.isfinite(float(gain))
         and gain > 0
         and isinstance(paired, dict)
         and not isinstance(net_improved, bool)
-        and isinstance(net_improved, int | float)
+        and isinstance(net_improved, NUMERIC_TYPES)
         and net_improved > 0
         and paired.get("regressed") == 0
     )
@@ -633,7 +634,7 @@ def compare_matched_conditions(
     matched_start = (
         trained.get("initial_reward") == control.get("initial_reward")
         and not isinstance(trained.get("initial_reward"), bool)
-        and isinstance(trained.get("initial_reward"), int | float)
+        and isinstance(trained.get("initial_reward"), NUMERIC_TYPES)
     )
     branch_contract = (
         trained_study.get("branch_width") == 4
@@ -646,7 +647,7 @@ def compare_matched_conditions(
     trained_final = trained.get("final_reward")
     control_final = control.get("final_reward")
     numerical = all(
-        isinstance(value, int | float) and not isinstance(value, bool)
+        isinstance(value, NUMERIC_TYPES) and not isinstance(value, bool)
         for value in (trained_net, control_net, trained_final, control_final)
     )
     control_mutation = control_study.get("policy_mutation_enabled")
