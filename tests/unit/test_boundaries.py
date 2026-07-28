@@ -10,6 +10,7 @@ from services.orchestrator.app.main import (
     ResearchComputeProofRequest,
     estimated_compute_cost,
     research_execution_response,
+    research_proof_can_recover_execution,
     research_proof_response,
     research_result_progress,
     research_trajectory,
@@ -74,6 +75,56 @@ def test_research_execution_keeps_static_k_and_adaptive_complexity() -> None:
                 "branch_width": 8,
             }
         )
+
+
+def test_proof_receipt_recovers_only_the_exact_post_contract_failure() -> None:
+    request = ResearchComputeProofRequest(
+        provider_name="RunPod",
+        provider_handle="runpod://pods/recovered-pod",
+        provider_cli_version="2.7.2",
+        resource_profile={"gpu_id": "NVIDIA RTX PRO 4500 Blackwell"},
+        workload={
+            "id": "repository-repair-restored-continuation-post-training",
+            "model_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+        },
+        result={
+            "workload": "repository-repair-restored-continuation-post-training",
+            "model_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+            "reward_gain": 0.1875,
+        },
+        started_at="2026-07-28T14:24:04Z",
+        completed_at="2026-07-28T15:56:46Z",
+        teardown_confirmed=True,
+    )
+    execution = {
+        "execution_id": "runpod-proof-recovered",
+        "status": "FAILED",
+        "provider_handle": "runpod://pods/recovered-pod",
+        "workload_id": "repository-repair-restored-continuation-post-training",
+        "model_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+        "started_at": request.started_at,
+        "teardown_confirmed": True,
+        "progress": {"error": "The remote result did not satisfy the declared proof contract."},
+    }
+
+    assert research_proof_can_recover_execution(execution, request) is True
+    assert (
+        research_proof_can_recover_execution(
+            {
+                **execution,
+                "progress": {"error": "The remote workload failed with exit code 1."},
+            },
+            request,
+        )
+        is False
+    )
+    assert (
+        research_proof_can_recover_execution(
+            {**execution, "teardown_confirmed": False},
+            request,
+        )
+        is False
+    )
 
 
 def test_estimated_compute_cost_uses_recorded_rate_and_elapsed_runtime() -> None:

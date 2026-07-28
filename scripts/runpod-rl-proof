@@ -146,11 +146,15 @@ print(value)
 PY
 }
 expected_workload_revision=""
+expected_objective_id=""
 expected_action_protocol_revision=""
 expected_shared_prefix_checkpoint=""
 if [[ "$experiment" == "repository-repair" ]]; then
   expected_workload_revision="$(
     read_python_string_constant "$workload_path" WORKLOAD_REVISION
+  )"
+  expected_objective_id="$(
+    read_python_string_constant "$workload_path" OBJECTIVE_ID
   )"
   expected_action_protocol_revision="$(
     read_python_string_constant "$support_path" ACTION_PROTOCOL_REVISION
@@ -789,7 +793,7 @@ else
     and .workload == "repository-repair-restored-continuation-post-training"
     and .workload_revision == $expected_workload_revision
     and .algorithm == "verified-fix-group-conditioned-policy-gradient"
-    and .objective_id == "verified-fix-priority-target-retention-policy-gradient@14"
+    and .objective_id == $expected_objective_id
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
     and .reward_contract.revision == "correctness-gated-efficiency@1"
     and .reward_contract.incorrect_terminal_reward == 0
@@ -1004,6 +1008,7 @@ fi
 if ! jq -e \
   --arg expected_model "$model_id" \
   --arg expected_workload_revision "$expected_workload_revision" \
+  --arg expected_objective_id "$expected_objective_id" \
   --arg expected_action_protocol_revision "$expected_action_protocol_revision" \
   --arg expected_shared_prefix_checkpoint "$expected_shared_prefix_checkpoint" \
   --argjson expected_validation_examples "$validation_examples" \

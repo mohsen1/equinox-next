@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  complexityForLevel,
   formatDuration,
   formatRateInterval,
   intervalValue,
@@ -164,6 +165,19 @@ describe("run observer formatting", () => {
   it("keeps a zero-update final evaluation visibly active", () => {
     expect(runPercentage("RUNNING", 0, 120, "finalizing", 1)).toBe(85);
     expect(runPercentage("RUNNING", 120, 120, "finalizing", 1)).toBe(100);
+  });
+
+  it("does not show stale complexity from a different evaluation level", () => {
+    const complexity = {
+      level: 1,
+      file_count: 6,
+      fault_count: 1,
+      dependency_depth: 2,
+      repair_horizon: 10,
+    };
+
+    expect(complexityForLevel(3, complexity)).toBeNull();
+    expect(complexityForLevel(1, complexity)).toEqual(complexity);
   });
 
   it("shows a recovered result in the finalize stage", () => {

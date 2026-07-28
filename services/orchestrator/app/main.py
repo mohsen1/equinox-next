@@ -148,6 +148,31 @@ class ResearchComputeExecutionRequest(StrictModel):
     teardown_confirmed: bool = False
 
 
+RECOVERABLE_PROOF_CONTRACT_ERROR = "The remote result did not satisfy the declared proof contract."
+
+
+def research_proof_can_recover_execution(
+    execution: dict[str, Any],
+    request: ResearchComputeProofRequest,
+) -> bool:
+    progress = execution.get("progress")
+    workload_id = request.workload.get("id")
+    result_workload_id = request.result.get("workload")
+    receipt_model_id = request.workload.get("model_id") or request.result.get("model_id")
+    return (
+        execution.get("status") == "FAILED"
+        and execution.get("teardown_confirmed") is True
+        and isinstance(progress, dict)
+        and progress.get("error") == RECOVERABLE_PROOF_CONTRACT_ERROR
+        and execution.get("provider_handle") == request.provider_handle
+        and execution.get("workload_id") == workload_id
+        and workload_id == result_workload_id
+        and execution.get("model_id") == receipt_model_id
+        and execution.get("started_at") == request.started_at
+        and request.teardown_confirmed is True
+    )
+
+
 def lightweight_research_validation_history(value: Any) -> list[dict[str, Any]] | None:
     if not isinstance(value, list):
         return None
@@ -2406,6 +2431,19 @@ def ingest_research_compute_proof(
     receipt_digest = canonical_digest(receipt)
     result_progress = research_result_progress(request.result)
     with connection() as conn:
+        execution = conn.execute(
+            """
+            SELECT *
+            FROM research_compute_executions
+            WHERE provider_handle = %s
+            """,
+            (request.provider_handle,),
+        ).fetchone()
+        recovery_execution_id = (
+            execution["execution_id"]
+            if execution and research_proof_can_recover_execution(dict(execution), request)
+            else ""
+        )
         existing = conn.execute(
             """
             SELECT proof_id, receipt_digest
@@ -2424,14 +2462,14 @@ def ingest_research_compute_proof(
                 """
                 UPDATE research_compute_executions SET
                   status = 'SUCCEEDED',
-                  progress = progress || %s,
+                  progress = (progress - 'error') || %s,
                   proof_id = %s,
                   receipt_digest = %s,
                   completed_at = %s,
                   teardown_confirmed = true,
                   updated_at = now()
                 WHERE provider_handle = %s
-                  AND status != 'FAILED'
+                  AND (status != 'FAILED' OR execution_id = %s)
                 """,
                 (
                     Jsonb(result_progress),
@@ -2439,6 +2477,7 @@ def ingest_research_compute_proof(
                     receipt_digest,
                     request.completed_at,
                     request.provider_handle,
+                    recovery_execution_id,
                 ),
             )
             return {
@@ -2474,14 +2513,14 @@ def ingest_research_compute_proof(
             """
             UPDATE research_compute_executions SET
               status = 'SUCCEEDED',
-              progress = progress || %s,
+              progress = (progress - 'error') || %s,
               proof_id = %s,
               receipt_digest = %s,
               completed_at = %s,
               teardown_confirmed = true,
               updated_at = now()
             WHERE provider_handle = %s
-              AND status != 'FAILED'
+              AND (status != 'FAILED' OR execution_id = %s)
             """,
             (
                 Jsonb(result_progress),
@@ -2489,6 +2528,7 @@ def ingest_research_compute_proof(
                 receipt_digest,
                 request.completed_at,
                 request.provider_handle,
+                recovery_execution_id,
             ),
         )
     return {

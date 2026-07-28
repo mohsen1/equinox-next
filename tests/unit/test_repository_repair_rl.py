@@ -181,11 +181,14 @@ def test_runpod_launcher_derives_revision_contract_from_the_bundled_workload() -
     )
 
     assert 'read_python_string_constant "$workload_path" WORKLOAD_REVISION' in script
+    assert 'read_python_string_constant "$workload_path" OBJECTIVE_ID' in script
     assert 'read_python_string_constant "$support_path" ACTION_PROTOCOL_REVISION' in script
     assert (
         'read_python_string_constant "$workload_path" SHARED_PREFIX_CHECKPOINT_STRATEGY' in script
     )
     assert ".workload_revision == $expected_workload_revision" in script
+    assert ".objective_id == $expected_objective_id" in script
+    assert "verified-fix-priority-target-retention-policy-gradient@14" not in script
     assert (
         ".training_configuration.shared_prefix_checkpoint "
         "== $expected_shared_prefix_checkpoint" in script

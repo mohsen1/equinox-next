@@ -18,6 +18,7 @@ import {
 import { formatEstimatedCost, formatRelativeTime } from "../format";
 import { Link, useParams } from "../router";
 import {
+  complexityForLevel,
   formatDuration,
   formatRateInterval,
   intervalValue,
@@ -320,7 +321,10 @@ function progressItems(run: ResearchComputeExecution) {
     evaluationSplit === "test"
       ? (progress.initial_level_exact_rate ?? null)
       : (progress.baseline_validation?.exact_rate ?? null);
-  const activeComplexity = progress.active_complexity;
+  const activeComplexity = complexityForLevel(
+    currentLevel,
+    progress.active_complexity,
+  );
   const evaluationCompleted = numberValue(progress.evaluation_completed);
   const evaluationTotal = numberValue(progress.evaluation_total);
   const progressPhase = stringValue(progress.phase);

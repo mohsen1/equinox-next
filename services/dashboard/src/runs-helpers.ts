@@ -1,5 +1,5 @@
 import { friendlyStatus } from "./components";
-import type { ResearchComputeExecution } from "./types";
+import type { ResearchComplexity, ResearchComputeExecution } from "./types";
 
 export function resultItems(
   run: ResearchComputeExecution,
@@ -222,6 +222,15 @@ export function runPercentage(
 
 export function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function complexityForLevel(
+  currentLevel: number | null,
+  activeComplexity: ResearchComplexity | undefined,
+): ResearchComplexity | null {
+  return currentLevel !== null && activeComplexity?.level === currentLevel
+    ? activeComplexity
+    : null;
 }
 
 export function stringValue(value: unknown): string | null {
