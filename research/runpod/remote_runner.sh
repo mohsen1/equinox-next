@@ -208,7 +208,7 @@ serve_boot_failure() {
 }
 
 case "$workload_file" in
-  repository_repair_rl.py | repository_repair_study.py)
+  repository_repair_rl.py | repository_repair_study.py | repository_repair_eligibility.py)
     progress_schema_version=2
     repository_workload=true
     ;;
@@ -260,7 +260,8 @@ if [[ "$repository_workload" == "true" ]]; then
     fi
   done
 fi
-if [[ "$workload_file" == "repository_repair_study.py" ]]; then
+if [[ "$workload_file" == "repository_repair_study.py" ||
+  "$workload_file" == "repository_repair_eligibility.py" ]]; then
   for study_configuration_value in \
     "$study_condition" \
     "$study_validation_seed_base" \
@@ -318,11 +319,12 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     result = json.load(handle)
 if not isinstance(result, dict):
     raise SystemExit(1)
-if (
-    sys.argv[2] in {"repository_repair_rl.py", "repository_repair_study.py"}
-    and result.get("experiment_completed") is not True
-):
-    raise SystemExit(1)
+if sys.argv[2] in {"repository_repair_rl.py", "repository_repair_study.py"}:
+    if result.get("experiment_completed") is not True:
+        raise SystemExit(1)
+if sys.argv[2] == "repository_repair_eligibility.py":
+    if result.get("screen_completed") is not True:
+        raise SystemExit(1)
 if (
     sys.argv[2] == "branching_sequence_ladder.py"
     and result.get("workload") != "branching-sequence-policy-gradient-ladder"

@@ -16,6 +16,7 @@ study_condition="${EQUINOX_STUDY_CONDITION:-}"
 study_validation_seed_base="${EQUINOX_STUDY_VALIDATION_SEED_BASE:-}"
 study_test_seed_base="${EQUINOX_STUDY_TEST_SEED_BASE:-}"
 study_completion_budget="${EQUINOX_STUDY_COMPLETION_BUDGET:-}"
+study_eligibility_only="${EQUINOX_STUDY_ELIGIBILITY_ONLY:-}"
 expected_branch_width=4
 expected_algorithm="verified-fix-group-conditioned-policy-gradient"
 case "$experiment" in
@@ -44,11 +45,24 @@ case "$experiment" in
       workload_file="$contract_workload_file"
       support_files=("$environment_file")
     else
-      workload_file="repository_repair_study.py"
-      support_files=("$contract_workload_file" "$environment_file")
+      if [[ "$study_eligibility_only" == "1" ]]; then
+        workload_file="repository_repair_eligibility.py"
+        support_files=(
+          "repository_repair_study.py"
+          "$contract_workload_file"
+          "$environment_file"
+        )
+      else
+        workload_file="repository_repair_study.py"
+        support_files=("$contract_workload_file" "$environment_file")
+      fi
       case "$study_condition" in
         k4_train)
-          execution_name="K=4 training · seed ${EQUINOX_RL_SEED:-unset}"
+          if [[ "$study_eligibility_only" == "1" ]]; then
+            execution_name="Protocol eligibility · seed ${EQUINOX_RL_SEED:-unset}"
+          else
+            execution_name="K=4 training · seed ${EQUINOX_RL_SEED:-unset}"
+          fi
           ;;
         k4_no_update)
           execution_name="K=4 no-update control · seed ${EQUINOX_RL_SEED:-unset}"
@@ -64,7 +78,11 @@ case "$experiment" in
           ;;
       esac
     fi
-    workload_id="repository-repair-restored-continuation-post-training"
+    if [[ "$study_eligibility_only" == "1" ]]; then
+      workload_id="repository-repair-protocol-eligibility"
+    else
+      workload_id="repository-repair-restored-continuation-post-training"
+    fi
     execution_name="${execution_name:-Repository repair post-training}"
     default_model_id="Qwen/Qwen2.5-Coder-3B-Instruct"
     default_gpu_id="NVIDIA A40"
@@ -239,6 +257,14 @@ if [[ "$experiment" == "sequence-ladder" ]]; then
 fi
 if [[ "$experiment" != "repository-repair" && -n "$study_condition" ]]; then
   echo "Confirmatory study conditions are only valid for repository-repair." >&2
+  exit 1
+fi
+if [[ -n "$study_eligibility_only" && "$study_eligibility_only" != "1" ]]; then
+  echo "EQUINOX_STUDY_ELIGIBILITY_ONLY must be 1 when set." >&2
+  exit 1
+fi
+if [[ "$study_eligibility_only" == "1" && "$study_condition" != "k4_train" ]]; then
+  echo "Protocol eligibility screening requires the K=4 training condition." >&2
   exit 1
 fi
 if [[ -n "$study_condition" ]]; then
@@ -823,7 +849,7 @@ if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
 fi
 result_path="$receipt_directory/$proof_id.result.json"
 jq . <<<"$metrics" >"$result_path"
-if [[ "$experiment" == "repository-repair" ]]; then
+if [[ "$experiment" == "repository-repair" && "$study_eligibility_only" != "1" ]]; then
   adapter_path="$receipt_directory/$proof_id.adapter.tgz"
   adapter_pending_path="$adapter_path.pending"
   curl --fail --silent --show-error --max-time 120 \
@@ -871,7 +897,34 @@ with tarfile.open(archive_path, "r:gz") as archive:
             raise SystemExit(f"adapter digest mismatch for {item['path']}")
 PY
 fi
-if [[ "$experiment" == "sequence-ladder" ]]; then
+if [[ "$study_eligibility_only" == "1" ]]; then
+  proof_assertion='
+    .device == "cuda"
+    and .workload == "repository-repair-protocol-eligibility-screen"
+    and .workload_revision == "revision30-protocol-eligibility@1"
+    and .screen_completed == true
+    and (.protocol_eligible | type) == "boolean"
+    and .training_started == false
+    and .optimizer_step_calls == 0
+    and .test_split_accessed == false
+    and .correctness_metrics_disclosed == false
+    and .study_id == "repository-repair-confirmatory-study@1"
+    and .condition == "k4_train"
+    and .optimization_seed == $expected_optimization_seed
+    and .validation_seed_base == $expected_validation_seed_base
+    and .test_seed_base_reserved_but_unread == $expected_test_seed_base
+    and .branch_width == 4
+    and .validation_examples == $expected_validation_examples
+    and (.action_protocol_validity_rate == null
+      or (.action_protocol_validity_rate | type) == "number")
+    and .minimum_protocol_validity_rate == 0.99
+    and .protocol_eligible == (
+      .action_protocol_validity_rate != null
+      and .action_protocol_validity_rate >= .minimum_protocol_validity_rate
+    )
+    and .frozen_source_commit == "e6a139375a4e6ec92df362873237b398aa0041c0"
+  '
+elif [[ "$experiment" == "sequence-ladder" ]]; then
   proof_assertion='
     .device == "cuda"
     and .workload == "branching-sequence-policy-gradient-ladder"
@@ -1211,7 +1264,7 @@ if ! jq -e \
   jq . <<<"$metrics" >&2
   exit 1
 fi
-if [[ "$experiment" == "repository-repair" ]] &&
+if [[ "$experiment" == "repository-repair" && "$study_eligibility_only" != "1" ]] &&
   [[ "$(jq -r '.stop_reason' <<<"$metrics")" == "final_evaluation_reserve_ceiling" ]]; then
   if [[ "$(jq -r '.probative_post_training' <<<"$metrics")" == "true" ]]; then
     echo \
@@ -1230,36 +1283,59 @@ if [[ "$experiment" == "repository-repair" ]] &&
   fi
 fi
 
-last_progress="$(
-  jq -c \
-    --argjson result "$metrics" \
-    '
-      ($result.reached_complexity_level // .current_level // 0) as $level
-      | . + {
-          phase: "finalizing",
-          message: "Result persisted; confirming RunPod teardown.",
-          update: ($result.updates_completed // .update // 0),
-          current_level: $level,
-          promotion_count: ($result.promotion_count // .promotion_count // 0),
-          sampled_completions: (
-            $result.total_sampled_completions
-            // $result.total_sampled_actions
-            // .sampled_completions
-            // 0
-          ),
-          exact_rate: (
-            $result.final_by_level[($level | tostring)].exact_rate
-            // $result.final_reward
-            // .exact_rate
-          ),
-          elapsed_seconds: ($result.elapsed_seconds // .elapsed_seconds),
-          stop_reason: ($result.stop_reason // .stop_reason),
-          hypothesis_passed: (
-            $result.hypothesis_passed // .hypothesis_passed
-          )
-        }
-    ' <<<"$last_progress"
-)"
+if [[ "$study_eligibility_only" == "1" ]]; then
+  last_progress="$(
+    jq -cn \
+      --argjson result "$metrics" \
+      '{
+        phase: "finalizing",
+        message: "Protocol eligibility recorded; confirming RunPod teardown.",
+        branch_width: $result.branch_width,
+        complexity_strategy: "adaptive",
+        current_level: 0,
+        elapsed_seconds: $result.elapsed_seconds,
+        study_id: $result.study_id,
+        study_condition: $result.condition,
+        optimization_seed: $result.optimization_seed,
+        action_protocol_validity_rate: $result.action_protocol_validity_rate,
+        minimum_protocol_validity_rate: $result.minimum_protocol_validity_rate,
+        protocol_eligible: $result.protocol_eligible,
+        training_started: false,
+        test_split_accessed: false
+      }'
+  )"
+else
+  last_progress="$(
+    jq -c \
+      --argjson result "$metrics" \
+      '
+        ($result.reached_complexity_level // .current_level // 0) as $level
+        | . + {
+            phase: "finalizing",
+            message: "Result persisted; confirming RunPod teardown.",
+            update: ($result.updates_completed // .update // 0),
+            current_level: $level,
+            promotion_count: ($result.promotion_count // .promotion_count // 0),
+            sampled_completions: (
+              $result.total_sampled_completions
+              // $result.total_sampled_actions
+              // .sampled_completions
+              // 0
+            ),
+            exact_rate: (
+              $result.final_by_level[($level | tostring)].exact_rate
+              // $result.final_reward
+              // .exact_rate
+            ),
+            elapsed_seconds: ($result.elapsed_seconds // .elapsed_seconds),
+            stop_reason: ($result.stop_reason // .stop_reason),
+            hypothesis_passed: (
+              $result.hypothesis_passed // .hypothesis_passed
+            )
+          }
+      ' <<<"$last_progress"
+  )"
+fi
 publish_execution "FINALIZING" "$last_progress"
 
 echo "Remote loop passed; terminating worker $pod_id." >&2
@@ -1337,12 +1413,24 @@ jq -n \
     teardown_confirmed: true
   }' >"$receipt_path"
 
-failure_message="The sanitized proof receipt could not be ingested after teardown."
-curl --fail --silent --show-error \
-  -X POST "$api_root/internal/research-compute-proofs" \
-  -H "Authorization: Bearer $internal_token" \
-  -H 'Content-Type: application/json' \
-  --data-binary "@$receipt_path" |
-  jq .
+if [[ "$study_eligibility_only" == "1" ]]; then
+  last_progress="$(
+    jq -c \
+      '. + {
+        phase: "complete",
+        message: "Protocol eligibility recorded and provider teardown confirmed."
+      }' <<<"$last_progress"
+  )"
+  failure_message="The completed eligibility screen could not be published."
+  publish_execution "SUCCEEDED" "$last_progress" "$completed_at" "true"
+else
+  failure_message="The sanitized proof receipt could not be ingested after teardown."
+  curl --fail --silent --show-error \
+    -X POST "$api_root/internal/research-compute-proofs" \
+    -H "Authorization: Bearer $internal_token" \
+    -H 'Content-Type: application/json' \
+    --data-binary "@$receipt_path" |
+    jq .
+fi
 terminal_published=true
 echo "Sanitized receipt: $receipt_path" >&2

@@ -21,7 +21,12 @@ def run_remote_runner(
         """#!/bin/sh
 case "$1" in
   -)
-    if grep -q '"experiment_completed":[[:space:]]*true' "$2"; then
+    if [ "$EQUINOX_WORKLOAD_FILE" = "repository_repair_eligibility.py" ] &&
+      grep -q '"screen_completed":[[:space:]]*true' "$2"; then
+      exit 0
+    fi
+    if [ "$EQUINOX_WORKLOAD_FILE" != "repository_repair_eligibility.py" ] &&
+      grep -q '"experiment_completed":[[:space:]]*true' "$2"; then
       exit 0
     fi
     exit 1
@@ -50,6 +55,10 @@ if [ "$EQUINOX_FAKE_FAILURE_MODE" = "assert-cublas-workspace" ] &&
   [ "$CUBLAS_WORKSPACE_CONFIG" != ":4096:8" ]; then
   printf '%s\n' 'missing deterministic cuBLAS workspace' >&2
   exit 89
+fi
+if [ "$EQUINOX_FAKE_FAILURE_MODE" = "eligibility-success" ]; then
+  printf '%s\n' '{"screen_completed":true,"protocol_eligible":true}'
+  exit 0
 fi
 if [ "$EQUINOX_FAKE_FAILURE_MODE" = "invalid-once" ] && [ "$attempt" -eq 1 ]; then
   mkdir -p "$EQUINOX_ADAPTER_PATH/checkpoints"
@@ -99,6 +108,7 @@ exec /usr/bin/tar "$@"
     (tmp_path / "result_server.py").write_text("", encoding="utf-8")
     (tmp_path / "repository_repair_rl.py").write_text("", encoding="utf-8")
     (tmp_path / "repository_repair_study.py").write_text("", encoding="utf-8")
+    (tmp_path / "repository_repair_eligibility.py").write_text("", encoding="utf-8")
     (tmp_path / "branching_sequence_ladder.py").write_text("", encoding="utf-8")
 
     environment = {
@@ -511,6 +521,20 @@ def test_remote_runner_accepts_study_workload_and_publishes_k1(
 
     progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
     assert progress["branch_width"] == 1
+
+
+def test_remote_runner_accepts_eligibility_result_without_adapter(
+    tmp_path: Path,
+) -> None:
+    run_remote_runner(
+        tmp_path,
+        "eligibility-success",
+        workload_file="repository_repair_eligibility.py",
+    )
+
+    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert result == {"screen_completed": True, "protocol_eligible": True}
+    assert not (tmp_path / "adapter.tgz").exists()
 
 
 def test_remote_runner_rejects_study_without_matched_completion_budget(

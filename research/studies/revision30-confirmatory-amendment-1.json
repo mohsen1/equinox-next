@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "amendment_id": "repository-repair-confirmatory-study@1/amendment-1",
+  "study_id": "repository-repair-confirmatory-study@1",
+  "authored_at": "2026-07-28",
+  "effective_before_next_candidate_screen": true,
+  "frozen_source_commit": "e6a139375a4e6ec92df362873237b398aa0041c0",
+  "algorithm_change": false,
+  "reason": {
+    "code": "PRETRAINING_PROTOCOL_INELIGIBILITY",
+    "summary": "The preregistered seed-211 validation split deterministically fails revision 30's frozen 0.99 action-protocol gate before any policy update.",
+    "scientific_interpretation": "Seed 211 remains a reported failed condition. It is not evidence for or against policy learning because optimization never began.",
+    "selection_risk": "Replacement splits must be selected without observing correctness, training, test, or adapter outcomes."
+  },
+  "superseded_causal_block": {
+    "optimization_seed": 211,
+    "validation_seed_base": 20000000,
+    "test_seed_base": 50000000,
+    "status": "protocol_ineligible",
+    "policy_updates_observed": 0,
+    "optimizer_updates_observed": 0,
+    "attempts": [
+      {
+        "execution_id": "runpod-proof-20260728T173307Z",
+        "status": "failed",
+        "failure_code": "ACTION_PROTOCOL_VALIDITY_BELOW_THRESHOLD",
+        "elapsed_seconds": 130.09,
+        "estimated_cost_usd": 0.0159,
+        "teardown_confirmed": true
+      },
+      {
+        "execution_id": "runpod-proof-20260728T173849Z",
+        "status": "failed",
+        "failure_code": "ACTION_PROTOCOL_VALIDITY_BELOW_THRESHOLD",
+        "elapsed_seconds": 152.665,
+        "estimated_cost_usd": 0.018659,
+        "teardown_confirmed": true
+      }
+    ]
+  },
+  "blind_eligibility_protocol": {
+    "workload_revision": "revision30-protocol-eligibility@1",
+    "model": "Qwen/Qwen2.5-Coder-3B-Instruct",
+    "model_revision": "488639f1ff808d1d3d0ba301aef8c11461451ec5",
+    "adapter": "disabled",
+    "branch_width": 4,
+    "generation": "frozen revision-30 greedy baseline evaluation",
+    "validation_examples_configuration": 8,
+    "eligible_when": "complete action_protocol_validity_rate >= 0.99",
+    "stop_point": "immediately after protocol_evaluation and before the frozen gate returns",
+    "allowed_observations": [
+      "screen completion",
+      "action protocol validity rate",
+      "protocol threshold",
+      "elapsed time",
+      "GPU and provider metadata",
+      "cost and teardown"
+    ],
+    "prohibited_observations": [
+      "validation correctness",
+      "validation task outcomes",
+      "training trajectories",
+      "optimizer outcomes",
+      "test tasks",
+      "test correctness",
+      "external-pack outcomes"
+    ],
+    "candidate_selection": "Use the first two protocol-eligible candidates in the fixed order below. Report every eligible and ineligible screen.",
+    "causal_control_selection": "Attach matched K=4 no-update and K=1 controls to the first protocol-eligible candidate. Match its observed continuation budget exactly."
+  },
+  "candidate_order": [
+    {
+      "optimization_seed": 307,
+      "validation_seed_base": 220000000,
+      "test_seed_base": 260000000
+    },
+    {
+      "optimization_seed": 401,
+      "validation_seed_base": 320000000,
+      "test_seed_base": 360000000
+    },
+    {
+      "optimization_seed": 503,
+      "validation_seed_base": 420000000,
+      "test_seed_base": 460000000
+    },
+    {
+      "optimization_seed": 601,
+      "validation_seed_base": 520000000,
+      "test_seed_base": 560000000
+    }
+  ],
+  "reporting": {
+    "seed_211_failures_remain_primary_rows": true,
+    "eligibility_screen_failures_remain_primary_rows": true,
+    "replacement_runs_are_labeled_post_preregistration_amendment": true,
+    "no_failure_is_removed_from_aggregates": true,
+    "no_claim_uses_only_successful_runs_without_showing_failures": true
+  }
+}

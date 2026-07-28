@@ -10,9 +10,16 @@ import os
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+try:
+    from datetime import UTC
+except ImportError:  # pragma: no cover - exercised by the macOS Python 3.9 operator.
+    from datetime import timezone
+
+    UTC = timezone.utc  # noqa: UP017 - Python 3.9 compatibility.
 
 STUDY_ID = "repository-repair-confirmatory-study@1"
 DEPENDENT_BUDGET = "k4_train_seed211.total_sampled_completions"

@@ -189,6 +189,11 @@ def test_runpod_launcher_derives_revision_contract_from_the_bundled_workload() -
     )
     assert ".workload_revision == $expected_workload_revision" in script
     assert ".objective_id == $expected_objective_id" in script
+    assert 'workload_file="repository_repair_eligibility.py"' in script
+    assert '.workload_revision == "revision30-protocol-eligibility@1"' in script
+    assert ".training_started == false" in script
+    assert ".test_split_accessed == false" in script
+    assert ".correctness_metrics_disclosed == false" in script
     assert "verified-fix-priority-target-retention-policy-gradient@14" not in script
     assert (
         ".training_configuration.shared_prefix_checkpoint "
