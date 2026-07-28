@@ -790,8 +790,8 @@ function BranchInspector({
                       label="Policy credit"
                       value={
                         snapshot.optimizer_update.policy_credit_scope ===
-                        "accepted_actions_from_verified_successful_siblings"
-                          ? "Verified successes only"
+                        "fault_fixing_edits_from_verified_successful_siblings"
+                          ? "Verified fault-fixing edits"
                           : friendlyStatus(
                               snapshot.optimizer_update.policy_credit_scope,
                             )

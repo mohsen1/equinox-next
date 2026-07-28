@@ -36,6 +36,7 @@ from research.runpod.repository_repair_rl import (
     discarded_collection_accounting,
     emit_progress,
     evaluation_reward_summary,
+    failure_directed_training_tasks,
     fixed_retention_guard_levels,
     lightweight_validation_history,
     next_malformed_action_window_streak,
@@ -60,6 +61,7 @@ from research.runpod.repository_repair_rl import (
     select_representative_collection,
     serialize_branch_group,
     sibling_advantages,
+    training_analogue_family_ids,
     training_level_allocation,
     training_loop_entry,
     training_stop_decision,
@@ -124,6 +126,31 @@ def test_training_allocation_keeps_a_majority_on_frontier_and_probes_two_levels(
 
     with pytest.raises(ValueError, match="outside"):
         training_level_allocation(4, 4)
+
+
+def test_training_analogues_follow_declared_cross_split_relationships() -> None:
+    assert training_analogue_family_ids(["nonempty"]) == ["has_items"]
+    assert training_analogue_family_ids(["first"]) == ["head_or", "second"]
+    assert training_analogue_family_ids(["contains"]) == ["key_exists"]
+    assert training_analogue_family_ids([]) == []
+
+
+def test_failure_directed_tasks_cover_weak_analogues_without_reusing_semantics() -> None:
+    tasks = failure_directed_training_tasks(
+        0,
+        3,
+        113,
+        target_family_ids=["has_items", "head_or", "key_exists"],
+    )
+
+    assert len(tasks) == 3
+    assert len({task.semantic_task_id for task in tasks}) == 3
+    assert {fault.family_id for task in tasks for fault in task.faults} == {
+        "has_items",
+        "head_or",
+        "key_exists",
+    }
+    assert all(task.split == "train" for task in tasks)
 
 
 def test_retention_guard_requires_zero_paired_regressions() -> None:
@@ -1088,7 +1115,7 @@ def test_training_prefix_is_greedy_while_siblings_remain_stochastic() -> None:
     assert all(calls[2:])
 
 
-def test_policy_examples_use_only_verified_success_actions() -> None:
+def test_policy_examples_use_only_verified_fault_fixing_edits() -> None:
     task = make_task(0, seed=8)
     generated = GeneratedAction(
         response='{"tool":"test"}',
@@ -1105,8 +1132,8 @@ def test_policy_examples_use_only_verified_success_actions() -> None:
                 steps=[
                     object(),
                     object(),
-                    SimpleNamespace(accepted=True),
-                    SimpleNamespace(accepted=True),
+                    SimpleNamespace(accepted=True, tool="edit", fixed_faults=1),
+                    SimpleNamespace(accepted=True, tool="test", fixed_faults=1),
                 ],
                 terminal_reason="solved" if index == 0 else "horizon_exhausted",
             )
@@ -1122,8 +1149,8 @@ def test_policy_examples_use_only_verified_success_actions() -> None:
 
     examples = policy_examples(collection)
 
-    assert len(examples) == 2
-    assert [example.weight for example in examples] == [0.5, 0.5]
+    assert len(examples) == 1
+    assert [example.weight for example in examples] == [1.0]
 
 
 def test_policy_examples_exclude_rejected_post_branch_actions() -> None:
@@ -1149,8 +1176,8 @@ def test_policy_examples_exclude_rejected_post_branch_actions() -> None:
                 steps=[
                     object(),
                     object(),
-                    SimpleNamespace(accepted=True),
-                    SimpleNamespace(accepted=False),
+                    SimpleNamespace(accepted=True, tool="edit", fixed_faults=1),
+                    SimpleNamespace(accepted=False, tool="finish", fixed_faults=1),
                 ],
                 terminal_reason="solved" if index == 0 else "horizon_exhausted",
             )
@@ -1189,8 +1216,8 @@ def test_reference_anchor_covers_prefix_and_all_accepted_continuations() -> None
         snapshot=None,
         prefix=SimpleNamespace(
             steps=[
-                SimpleNamespace(accepted=True),
-                SimpleNamespace(accepted=False),
+                SimpleNamespace(accepted=True, tool="list", fixed_faults=0),
+                SimpleNamespace(accepted=False, tool=None, fixed_faults=0),
             ]
         ),  # type: ignore[arg-type]
         siblings=[
@@ -1198,8 +1225,8 @@ def test_reference_anchor_covers_prefix_and_all_accepted_continuations() -> None
                 steps=[
                     object(),
                     object(),
-                    SimpleNamespace(accepted=True),
-                    SimpleNamespace(accepted=False),
+                    SimpleNamespace(accepted=True, tool="edit", fixed_faults=1),
+                    SimpleNamespace(accepted=False, tool="finish", fixed_faults=1),
                 ],
                 terminal_reason="solved" if index == 0 else "horizon_exhausted",
             )
@@ -1252,13 +1279,13 @@ def test_informative_groups_accumulate_across_anchor_only_updates() -> None:
         task=task,
         snapshot=None,
         prefix=SimpleNamespace(
-            steps=[SimpleNamespace(accepted=True)],
+            steps=[SimpleNamespace(accepted=True, tool="list", fixed_faults=0)],
         ),  # type: ignore[arg-type]
         siblings=[
             SimpleNamespace(
                 steps=[
                     object(),
-                    SimpleNamespace(accepted=True),
+                    SimpleNamespace(accepted=True, tool="edit", fixed_faults=1),
                 ],
                 terminal_reason="solved" if index == 0 else "horizon_exhausted",
             )

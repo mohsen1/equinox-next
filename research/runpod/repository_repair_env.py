@@ -457,8 +457,8 @@ STRUCTURAL_MIRROR_DISCLOSURES = (
         "relationship": "arithmetic operator repair",
     },
     {
-        "families": ("nonempty", "is_empty"),
-        "splits": ("validation", "test"),
+        "families": ("nonempty", "is_empty", "has_items"),
+        "splits": ("train", "validation", "test"),
         "relationship": "emptiness predicate repair",
     },
     {
@@ -467,9 +467,9 @@ STRUCTURAL_MIRROR_DISCLOSURES = (
         "relationship": "extremum operator repair",
     },
     {
-        "families": ("first", "safe_head"),
-        "splits": ("validation", "test"),
-        "relationship": "identical repaired expression",
+        "families": ("first", "safe_head", "second", "head_or"),
+        "splits": ("train", "validation", "test"),
+        "relationship": "initial-item selection repair",
     },
     {
         "families": ("last", "middle"),
@@ -490,6 +490,11 @@ STRUCTURAL_MIRROR_DISCLOSURES = (
         "families": ("lookup", "key_exists", "has_key"),
         "splits": ("train", "test"),
         "relationship": "mapping lookup and membership repair",
+    },
+    {
+        "families": ("contains", "key_exists", "has_key"),
+        "splits": ("train", "validation", "test"),
+        "relationship": "collection membership repair",
     },
     {
         "families": ("second", "head_or", "middle", "safe_head"),

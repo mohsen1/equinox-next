@@ -409,6 +409,26 @@ regression rejects the candidate; a retained candidate must improve one guard wi
 losing on the other. Static `K=4`, adaptive complexity, durable pending groups, bounded
 resumption, final paired evaluation, and verified teardown remain unchanged.
 
+The seed `113` revision-21 run stopped after both rotating guards regressed by one task
+without an improvement. The fixed level-0 and level-1 suites were unchanged, update 0
+was restored, and all 48 final test pairs were unchanged. This isolated a narrower
+credit-assignment defect: positive weight was divided across successful repair, test,
+and finish actions even though only fault-fixing edits caused the verified state change.
+
+Objective v12 is `verified-fix-accumulated-retention-policy-gradient@12` under workload
+revision `runpod-repository-repair-causal-credit@22`. A mixed-correctness group is still
+required, but positive policy credit is limited to accepted edits that increase the
+verified fixed-fault count on a sibling that ultimately solves the task. All accepted
+actions—including diagnostics, tests, finishes, failed-sibling actions, and no-signal
+groups—remain under the disabled-adapter reference anchor.
+
+The task sampler uses only active validation failures to resolve declared structural
+analogues in the train split. It then covers those analogue families across the active
+frontier and adjacent complexity probes. Final test outcomes never influence sampling,
+checkpoint selection, or optimization. The result records both the observed validation
+failure families and the selected train families so this adaptive curriculum decision is
+auditable.
+
 ## Non-goals
 
 - Dynamic branch width.

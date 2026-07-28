@@ -1,10 +1,10 @@
-"""Restored-continuation verified-success post-training for repository repair.
+"""Restored-continuation causal-credit post-training for repository repair.
 
 This workload collects one policy-generated diagnostic prefix, snapshots the
 repository and transcript, restores four continuations, and applies
-reward-conditioned credit only to successful post-snapshot action tokens from
-mixed-outcome sibling groups. Candidate content is verified as inert simulator
-state and is never executed.
+reward-conditioned credit only to fault-fixing edit tokens from verified
+successful siblings in mixed-outcome groups. Candidate content is verified as
+inert simulator state and is never executed.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ try:
         ENVIRONMENT_REVISION,
         STRUCTURAL_MIRROR_DISCLOSURES,
         SYSTEM_PROMPT,
+        TEMPLATE_SPLITS,
         VERIFIER_REVISION,
         EnvironmentSnapshot,
         RepairTask,
@@ -55,6 +56,7 @@ except ModuleNotFoundError:
         ENVIRONMENT_REVISION,
         STRUCTURAL_MIRROR_DISCLOSURES,
         SYSTEM_PROMPT,
+        TEMPLATE_SPLITS,
         VERIFIER_REVISION,
         EnvironmentSnapshot,
         RepairTask,
@@ -83,8 +85,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-verified-success@21"
-OBJECTIVE_ID = "verified-success-accumulated-retention-policy-gradient@11"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@22"
+OBJECTIVE_ID = "verified-fix-accumulated-retention-policy-gradient@12"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -109,7 +111,7 @@ LEARNING_RATE = 2e-5
 REFERENCE_KL_COEFFICIENT = 0.2
 REFERENCE_KL_ESTIMATOR = "k3_log_ratio_penalty"
 REFERENCE_ANCHOR_SCOPE = "all_accepted_actions_including_greedy_prefix"
-POLICY_CREDIT_SCOPE = "accepted_actions_from_verified_successful_siblings"
+POLICY_CREDIT_SCOPE = "fault_fixing_edits_from_verified_successful_siblings"
 ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 MAXIMUM_ABSOLUTE_ADVANTAGE = 1.0
 MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE = 2
@@ -754,6 +756,77 @@ def training_level_allocation(
     return sorted(allocation)
 
 
+def training_analogue_family_ids(
+    failure_family_ids: list[str] | tuple[str, ...],
+) -> list[str]:
+    """Resolve declared train-split analogues without consulting test outcomes."""
+    training_families = {template[0] for template in TEMPLATE_SPLITS["train"]}
+    adjacency: dict[str, set[str]] = {}
+    for disclosure in STRUCTURAL_MIRROR_DISCLOSURES:
+        families = {str(family) for family in disclosure["families"]}
+        for family in families:
+            adjacency.setdefault(family, set()).update(families - {family})
+
+    analogues = {
+        analogue
+        for failure_family in failure_family_ids
+        for analogue in adjacency.get(failure_family, set())
+    }
+    return sorted(analogues & training_families)
+
+
+def failure_directed_training_tasks(
+    level: int,
+    count: int,
+    seed: int,
+    *,
+    target_family_ids: list[str] | tuple[str, ...],
+) -> list[RepairTask]:
+    """Sample distinct train semantics that cover declared weak-family analogues."""
+    if count < 1:
+        raise ValueError("training task count must be positive")
+    targets = sorted(set(target_family_ids))
+    if not targets:
+        return make_tasks(level, count, seed, split="train")
+
+    target_count = min(count, len(targets))
+    rotation = seed % len(targets)
+    selected_targets = [targets[(rotation + index) % len(targets)] for index in range(target_count)]
+    tasks: list[RepairTask] = []
+    selected_semantics: set[str] = set()
+    for target_index, target in enumerate(selected_targets):
+        for candidate_index in range(1_000):
+            candidate = make_task(
+                level,
+                seed + target_index * 100_003 + candidate_index * 7_919,
+                split="train",
+            )
+            if target not in {fault.family_id for fault in candidate.faults}:
+                continue
+            if candidate.semantic_task_id in selected_semantics:
+                continue
+            tasks.append(candidate)
+            selected_semantics.add(candidate.semantic_task_id)
+            break
+        else:
+            raise RuntimeError(
+                f"could not sample a level-{level} training task for analogue {target}"
+            )
+
+    remaining = count - len(tasks)
+    if remaining:
+        tasks.extend(
+            make_tasks(
+                level,
+                remaining,
+                seed + 900_001,
+                split="train",
+                exclude_semantic_task_ids=frozenset(selected_semantics),
+            )
+        )
+    return tasks
+
+
 def retention_guard_decision(
     *,
     best_fixed_successes: int,
@@ -764,9 +837,7 @@ def retention_guard_decision(
 ) -> tuple[bool, int, int, int]:
     guard_regressions = int(guard_change["regressed"])
     guard_net_improved = int(guard_change["net_improved"])
-    regressed = (
-        observed_fixed_successes < best_fixed_successes or guard_regressions > 0
-    )
+    regressed = observed_fixed_successes < best_fixed_successes or guard_regressions > 0
     candidate_is_best = guard_regressions == 0 and (
         observed_fixed_successes > best_fixed_successes
         or (
@@ -1180,21 +1251,32 @@ def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
     for sibling_index in solved_sibling_indexes:
         generated_actions = collection.generated_by_sibling[sibling_index]
         post_branch_steps = collection.siblings[sibling_index].steps[len(collection.prefix.steps) :]
-        accepted_actions = [
-            generated
-            for generated, step in zip(
-                generated_actions,
-                post_branch_steps,
-                strict=True,
-            )
-            if step.accepted and generated.input_ids
-        ]
-        if not accepted_actions:
+        previous_fixed_faults = (
+            int(getattr(collection.prefix.steps[-1], "fixed_faults", 0))
+            if collection.prefix.steps
+            else 0
+        )
+        fault_fixing_edits: list[GeneratedAction] = []
+        for generated, step in zip(
+            generated_actions,
+            post_branch_steps,
+            strict=True,
+        ):
+            fixed_faults = int(getattr(step, "fixed_faults", previous_fixed_faults))
+            if (
+                step.accepted
+                and getattr(step, "tool", None) == "edit"
+                and fixed_faults > previous_fixed_faults
+                and generated.input_ids
+            ):
+                fault_fixing_edits.append(generated)
+            previous_fixed_faults = fixed_faults
+        if not fault_fixing_edits:
             continue
-        per_action_weight = per_solved_trajectory_weight / len(accepted_actions)
+        per_action_weight = per_solved_trajectory_weight / len(fault_fixing_edits)
         examples.extend(
             WeightedAction(generated=generated, weight=per_action_weight)
-            for generated in accepted_actions
+            for generated in fault_fixing_edits
         )
     return examples
 
@@ -1232,11 +1314,7 @@ def reference_anchored_examples(
         raise ValueError("minimum informative groups must be positive")
     informative_groups = sum(collection.informative for collection in collections)
     policy_training_examples = (
-        [
-            example
-            for collection in collections
-            for example in policy_examples(collection)
-        ]
+        [example for collection in collections for example in policy_examples(collection)]
         if informative_groups >= minimum_informative_groups
         else []
     )
@@ -1303,9 +1381,7 @@ def accumulated_reference_anchored_examples(
         collections,
     )
     accumulated_examples = [*pending_training_examples, *current_anchored]
-    accumulated_policy_example_count = (
-        pending_policy_example_count + current_policy_example_count
-    )
+    accumulated_policy_example_count = pending_policy_example_count + current_policy_example_count
     if not accumulated_group_ids:
         return (
             current_anchored,
@@ -1685,9 +1761,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "minimum_informative_groups_per_policy_update": (
             MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
         ),
-        "policy_batching": "durable_cross_update_verified_success_accumulation",
+        "policy_batching": "durable_cross_update_verified_fix_accumulation",
         "frontier_probe_offset": MAXIMUM_FRONTIER_PROBE_OFFSET,
         "training_level_allocation": "frontier_majority_with_adjacent_probes",
+        "task_sampling": "validation_failure_structural_analogues",
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
@@ -1696,7 +1773,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "sibling_sampling_temperature": SIBLING_SAMPLING_TEMPERATURE,
         "sibling_sampling_top_p": SIBLING_SAMPLING_TOP_P,
         "policy_prompt_roles": ["system", "user"],
-        "learning_signal": "verified_success_actions_from_mixed_correctness_sibling_group",
+        "learning_signal": "verified_fault_fixing_edits_from_mixed_correctness_sibling_group",
         "checkpoint_selection_window": "fixed_paired_validation",
         "checkpoint_retention_guard": "paired_active_adjacent_and_rotating_zero_regressions",
         "final_evaluation_reserve_source": "retained_checkpoint",
@@ -2165,6 +2242,15 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     baseline_protocol_validity = validation_baseline_by_level["0"].get(
         "action_protocol_validity_rate"
     )
+    baseline_failure_family_ids = sorted(
+        {
+            str(family_id)
+            for outcome in validation_baseline_by_level["0"]["task_outcomes"]
+            if not outcome["solved"]
+            for family_id in outcome["family_ids"]
+        }
+    )
+    targeted_training_family_ids = training_analogue_family_ids(baseline_failure_family_ids)
     emit_progress(
         "protocol_evaluation",
         "Action protocol evaluated on the held-out active-level baseline.",
@@ -2177,6 +2263,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         evaluation_total=None,
         action_protocol_validity_rate=baseline_protocol_validity,
         minimum_protocol_validity_rate=MINIMUM_PROTOCOL_VALIDITY_RATE,
+        baseline_failure_family_ids=baseline_failure_family_ids,
+        targeted_training_family_ids=targeted_training_family_ids,
     )
     if (
         baseline_protocol_validity is None
@@ -2246,24 +2334,18 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         list(resume_state.get("pending_training_examples", [])) if resume_state else []
     )
     pending_policy_example_count = (
-        int(resume_state.get("pending_policy_example_count", 0))
-        if resume_state
-        else 0
+        int(resume_state.get("pending_policy_example_count", 0)) if resume_state else 0
     )
     pending_informative_group_ids = (
-        list(resume_state.get("pending_informative_group_ids", []))
-        if resume_state
-        else []
+        list(resume_state.get("pending_informative_group_ids", [])) if resume_state else []
     )
     if (
         bool(pending_training_examples) != bool(pending_informative_group_ids)
         or bool(pending_policy_example_count) != bool(pending_informative_group_ids)
         or pending_policy_example_count < 0
         or pending_policy_example_count > len(pending_training_examples)
-        or len(pending_informative_group_ids)
-        >= MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
-        or len(set(pending_informative_group_ids))
-        != len(pending_informative_group_ids)
+        or len(pending_informative_group_ids) >= MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
+        or len(set(pending_informative_group_ids)) != len(pending_informative_group_ids)
         or not all(isinstance(group_id, str) for group_id in pending_informative_group_ids)
     ):
         raise RuntimeError("training checkpoint pending policy batch is invalid")
@@ -2273,9 +2355,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         int(resume_state.get("frontier_probe_task_groups", 0)) if resume_state else 0
     )
     maximum_sampled_complexity_level = (
-        int(resume_state.get("maximum_sampled_complexity_level", level))
-        if resume_state
-        else level
+        int(resume_state.get("maximum_sampled_complexity_level", level)) if resume_state else level
     )
     informative_task_groups = int(resume_state["informative_task_groups"]) if resume_state else 0
     excluded_task_groups = int(resume_state["excluded_task_groups"]) if resume_state else 0
@@ -2466,22 +2546,16 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         )
         tasks_by_level: dict[int, list[RepairTask]] = {}
         for task_level in sorted(set(training_allocation)):
-            tasks_by_level[task_level] = make_tasks(
+            tasks_by_level[task_level] = failure_directed_training_tasks(
                 task_level,
                 training_allocation.count(task_level),
-                experiment_seed * 100_000
-                + update * 17
-                + task_level * 10_000_019,
-                split="train",
+                experiment_seed * 100_000 + update * 17 + task_level * 10_000_019,
+                target_family_ids=targeted_training_family_ids,
             )
         current_tasks = [
             (
                 task,
-                (
-                    "active_frontier"
-                    if task_level == level
-                    else "adjacent_complexity_probe"
-                ),
+                ("active_frontier" if task_level == level else "adjacent_complexity_probe"),
             )
             for task_level, tasks in sorted(tasks_by_level.items())
             for task in tasks
@@ -2602,8 +2676,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         total_task_groups += len(collections)
         replay_task_groups += sum(collection.replay for collection in collections)
         frontier_probe_task_groups += sum(
-            collection.curriculum_role == "adjacent_complexity_probe"
-            for collection in collections
+            collection.curriculum_role == "adjacent_complexity_probe" for collection in collections
         )
         maximum_sampled_complexity_level = max(
             maximum_sampled_complexity_level,
@@ -2636,9 +2709,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "gradient_norm": round(float(gradient_norm), 6),
             "training_examples": policy_training_example_count,
             "reference_examples": len(anchored_training_examples),
-            "minimum_informative_groups": (
-                MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
-            ),
+            "minimum_informative_groups": (MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE),
             "policy_signal_group_count": len(policy_signal_group_ids),
             "policy_signal_group_ids": policy_signal_group_ids,
             "pending_informative_group_count": len(pending_informative_group_ids),
@@ -2709,6 +2780,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     for candidate_level in set(training_allocation)
                     if candidate_level > level
                 ),
+                "baseline_failure_family_ids": baseline_failure_family_ids,
+                "targeted_training_family_ids": targeted_training_family_ids,
                 "replay_probability": round(
                     len(replay_tasks) / max(1, len(task_specs)),
                     6,
@@ -2728,6 +2801,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             mastery_windows=runtime.mastery_windows,
             mastery_streak=mastery_streak,
             teacher_data_used=False,
+            baseline_failure_family_ids=baseline_failure_family_ids,
+            targeted_training_family_ids=targeted_training_family_ids,
             informative_group_rate=round(
                 informative_task_groups / total_task_groups,
                 6,
@@ -3038,14 +3113,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 consecutive_regression_windows,
             ) = paired_retention_guard_decision(
                 best_fixed_net_improved=int(
-                    best_validation.get("fixed_guard_net_improved", 0)
-                    if same_fixed_guard
-                    else 0
+                    best_validation.get("fixed_guard_net_improved", 0) if same_fixed_guard else 0
                 ),
                 best_rotating_net_improved=int(
-                    best_validation.get("rotating_guard_net_improved", 0)
-                    if same_fixed_guard
-                    else 0
+                    best_validation.get("rotating_guard_net_improved", 0) if same_fixed_guard else 0
                 ),
                 fixed_change=fixed_guard_paired_change,
                 rotating_change=curriculum_paired_change,
@@ -3340,9 +3411,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         )
         for level_key in initial_by_level
         if initial_by_level[level_key]["task_outcomes"]
-        and {
-            outcome["task_id"] for outcome in initial_by_level[level_key]["task_outcomes"]
-        }
+        and {outcome["task_id"] for outcome in initial_by_level[level_key]["task_outcomes"]}
         == {outcome["task_id"] for outcome in final_by_level[level_key]["task_outcomes"]}
     }
     initial_outcomes_by_id = {outcome["task_id"]: outcome for outcome in initial_outcomes}
@@ -3438,7 +3507,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "hypothesis_passed": hypothesis_passed,
         "workload": "repository-repair-restored-continuation-post-training",
         "workload_revision": WORKLOAD_REVISION,
-        "algorithm": "verified-success-group-conditioned-policy-gradient",
+        "algorithm": "verified-fix-group-conditioned-policy-gradient",
         "objective_id": OBJECTIVE_ID,
         "objective_sequence_reduction": "mean_completion_token_log_probabilities",
         "reward_contract": {
@@ -3462,7 +3531,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "minimum_informative_groups_per_policy_update": (
                 MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
             ),
-            "policy_batching": "durable_cross_update_verified_success_accumulation",
+            "policy_batching": "durable_cross_update_verified_fix_accumulation",
             "sequence_reduction": "mean_completion_token_log_probabilities",
         },
         "teacher_data_used": False,
@@ -3517,6 +3586,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "reward_gain": round(reward_gain, 6) if reward_gain is not None else None,
         "initial_by_level": initial_by_level,
         "validation_baseline_by_level": validation_baseline_by_level,
+        "baseline_failure_family_ids": baseline_failure_family_ids,
+        "targeted_training_family_ids": targeted_training_family_ids,
         "final_by_level": final_by_level,
         "paired_test_change": paired_test_change,
         "paired_test_change_by_level": paired_test_change_by_level,

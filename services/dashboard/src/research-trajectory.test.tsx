@@ -184,7 +184,7 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
     applied: true,
     policy_signal_applied: true,
     reference_anchor_applied: true,
-    objective_id: "verified-success-accumulated-retention-policy-gradient@11",
+    objective_id: "verified-fix-accumulated-retention-policy-gradient@12",
     adapter_revision: "update-5",
     learning_rate: 0.00004,
     policy_loss: 0.12,
@@ -192,7 +192,7 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
     reference_kl: 0.1,
     reference_kl_coefficient: 0.1,
     reference_anchor_scope: "all_accepted_actions_including_greedy_prefix",
-    policy_credit_scope: "accepted_actions_from_verified_successful_siblings",
+    policy_credit_scope: "fault_fixing_edits_from_verified_successful_siblings",
     failed_sibling_policy_weight: 0,
     gradient_norm: 0.34,
     training_examples: 8,
@@ -340,7 +340,7 @@ describe("research trajectory", () => {
     expect(html).toContain("update-5");
     expect(html).toContain("Reference KL");
     expect(html).toContain("8 / 24");
-    expect(html).toContain("Verified successes only");
+    expect(html).toContain("Verified fault-fixing edits");
     expect(html).toContain("Batch weight");
     expect(html).toContain("Policy signal</dt><dd>Eligible");
   });

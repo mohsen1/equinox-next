@@ -176,6 +176,21 @@ keep every accepted action under the base-policy reference anchor, and direct tr
 toward declared train-split analogues of the active validation failure families. Final
 test tasks remain isolated from this curriculum feedback.
 
+Objective v12, `verified-fix-accumulated-retention-policy-gradient@12`, implements that
+change under workload revision `runpod-repository-repair-causal-credit@22`. Positive
+policy credit is limited to accepted edits that increase the verified fixed-fault count
+on a sibling that ultimately solves the task. Successful tests and finishes no longer
+dilute the learning signal. Failed siblings still receive zero policy weight, while all
+accepted actions remain in the base-policy reference anchor.
+
+The active validation failures are also treated as a curriculum dimension. Their
+declared structural-mirror graph resolves train-split analogue families, and each update
+targets those families at the active frontier and adjacent complexity probes. For seed
+`113`, the weak validation families `contains`, `first`, and `nonempty` resolve to the
+train families `has_items`, `head_or`, `key_exists`, and `second`. This does not inspect
+or optimize against final test outcomes. The paired fixed, rotating, and final
+zero-regression gates remain unchanged.
+
 ## What we learned
 
 ### From the current Equinox runs

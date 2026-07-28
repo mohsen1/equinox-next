@@ -250,6 +250,7 @@ def test_structural_mirror_disclosure_covers_known_cross_split_shapes() -> None:
     assert {"last", "middle"} <= disclosed
     assert {"coalesce", "default_zero"} <= disclosed
     assert {"different", "negate", "both"} <= disclosed
+    assert {"contains", "key_exists", "has_key"} <= disclosed
 
 
 def test_hidden_verifier_accepts_semantically_equivalent_bounded_expression() -> None:
