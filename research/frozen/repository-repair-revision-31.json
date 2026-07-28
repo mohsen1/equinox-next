@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "freeze_id": "repository-repair-revision-31",
+  "source_commit": "3b0624e816b6cc8a3230a9ef414b101597312e57",
+  "study_id": "repository-repair-causal-factorial-study@2",
+  "workload_revision": "runpod-repository-repair-causal-credit@31",
+  "objective_id": "verified-fix-coverage-retention-policy-gradient@15",
+  "frozen_design": {
+    "branch_widths": [
+      1,
+      4
+    ],
+    "static_branch_width_within_run": true,
+    "curriculum_policies": [
+      "scheduled_dynamic",
+      "adaptive"
+    ],
+    "optimization_seeds_per_cell": 5,
+    "completion_budget": 320,
+    "external_pack_authored_after_freeze": true
+  },
+  "source_files": [
+    {
+      "path": "research/runpod/repository_repair_env_v31.py",
+      "sha256": "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657"
+    },
+    {
+      "path": "research/runpod/repository_repair_study_v31.py",
+      "sha256": "738cf8ccf427843055fafd5e35b6bdec4f61a41f4acb06bf89cab909128957be"
+    },
+    {
+      "path": "research/runpod/repository_repair_rl.py",
+      "sha256": "449da958b75d41f5a641782980e0f0f8301122a68e011629faa4b7cc90bf7997"
+    },
+    {
+      "path": "research/runpod/repository_repair_env.py",
+      "sha256": "527050c5444a3731119773d4e0932840068fda9664654dce9bf0350edf56e40f"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "c6b65be8138331fc341c879c339ce0bac00c1834ebed6220b1bbecbb7afb0de5"
+    },
+    {
+      "path": "research/studies/revision31-causal-study.json",
+      "sha256": "48a6a17cfcd40b68bf6f737cf07a1ad29a0393bc219dddcbbedb5e0e192582ae"
+    }
+  ]
+}
