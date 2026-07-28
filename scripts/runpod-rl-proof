@@ -245,16 +245,28 @@ COPYFILE_DISABLE=1 tar -czf "$bundle_source_path" \
   -C "$repository_root/research/runpod" \
   "${bundle_files[@]}"
 bundle_size_bytes="$(wc -c <"$bundle_source_path" | tr -d ' ')"
-if ((bundle_size_bytes > 2 * 1024 * 1024)); then
-  echo "The compressed workload bundle exceeds the 2 MiB bootstrap limit." >&2
+if ((bundle_size_bytes > 256 * 1024)); then
+  echo "The compressed workload bundle exceeds the 256 KiB inline transport limit." >&2
   exit 1
 fi
+bundle_source_b64="$(
+  base64 <"$bundle_source_path" |
+    tr -d '\n'
+)"
 bootstrap_source_b64="$(
   base64 <"$bootstrap_server_path" |
     tr -d '\n'
 )"
 transport_token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-pod_environment="$(jq -cn --arg token "$transport_token" '{EQUINOX_RESULT_TOKEN: $token}')"
+pod_environment="$(
+  jq -cn \
+    --arg token "$transport_token" \
+    --arg bundle "$bundle_source_b64" \
+    '{
+      EQUINOX_RESULT_TOKEN: $token,
+      EQUINOX_BUNDLE_B64: $bundle
+    }'
+)"
 docker_args="bash -lc \"mkdir -p $persistent_work_directory; echo $bootstrap_source_b64 | base64 -d > $persistent_work_directory/bootstrap_server.py; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds python3 $persistent_work_directory/bootstrap_server.py\""
 
 mkdir -p "$receipt_directory"
@@ -563,26 +575,26 @@ publish_execution "PROVISIONING" "$last_progress"
 
 echo "Worker $pod_id allocated at \$$hourly_cost/hour; waiting for container readiness." >&2
 proxy_root="https://${pod_id}-8000.proxy.runpod.net"
-bootstrap_health_url="$proxy_root/bootstrap-health"
-bundle_upload_urls=(
-  "$proxy_root/bootstrap-health?bundle=1"
-  "$proxy_root/bundle"
-  "$proxy_root/"
-)
 progress_url="$proxy_root/progress.json"
 remote_authorization="Authorization: Bearer $transport_token"
 exit_code=""
 readiness_attempts=$(( (boot_timeout_seconds + 4) / 5 ))
-bootstrap_ready=false
-failure_message="The RunPod worker never exposed its authenticated bootstrap endpoint."
+workload_transport_ready=false
+failure_message="The RunPod worker never exposed structured workload progress."
 for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
-  bootstrap_health="$(
+  remote_progress="$(
     curl --fail --silent --show-error --max-time 10 \
-      -H "$remote_authorization" "$bootstrap_health_url" 2>/dev/null || true
+      -H "$remote_authorization" "$progress_url" 2>/dev/null || true
   )"
-  if jq -e '.status == "awaiting_bundle"' >/dev/null 2>&1 \
-    <<<"$bootstrap_health"; then
-    bootstrap_ready=true
+  if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
+    last_progress="$(
+      jq -cn \
+        --argjson previous "$last_progress" \
+        --argjson current "$remote_progress" \
+        '$previous + $current'
+    )"
+    publish_execution "RUNNING" "$last_progress"
+    workload_transport_ready=true
     break
   fi
   if ((attempt == 1 || attempt % 3 == 0)); then
@@ -604,89 +616,10 @@ for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
   fi
   sleep 5
 done
-if [[ "$bootstrap_ready" != true ]]; then
-  echo "The RunPod worker did not expose its bootstrap endpoint before timeout." >&2
-  exit 1
-fi
-
-last_progress="$(
-  jq -cn \
-    --argjson maximum_updates "$maximum_updates" \
-    '{
-      phase: "uploading_workload",
-      message: "Container ready; installing the authenticated workload bundle.",
-      maximum_level: 3,
-      maximum_updates: $maximum_updates
-    }'
-)"
-publish_execution "PROVISIONING" "$last_progress"
-echo "Container is live; uploading the authenticated workload bundle." >&2
-failure_message="The RunPod worker rejected the authenticated workload bundle."
-workload_transport_ready=false
-failure_message="The bundle upload did not hand off to structured workload progress."
-bundle_upload_attempts=3
-bundle_handoff_attempts=12
-for ((upload_attempt = 1; upload_attempt <= bundle_upload_attempts; upload_attempt += 1)); do
-  bundle_upload_url="${bundle_upload_urls[$((upload_attempt - 1))]}"
-  bundle_upload_status="$(
-    curl --silent --show-error --max-time 60 \
-      -X POST \
-      -H "$remote_authorization" \
-      -H "Content-Type: application/gzip" \
-      --data-binary "@$bundle_source_path" \
-      --output /dev/null \
-      --write-out "%{http_code}" \
-      "$bundle_upload_url" || true
-  )"
-  if [[ "$bundle_upload_status" != "202" ]]; then
-    echo \
-      "Bundle upload returned HTTP $bundle_upload_status; checking for workload handoff." \
-      >&2
-  fi
-
-  bootstrap_still_waiting=false
-  for ((attempt = 1; attempt <= bundle_handoff_attempts; attempt += 1)); do
-    remote_progress="$(
-      curl --fail --silent --show-error --max-time 10 \
-        -H "$remote_authorization" "$progress_url" 2>/dev/null || true
-    )"
-    if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
-      last_progress="$(
-        jq -cn \
-          --argjson previous "$last_progress" \
-          --argjson current "$remote_progress" \
-          '$previous + $current'
-      )"
-      publish_execution "RUNNING" "$last_progress"
-      workload_transport_ready=true
-      break
-    fi
-    bootstrap_health="$(
-      curl --fail --silent --show-error --max-time 10 \
-        -H "$remote_authorization" "$bootstrap_health_url" 2>/dev/null || true
-    )"
-    if jq -e '.status == "awaiting_bundle"' >/dev/null 2>&1 \
-      <<<"$bootstrap_health"; then
-      bootstrap_still_waiting=true
-      break
-    fi
-    sleep 5
-  done
-  if [[ "$workload_transport_ready" == true ]]; then
-    break
-  fi
-  if [[ "$bootstrap_still_waiting" != true ]] ||
-    ((upload_attempt == bundle_upload_attempts)); then
-    break
-  fi
-  echo \
-    "Bootstrap still awaits the bundle; retrying authenticated upload ($((upload_attempt + 1))/$bundle_upload_attempts)." \
-    >&2
-done
 rm -f -- "$bundle_source_path"
 bundle_source_path=""
 if [[ "$workload_transport_ready" != true ]]; then
-  echo "The uploaded workload did not expose structured progress before timeout." >&2
+  echo "The inline workload did not expose structured progress before timeout." >&2
   exit 1
 fi
 

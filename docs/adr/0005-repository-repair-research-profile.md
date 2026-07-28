@@ -381,10 +381,13 @@ gates remain unchanged.
 
 The first revision-20 provisioning attempt was terminated before workload handoff when
 RunPod's proxy returned `404` for bundle posts to its root despite serving authenticated
-bootstrap health. Teardown returned provider spend to zero. The launcher now tries the
-known-routable bootstrap health path, a dedicated bundle path, and the proxy root in
-that order. The bootstrap continues to authenticate every POST and validates the bundle
-size and exact file allowlist independently of the provider-rewritten path.
+bootstrap health. A second attempt showed the same behavior on health, dedicated, and
+root POST paths. Both workers were deleted and provider spend returned to zero. The
+launcher now sends a compressed bundle capped at 256 KiB in the encrypted pod creation
+request. The bootstrap decodes it, validates the 2 MiB hard size bound and exact file
+allowlist, installs it durably, removes it from the child process environment, and
+executes the runner. The authenticated HTTP upload remains a fallback for operators,
+but paid automation no longer depends on proxy POST behavior.
 
 ## Non-goals
 

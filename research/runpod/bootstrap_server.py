@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import io
 import json
@@ -62,6 +64,25 @@ def install_bundle(
             os.close(directory_descriptor)
     finally:
         shutil.rmtree(staging_directory, ignore_errors=True)
+
+
+def install_environment_bundle(
+    encoded_payload: str,
+    *,
+    work_directory: Path,
+    workload_file: str,
+) -> None:
+    try:
+        payload = base64.b64decode(encoded_payload, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("Environment bundle was not valid base64.") from error
+    if not payload or len(payload) > MAXIMUM_BUNDLE_BYTES:
+        raise ValueError("Environment bundle size was invalid.")
+    install_bundle(
+        payload,
+        work_directory=work_directory,
+        workload_file=workload_file,
+    )
 
 
 class BootstrapServer(HTTPServer):
@@ -138,14 +159,23 @@ class BootstrapHandler(BaseHTTPRequestHandler):
 def main() -> None:
     work_directory = Path(os.environ["EQUINOX_REMOTE_WORKDIR"])
     work_directory.mkdir(parents=True, exist_ok=True)
-    expected_bundle_files(os.environ["EQUINOX_WORKLOAD_FILE"])
+    workload_file = os.environ["EQUINOX_WORKLOAD_FILE"]
+    expected_bundle_files(workload_file)
     if not os.environ.get("EQUINOX_RESULT_TOKEN"):
         raise SystemExit("EQUINOX_RESULT_TOKEN is required.")
-    port = int(os.environ.get("EQUINOX_BOOTSTRAP_PORT", "8000"))
-    server = BootstrapServer(("0.0.0.0", port), BootstrapHandler)
-    while not server.bundle_ready:
-        server.handle_request()
-    server.server_close()
+    encoded_environment_bundle = os.environ.pop("EQUINOX_BUNDLE_B64", "")
+    if encoded_environment_bundle:
+        install_environment_bundle(
+            encoded_environment_bundle,
+            work_directory=work_directory,
+            workload_file=workload_file,
+        )
+    else:
+        port = int(os.environ.get("EQUINOX_BOOTSTRAP_PORT", "8000"))
+        server = BootstrapServer(("0.0.0.0", port), BootstrapHandler)
+        while not server.bundle_ready:
+            server.handle_request()
+        server.server_close()
     time.sleep(0.5)
     os.execvpe(
         "bash",

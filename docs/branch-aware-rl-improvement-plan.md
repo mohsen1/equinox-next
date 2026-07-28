@@ -120,10 +120,13 @@ new hypothesis.
 The first revision-20 provisioning attempt never reached the workload. RunPod's proxy
 served the authenticated bootstrap health check but returned `404` for three bundle
 posts to the proxy root. The launcher deleted the worker, confirmed zero ongoing spend,
-and retained the attempt as non-probative failed execution evidence. Bundle transport
-now posts first to the already-routable bootstrap health path, then falls back to
-dedicated and root paths; the authenticated bootstrap accepts all three because provider
-proxies may rewrite the request path.
+and retained the attempt as non-probative failed execution evidence. A second attempt
+confirmed that alternate health, dedicated, and root POST paths all fail while
+authenticated GETs remain available. Bundle handoff therefore no longer depends on a
+provider proxy mutation: the bounded compressed bundle travels in the encrypted pod
+creation request, and the bootstrap decodes it, enforces the same exact file allowlist,
+installs it durably, removes it from the child process environment, and starts the
+observable runner.
 
 ## What we learned
 

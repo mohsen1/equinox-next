@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import tarfile
@@ -15,6 +16,7 @@ from research.runpod.bootstrap_server import (
     BootstrapServer,
     expected_bundle_files,
     install_bundle,
+    install_environment_bundle,
 )
 
 
@@ -77,6 +79,32 @@ def test_install_bundle_rejects_nested_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="allowlist"):
         install_bundle(
             payload,
+            work_directory=tmp_path,
+            workload_file="repository_repair_rl.py",
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_install_environment_bundle_decodes_and_validates_the_allowlist(
+    tmp_path: Path,
+) -> None:
+    workload_file = "repository_repair_rl.py"
+    files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+
+    install_environment_bundle(
+        base64.b64encode(bundle_payload(files)).decode(),
+        work_directory=tmp_path,
+        workload_file=workload_file,
+    )
+
+    assert {path.name for path in tmp_path.iterdir()} == set(files)
+
+
+def test_install_environment_bundle_rejects_invalid_base64(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="not valid base64"):
+        install_environment_bundle(
+            "not-base64!",
             work_directory=tmp_path,
             workload_file="repository_repair_rl.py",
         )
