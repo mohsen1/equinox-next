@@ -19,6 +19,7 @@ from research.runpod.external_eval_launcher import (
     load_frozen_pack,
     paired_change_summary,
     proxy_put_file,
+    ssh_endpoint_from_pod,
     verify_result_contract,
 )
 from research.runpod.revision30_external_eval import (
@@ -224,3 +225,22 @@ def test_proxy_upload_parses_success_body(
         )
         == response
     )
+
+
+def test_ssh_endpoint_requires_a_public_port_22_mapping() -> None:
+    pod = {
+        "runtime": {
+            "ports": [
+                {
+                    "ip": "203.0.113.17",
+                    "isIpPublic": True,
+                    "privatePort": 22,
+                    "publicPort": 32061,
+                }
+            ]
+        }
+    }
+
+    assert ssh_endpoint_from_pod(pod) == ("203.0.113.17", 32061)
+    pod["runtime"]["ports"][0]["isIpPublic"] = False
+    assert ssh_endpoint_from_pod(pod) is None

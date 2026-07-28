@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import ipaddress
 import json
 import math
 import os
@@ -53,6 +54,8 @@ DEFAULT_INPUT_TIMEOUT_SECONDS = 1_800
 DEFAULT_CONTAINER_DISK_GB = 30
 DEFAULT_VOLUME_GB = 10
 PROXY_PORT = 8000
+REMOTE_WORK_DIRECTORY = "/workspace/equinox-state"
+REMOTE_INPUT_DIRECTORY = f"{REMOTE_WORK_DIRECTORY}/inputs"
 
 
 class LaunchFailure(RuntimeError):
@@ -242,6 +245,35 @@ def proxy_put_file(
         return json.loads(payload)
     except json.JSONDecodeError as error:
         raise LaunchFailure(f"proxy upload returned invalid JSON: {path}") from error
+
+
+def ssh_endpoint_from_pod(pod: Any) -> tuple[str, int] | None:
+    pending = [pod]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            private_port = value.get("privatePort", value.get("private_port"))
+            public_port = value.get("publicPort", value.get("public_port"))
+            host = value.get("ip", value.get("host"))
+            is_public = value.get("isIpPublic", value.get("is_ip_public", True))
+            if (
+                private_port == 22
+                and is_public is not False
+                and isinstance(host, str)
+                and isinstance(public_port, int)
+                and not isinstance(public_port, bool)
+                and 1 <= public_port <= 65_535
+            ):
+                try:
+                    ipaddress.ip_address(host)
+                except ValueError:
+                    pass
+                else:
+                    return host, public_port
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return None
 
 
 def bundle_sources(repository_root: Path) -> dict[str, Path]:
@@ -553,6 +585,7 @@ class ExternalEvaluationLaunch:
         self.started_epoch = time.time()
         self.provider_handle: str | None = None
         self.pod_id: str | None = None
+        self.ssh_endpoint: tuple[str, int] | None = None
         self.hourly_cost: float | None = None
         self.execution_registered = False
         self.terminal_published = False
@@ -758,8 +791,8 @@ class ExternalEvaluationLaunch:
             "--volume-mount-path",
             "/workspace",
             "--ports",
-            f"{PROXY_PORT}/http",
-            "--ssh=false",
+            f"{PROXY_PORT}/http,22/tcp",
+            "--ssh=true",
             "--env",
             environment,
             "--docker-args",
@@ -822,33 +855,137 @@ class ExternalEvaluationLaunch:
             time.sleep(5)
         raise LaunchFailure("RunPod never exposed authenticated evaluation progress")
 
+    def ssh_arguments(self, *remote_command: str) -> list[str]:
+        if self.ssh_endpoint is None:
+            raise LaunchFailure("RunPod SSH endpoint is unavailable")
+        host, port = self.ssh_endpoint
+        key_path = Path(
+            os.environ.get(
+                "EQUINOX_RUNPOD_SSH_KEY",
+                "~/.runpod/ssh/runpodctl-ssh-key",
+            )
+        ).expanduser()
+        if not key_path.is_file():
+            raise LaunchFailure("RunPod SSH private key is unavailable")
+        return [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=20",
+            "-i",
+            str(key_path),
+            "-p",
+            str(port),
+            f"root@{host}",
+            *remote_command,
+        ]
+
+    def wait_until_ssh_ready(self) -> None:
+        if self.pod_id is None:
+            raise LaunchFailure("RunPod pod identity is unavailable")
+        deadline = time.monotonic() + self.boot_timeout_seconds
+        while time.monotonic() < deadline:
+            pod = runpod_json("pod", "get", self.pod_id)
+            endpoint = ssh_endpoint_from_pod(pod)
+            if endpoint is not None:
+                self.ssh_endpoint = endpoint
+                completed = run_command(
+                    self.ssh_arguments("true"),
+                    timeout=25,
+                )
+                if completed.returncode == 0:
+                    return
+            time.sleep(5)
+        raise LaunchFailure("RunPod never exposed a working full-SSH endpoint")
+
+    def scp_input(
+        self,
+        source: Path,
+        remote_name: str,
+        *,
+        finalize: bool = True,
+    ) -> None:
+        if self.ssh_endpoint is None:
+            raise LaunchFailure("RunPod SSH endpoint is unavailable")
+        if re.fullmatch(r"[a-zA-Z0-9._-]+", remote_name) is None:
+            raise LaunchFailure("remote input filename is invalid")
+        host, port = self.ssh_endpoint
+        key_path = Path(
+            os.environ.get(
+                "EQUINOX_RUNPOD_SSH_KEY",
+                "~/.runpod/ssh/runpodctl-ssh-key",
+            )
+        ).expanduser()
+        pending_path = f"{REMOTE_INPUT_DIRECTORY}/{remote_name}.pending"
+        completed = run_command(
+            [
+                "scp",
+                "-q",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ConnectTimeout=20",
+                "-i",
+                str(key_path),
+                "-P",
+                str(port),
+                str(source),
+                f"root@{host}:{pending_path}",
+            ],
+            timeout=600,
+        )
+        if completed.returncode != 0:
+            raise LaunchFailure(
+                completed.stderr.decode(errors="replace").strip()
+                or f"SCP upload failed: {remote_name}"
+            )
+        if not finalize:
+            return
+        completed = run_command(
+            self.ssh_arguments(
+                f"test ! -e {REMOTE_INPUT_DIRECTORY}/{remote_name} && "
+                f"mv -- {pending_path} {REMOTE_INPUT_DIRECTORY}/{remote_name}"
+            ),
+            timeout=30,
+        )
+        if completed.returncode != 0:
+            raise LaunchFailure(f"remote input commit failed: {remote_name}")
+
     def upload_inputs(self) -> None:
         total = len(self.manifest["adapters"])
-        status_payload = proxy_get(
-            self.proxy_root(),
-            "/input-status",
-            self.transport_token,
-            timeout=15,
+        self.last_progress.update(
+            {
+                "phase": "waiting_for_secure_transfer",
+                "message": "Container is ready; waiting for full-SSH file transfer.",
+            }
         )
-        try:
-            status = json.loads(status_payload or b"")
-        except json.JSONDecodeError as error:
-            raise LaunchFailure("remote input transport returned invalid status") from error
-        if status != {
-            "manifest_received": False,
-            "ready": False,
-            "adapter_archives_received": 0,
-        }:
-            raise LaunchFailure("remote input transport did not start from an empty state")
-        manifest_response = proxy_put_file(
-            self.proxy_root(),
-            "/inputs/manifest.json",
-            self.transport_token,
-            self.manifest_path,
-            timeout=60,
+        self.publish("RUNNING")
+        self.wait_until_ssh_ready()
+        initialized = run_command(
+            self.ssh_arguments(
+                f"mkdir -p {REMOTE_INPUT_DIRECTORY} && "
+                f"chmod 700 {REMOTE_INPUT_DIRECTORY} && "
+                f'test -z "$(find {REMOTE_INPUT_DIRECTORY} -mindepth 1 '
+                '-maxdepth 1 -print -quit)"'
+            ),
+            timeout=30,
         )
-        if manifest_response.get("sha256") != sha256_file(self.manifest_path):
-            raise LaunchFailure("remote manifest upload evidence does not match")
+        if initialized.returncode != 0:
+            raise LaunchFailure("remote input directory did not start empty")
+        self.scp_input(self.manifest_path, "manifest.json")
         for index, adapter in enumerate(self.manifest["adapters"], start=1):
             filename = adapter["archive_filename"]
             self.last_progress.update(
@@ -861,31 +998,32 @@ class ExternalEvaluationLaunch:
                 }
             )
             self.publish("RUNNING")
-            response = proxy_put_file(
-                self.proxy_root(),
-                f"/inputs/{filename}",
-                self.transport_token,
-                self.archive_map[filename],
-                timeout=600,
-            )
-            if (
-                response.get("sha256") != adapter["sha256"]
-                or response.get("size_bytes") != adapter["size_bytes"]
-            ):
-                raise LaunchFailure("remote adapter upload evidence does not match")
+            self.scp_input(self.archive_map[filename], filename)
         ready = canonical_json({"manifest_sha256": sha256_file(self.manifest_path)})
         with tempfile.NamedTemporaryFile() as handle:
             handle.write(ready)
             handle.flush()
-            response = proxy_put_file(
-                self.proxy_root(),
-                "/inputs/ready",
-                self.transport_token,
-                Path(handle.name),
-                timeout=60,
+            self.scp_input(Path(handle.name), "ready.json", finalize=False)
+        ready_commit = run_command(
+            self.ssh_arguments(
+                f"cd {REMOTE_WORK_DIRECTORY} && "
+                f"EQUINOX_REMOTE_WORKDIR={REMOTE_WORK_DIRECTORY} "
+                f"PYTHONPATH={REMOTE_WORK_DIRECTORY} python3 -c "
+                "'import os; from pathlib import Path; "
+                "from research.runpod.external_eval_transport import "
+                "verify_ready_payload; "
+                f'root=Path("{REMOTE_INPUT_DIRECTORY}"); '
+                'pending=root/"ready.json.pending"; '
+                "verify_ready_payload(root, pending.read_bytes()); "
+                'os.replace(pending, root/"ready.json")\''
+            ),
+            timeout=600,
+        )
+        if ready_commit.returncode != 0:
+            error = ready_commit.stderr.decode(errors="replace").strip()
+            raise LaunchFailure(
+                "remote ready-fence verification failed" + (f": {error[-500:]}" if error else "")
             )
-        if response.get("sha256") != hashlib.sha256(ready).hexdigest():
-            raise LaunchFailure("remote ready-fence evidence does not match")
         self.last_progress.update(
             {
                 "phase": "input_verification",
