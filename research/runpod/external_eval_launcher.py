@@ -280,6 +280,29 @@ def ssh_endpoint_from_pod(pod: Any) -> tuple[str, int] | None:
     return None
 
 
+def bootstrap_docker_arguments(
+    encoded_bootstrap: str,
+    *,
+    input_timeout_seconds: int,
+) -> str:
+    if re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded_bootstrap) is None:
+        raise LaunchFailure("bootstrap payload is not valid base64")
+    return (
+        'bash -lc "set -e; '
+        "mkdir -p /root/.ssh /run/sshd "
+        f"{REMOTE_WORK_DIRECTORY}; "
+        'echo \\"$PUBLIC_KEY\\" > /root/.ssh/authorized_keys; '
+        "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; "
+        "ssh-keygen -A; /usr/sbin/sshd; "
+        f"echo {encoded_bootstrap} | base64 -d > "
+        f"{REMOTE_WORK_DIRECTORY}/bootstrap_server.py; "
+        f"EQUINOX_REMOTE_WORKDIR={REMOTE_WORK_DIRECTORY} "
+        f"EQUINOX_WORKLOAD_FILE={EXTERNAL_EVALUATION_WORKLOAD} "
+        f"EQUINOX_EXTERNAL_INPUT_TIMEOUT_SECONDS={input_timeout_seconds} "
+        f'python3 {REMOTE_WORK_DIRECTORY}/bootstrap_server.py"'
+    )
+
+
 def bundle_sources(repository_root: Path) -> dict[str, Path]:
     sources = {
         "external_eval_remote_runner.sh": (
@@ -760,14 +783,9 @@ class ExternalEvaluationLaunch:
             separators=(",", ":"),
         )
         bootstrap = base64.b64encode(self.bootstrap_source).decode()
-        work_directory = "/workspace/equinox-state"
-        docker_arguments = (
-            f'bash -lc "mkdir -p {work_directory}; '
-            f"echo {bootstrap} | base64 -d > {work_directory}/bootstrap_server.py; "
-            f"EQUINOX_REMOTE_WORKDIR={work_directory} "
-            f"EQUINOX_WORKLOAD_FILE={EXTERNAL_EVALUATION_WORKLOAD} "
-            f"EQUINOX_EXTERNAL_INPUT_TIMEOUT_SECONDS={self.input_timeout_seconds} "
-            f'python3 {work_directory}/bootstrap_server.py"'
+        docker_arguments = bootstrap_docker_arguments(
+            bootstrap,
+            input_timeout_seconds=self.input_timeout_seconds,
         )
         terminate_after = (
             (datetime.now(UTC) + timedelta(minutes=self.maximum_lifetime_minutes))

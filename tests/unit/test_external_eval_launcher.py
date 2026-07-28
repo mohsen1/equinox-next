@@ -15,6 +15,7 @@ from research.runpod.bootstrap_server import (
 )
 from research.runpod.external_eval_launcher import (
     LaunchFailure,
+    bootstrap_docker_arguments,
     build_bundle,
     load_frozen_pack,
     paired_change_summary,
@@ -256,3 +257,15 @@ def test_ssh_endpoint_accepts_current_runpodctl_schema() -> None:
     }
 
     assert ssh_endpoint_from_pod(pod) == ("69.30.85.59", 22001)
+
+
+def test_bootstrap_starts_full_ssh_before_the_external_runner() -> None:
+    command = bootstrap_docker_arguments(
+        "YWJj",
+        input_timeout_seconds=1800,
+    )
+
+    assert 'echo \\"$PUBLIC_KEY\\" > /root/.ssh/authorized_keys' in command
+    assert "ssh-keygen -A; /usr/sbin/sshd;" in command
+    assert "EQUINOX_EXTERNAL_INPUT_TIMEOUT_SECONDS=1800" in command
+    assert command.endswith('python3 /workspace/equinox-state/bootstrap_server.py"')
