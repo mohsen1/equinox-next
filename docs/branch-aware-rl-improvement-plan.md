@@ -177,7 +177,7 @@ toward declared train-split analogues of the active validation failure families.
 test tasks remain isolated from this curriculum feedback.
 
 Objective v12, `verified-fix-accumulated-retention-policy-gradient@12`, implements that
-change under workload revision `runpod-repository-repair-causal-credit@22`. Positive
+change under workload revision `runpod-repository-repair-causal-credit@23`. Positive
 policy credit is limited to accepted edits that increase the verified fixed-fault count
 on a sibling that ultimately solves the task. Successful tests and finishes no longer
 dilute the learning signal. Failed siblings still receive zero policy weight, while all
@@ -190,6 +190,14 @@ targets those families at the active frontier and adjacent complexity probes. Fo
 train families `has_items`, `head_or`, `key_exists`, and `second`. This does not inspect
 or optimize against final test outcomes. The paired fixed, rotating, and final
 zero-regression gates remain unchanged.
+
+The first revision-22 attempt was stopped at update 1 before a checkpoint. Optimization
+correctly used five fault-fixing edit examples from two informative groups, but the
+branch serializer still divided its displayed sibling weight across every accepted
+continuation action. That would make the proof disagree with the optimizer. The worker
+was terminated at an estimated `$0.043085`; teardown and zero ongoing spend were
+confirmed. Revision 23 derives optimizer examples, sibling eligibility, per-action
+credit, and displayed weights from one shared causal-credit function.
 
 ## What we learned
 

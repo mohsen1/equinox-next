@@ -6,7 +6,7 @@ from research.runpod.study_summary import student_t_critical_95, summarize
 def receipt(seed: int, gain: float) -> dict:
     return {
         "seed": seed,
-        "workload_revision": "runpod-repository-repair-causal-credit@22",
+        "workload_revision": "runpod-repository-repair-causal-credit@23",
         "objective_id": "verified-fix-accumulated-retention-policy-gradient@12",
         "teacher_data_used": False,
         "adapter_persisted": True,

@@ -751,7 +751,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-causal-credit@22"
+    and .workload_revision == "runpod-repository-repair-causal-credit@23"
     and .algorithm == "verified-fix-group-conditioned-policy-gradient"
     and .objective_id == "verified-fix-accumulated-retention-policy-gradient@12"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
@@ -834,6 +834,20 @@ else
     and (.targeted_training_family_ids | type) == "array"
     and ([.paired_test_transitions[]
       | (.family_ids | type) == "array" and (.family_ids | length) >= 1
+    ] | all)
+    and ([.branch_snapshots[].siblings[].steps[]
+      | (.policy_signal | type) == "boolean"
+        and (.effective_batch_weight | type) == "number"
+    ] | all)
+    and ([.branch_snapshots[].siblings[].steps[]
+      | select(.policy_signal)
+      | .tool == "edit"
+        and .accepted == true
+        and .effective_batch_weight > 0
+    ] | all)
+    and ([.branch_snapshots[].siblings[].steps[]
+      | select(.policy_signal | not)
+      | .effective_batch_weight == 0
     ] | all)
     and (.best_validation.fixed_guard_levels | type) == "array"
     and (.final_evaluation_complete | type) == "boolean"

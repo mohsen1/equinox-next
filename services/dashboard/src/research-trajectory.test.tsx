@@ -210,7 +210,7 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
     terminal_reason: index === 0 ? "solved" : "finished_with_failures",
     trajectory_digest: `sha256:sibling-${index}`,
     completion_tokens: 24,
-    effective_batch_weight: index === 0 ? 0.25 : 0,
+    effective_batch_weight: index === 0 ? 1 : 0,
     reward_components: {
       hidden_correctness: index === 0,
       public_verifier_progress: index === 0 ? 1 : 0,
@@ -227,7 +227,18 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
       index === 0
         ? []
         : [{ category: "valid_candidate_failure", source: "typed" as const }],
-    steps: [branchStep(2, "edit"), branchStep(3, "finish", true)],
+    steps: [
+      {
+        ...branchStep(2, "edit"),
+        policy_signal: index === 0,
+        effective_batch_weight: index === 0 ? 1 : 0,
+      },
+      {
+        ...branchStep(3, "finish", true),
+        policy_signal: false,
+        effective_batch_weight: 0,
+      },
+    ],
   })),
 };
 
@@ -342,7 +353,20 @@ describe("research trajectory", () => {
     expect(html).toContain("8 / 24");
     expect(html).toContain("Verified fault-fixing edits");
     expect(html).toContain("Batch weight");
-    expect(html).toContain("Policy signal</dt><dd>Eligible");
+    expect(html).toContain("Policy signal</dt><dd>None");
+
+    const creditedEditHtml = renderToStaticMarkup(
+      <ResearchBranchWorkspace
+        snapshot={multiStepSnapshot}
+        selectedSibling={multiStepSnapshot.siblings[0]}
+        selectedActionId="sibling-0-2"
+        view="outline"
+        selectSibling={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+    expect(creditedEditHtml).toContain("Policy signal</dt><dd>Eligible");
+    expect(creditedEditHtml).toContain("Batch weight</dt><dd>+1.000");
   });
 
   it("distinguishes a restorative anchor-only optimizer step", () => {

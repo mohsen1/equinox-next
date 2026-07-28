@@ -647,7 +647,7 @@ function BranchInspector({
               label="Policy signal"
               value={
                 sibling
-                  ? sibling.policy_signal
+                  ? (step.policy_signal ?? sibling.policy_signal)
                     ? "Eligible"
                     : "None"
                   : "Prefix masked"
@@ -666,9 +666,14 @@ function BranchInspector({
             <Fact
               label="Batch weight"
               value={
-                sibling?.effective_batch_weight === undefined
+                (step.effective_batch_weight ??
+                  sibling?.effective_batch_weight) === undefined
                   ? "Masked"
-                  : formatSigned(sibling.effective_batch_weight)
+                  : formatSigned(
+                      step.effective_batch_weight ??
+                        sibling?.effective_batch_weight ??
+                        0,
+                    )
               }
             />
           </dl>

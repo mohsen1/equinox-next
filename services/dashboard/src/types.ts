@@ -314,6 +314,8 @@ export interface ResearchBranchStep {
   terminal: boolean;
   terminal_reason: string | null;
   reward: number;
+  policy_signal?: boolean;
+  effective_batch_weight?: number;
 }
 
 export interface ResearchBranchSibling {

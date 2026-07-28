@@ -37,6 +37,7 @@ from research.runpod.repository_repair_rl import (
     emit_progress,
     evaluation_reward_summary,
     failure_directed_training_tasks,
+    fault_fixing_edit_actions,
     fixed_retention_guard_levels,
     lightweight_validation_history,
     next_malformed_action_window_streak,
@@ -1088,6 +1089,49 @@ def test_serialized_branch_has_one_prefix_checkpoint_and_four_step_lanes() -> No
     assert next_uninformative_group_streak(4, [collection]) == 5
 
 
+def test_serialized_action_credit_matches_the_optimizer_examples() -> None:
+    task = make_task(0, seed=44)
+    diagnostics = diagnostic_actions(task)
+    successful = teacher_continuation_actions(task)
+    failed = [
+        {"tool": "read", "path": task.faults[0].path},
+        {"tool": "test"},
+        {"tool": "finish"},
+    ]
+
+    def scripted_policy(_: str, __: bool, sampling_seed: int) -> GeneratedAction:
+        if sampling_seed < 10_000:
+            action = diagnostics[sampling_seed - 100]
+        else:
+            sibling_index = (sampling_seed - 100) // 10_000 - 1
+            action_index = (sampling_seed - 100) % 10_000
+            action = (successful if sibling_index == 0 else failed)[action_index]
+        return GeneratedAction(
+            response=encode_action(action),
+            input_ids=(1, 2),
+            attention_mask=(1, 1),
+            completion_mask=(0, 1),
+        )
+
+    collection = collect_branch_group(
+        task,
+        scripted_policy,
+        stochastic=True,
+        sampling_seed=100,
+    )
+    serialized = serialize_branch_group(collection, update=1)
+    successful_sibling = serialized["siblings"][0]
+    edit_step = next(step for step in successful_sibling["steps"] if step["tool"] == "edit")
+    non_edit_steps = [step for step in successful_sibling["steps"] if step["tool"] != "edit"]
+
+    assert collection.informative
+    assert successful_sibling["effective_batch_weight"] == 1.0
+    assert edit_step["policy_signal"] is True
+    assert edit_step["effective_batch_weight"] == 1.0
+    assert all(step["policy_signal"] is False for step in non_edit_steps)
+    assert all(step["effective_batch_weight"] == 0.0 for step in non_edit_steps)
+
+
 def test_training_prefix_is_greedy_while_siblings_remain_stochastic() -> None:
     task = make_task(0, seed=44)
     calls: list[bool] = []
@@ -1149,6 +1193,7 @@ def test_policy_examples_use_only_verified_fault_fixing_edits() -> None:
 
     examples = policy_examples(collection)
 
+    assert fault_fixing_edit_actions(collection, 0) == [generated]
     assert len(examples) == 1
     assert [example.weight for example in examples] == [1.0]
 

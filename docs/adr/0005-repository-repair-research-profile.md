@@ -416,7 +416,7 @@ credit-assignment defect: positive weight was divided across successful repair, 
 and finish actions even though only fault-fixing edits caused the verified state change.
 
 Objective v12 is `verified-fix-accumulated-retention-policy-gradient@12` under workload
-revision `runpod-repository-repair-causal-credit@22`. A mixed-correctness group is still
+revision `runpod-repository-repair-causal-credit@23`. A mixed-correctness group is still
 required, but positive policy credit is limited to accepted edits that increase the
 verified fixed-fault count on a sibling that ultimately solves the task. All accepted
 actions—including diagnostics, tests, finishes, failed-sibling actions, and no-signal
@@ -428,6 +428,12 @@ frontier and adjacent complexity probes. Final test outcomes never influence sam
 checkpoint selection, or optimization. The result records both the observed validation
 failure families and the selected train families so this adaptive curriculum decision is
 auditable.
+
+Revision 22 was stopped at update 1 when live inspection showed that serialized sibling
+weights still used all accepted continuation actions even though optimization used only
+fault-fixing edits. Revision 23 removes that independent calculation. Optimizer inputs,
+sibling eligibility, step-level policy signal, and effective weights now share the same
+causal-credit function.
 
 ## Non-goals
 

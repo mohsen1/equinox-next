@@ -85,7 +85,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@22"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@23"
 OBJECTIVE_ID = "verified-fix-accumulated-retention-policy-gradient@12"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -1236,6 +1236,37 @@ def collect_greedy_trajectory(
     }
 
 
+def fault_fixing_edit_actions(
+    collection: BranchCollection,
+    sibling_index: int,
+) -> list[GeneratedAction]:
+    if not 0 <= sibling_index < len(collection.siblings):
+        raise IndexError("sibling index is outside the branch group")
+    generated_actions = collection.generated_by_sibling[sibling_index]
+    post_branch_steps = collection.siblings[sibling_index].steps[len(collection.prefix.steps) :]
+    previous_fixed_faults = (
+        int(getattr(collection.prefix.steps[-1], "fixed_faults", 0))
+        if collection.prefix.steps
+        else 0
+    )
+    fault_fixing_edits: list[GeneratedAction] = []
+    for generated, step in zip(
+        generated_actions,
+        post_branch_steps,
+        strict=True,
+    ):
+        fixed_faults = int(getattr(step, "fixed_faults", previous_fixed_faults))
+        if (
+            step.accepted
+            and getattr(step, "tool", None) == "edit"
+            and fixed_faults > previous_fixed_faults
+            and generated.input_ids
+        ):
+            fault_fixing_edits.append(generated)
+        previous_fixed_faults = fixed_faults
+    return fault_fixing_edits
+
+
 def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
     if collection.exclusion_reason or not collection.informative:
         return []
@@ -1249,28 +1280,7 @@ def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
     examples: list[WeightedAction] = []
     per_solved_trajectory_weight = 1.0 / len(solved_sibling_indexes)
     for sibling_index in solved_sibling_indexes:
-        generated_actions = collection.generated_by_sibling[sibling_index]
-        post_branch_steps = collection.siblings[sibling_index].steps[len(collection.prefix.steps) :]
-        previous_fixed_faults = (
-            int(getattr(collection.prefix.steps[-1], "fixed_faults", 0))
-            if collection.prefix.steps
-            else 0
-        )
-        fault_fixing_edits: list[GeneratedAction] = []
-        for generated, step in zip(
-            generated_actions,
-            post_branch_steps,
-            strict=True,
-        ):
-            fixed_faults = int(getattr(step, "fixed_faults", previous_fixed_faults))
-            if (
-                step.accepted
-                and getattr(step, "tool", None) == "edit"
-                and fixed_faults > previous_fixed_faults
-                and generated.input_ids
-            ):
-                fault_fixing_edits.append(generated)
-            previous_fixed_faults = fixed_faults
+        fault_fixing_edits = fault_fixing_edit_actions(collection, sibling_index)
         if not fault_fixing_edits:
             continue
         per_action_weight = per_solved_trajectory_weight / len(fault_fixing_edits)
@@ -1479,21 +1489,20 @@ def serialize_branch_group(
             else []
         )
         post_branch_steps = sibling.steps[len(collection.prefix.steps) :]
-        accepted_training_actions = sum(
-            step.accepted and bool(generated.input_ids)
-            for generated, step in zip(
-                generated_actions,
-                post_branch_steps,
-                strict=True,
-            )
-        )
+        credited_actions = fault_fixing_edit_actions(collection, index)
+        credited_action_ids = {id(generated) for generated in credited_actions}
         solved_sibling_count = sum(
             candidate.terminal_reason == "solved" for candidate in collection.siblings
         )
         policy_signal = (
             collection.informative
             and sibling.terminal_reason == "solved"
-            and accepted_training_actions > 0
+            and bool(credited_actions)
+        )
+        per_action_weight = (
+            1.0 / solved_sibling_count / len(credited_actions)
+            if policy_signal and solved_sibling_count
+            else 0.0
         )
         reward_components = sibling.reward_components()
         return {
@@ -1510,13 +1519,22 @@ def serialize_branch_group(
                 sum(generated.completion_mask) for generated in generated_actions
             ),
             "failure_classification": sibling_failure_classification(sibling),
-            "effective_batch_weight": (
-                round(1.0 / solved_sibling_count / accepted_training_actions, 8)
-                if policy_signal and solved_sibling_count
-                else 0.0
-            ),
+            "effective_batch_weight": (round(per_action_weight * len(credited_actions), 8)),
             "steps": [
-                serialize_step(step) for step in sibling.steps[len(collection.prefix.steps) :]
+                {
+                    **serialize_step(step),
+                    "policy_signal": (policy_signal and id(generated) in credited_action_ids),
+                    "effective_batch_weight": (
+                        round(per_action_weight, 8)
+                        if policy_signal and id(generated) in credited_action_ids
+                        else 0.0
+                    ),
+                }
+                for generated, step in zip(
+                    generated_actions,
+                    post_branch_steps,
+                    strict=True,
+                )
             ],
         }
 
