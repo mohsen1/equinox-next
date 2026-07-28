@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "freeze_id": "repository-repair-revision-30",
+  "frozen_at": "2026-07-28T17:06:56Z",
+  "source_commit": "e6a139375a4e6ec92df362873237b398aa0041c0",
+  "workload_revision": "runpod-repository-repair-causal-credit@30",
+  "objective_id": "verified-fix-coverage-retention-policy-gradient@15",
+  "source_files": [
+    {
+      "path": "research/runpod/repository_repair_rl.py",
+      "sha256": "449da958b75d41f5a641782980e0f0f8301122a68e011629faa4b7cc90bf7997"
+    },
+    {
+      "path": "research/runpod/repository_repair_env.py",
+      "sha256": "527050c5444a3731119773d4e0932840068fda9664654dce9bf0350edf56e40f"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "c6b65be8138331fc341c879c339ce0bac00c1834ebed6220b1bbecbb7afb0de5"
+    }
+  ],
+  "model": {
+    "id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+    "revision": "488639f1ff808d1d3d0ba301aef8c11461451ec5",
+    "torch_version": "2.8.0+cu128",
+    "cuda_version": "12.8",
+    "dependency_versions": {
+      "accelerate": "1.14.0",
+      "peft": "0.19.1",
+      "transformers": "5.14.1"
+    }
+  },
+  "frozen_condition": {
+    "branch_width": 4,
+    "complexity_strategy": "adaptive",
+    "optimization_seed": 113,
+    "validation_seed_base": 40000,
+    "validation_window_seed_stride": 1000003,
+    "test_seed_base": 190000,
+    "validation_examples": 8,
+    "test_examples": 12,
+    "training_tasks_per_update": 4,
+    "replay_tasks_per_level": 1,
+    "mastery_windows": 2,
+    "maximum_updates": 120,
+    "target_runtime_seconds": 10800,
+    "maximum_final_evaluation_reserve_seconds": 2700
+  },
+  "reference_run": {
+    "execution_id": "runpod-proof-20260728T142404Z",
+    "proof_id": "research_proof_370a381b3bff49159b6e38963d789f72",
+    "receipt_digest": "sha256:a4a6c592d9debc66809061c56727813697d06689afa824588c62112b78b65e97",
+    "adapter_manifest_digest": "sha256:22b664f2948adef3239c422a1071ca70ce64faf5be5a12945633b650f591c320",
+    "artifacts": [
+      {
+        "path": "var/research-proofs/runpod-proof-20260728T142404Z.adapter.tgz",
+        "sha256": "cef565eaea81e84b1063016193cf8269e578817bcd9ec13780648428edffa1db"
+      },
+      {
+        "path": "var/research-proofs/runpod-proof-20260728T142404Z.result.json",
+        "sha256": "29f3fbb9c6f3a08b817374d3355637d5e2ac3b5a6fdfdae1daadcc040efc3233"
+      },
+      {
+        "path": "var/research-proofs/runpod-proof-20260728T142404Z.json",
+        "sha256": "c7b1dbdb4b76bab06011c7d1a9feb74efcbebf1d01ffe159c8a1ce4cdf3eebe3"
+      }
+    ]
+  }
+}

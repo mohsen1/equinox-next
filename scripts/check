@@ -5,6 +5,7 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
 ./scripts/preflight
+./scripts/verify-revision30-freeze
 docker compose config --quiet
 docker compose build
 docker compose run --rm --build test ruff format --check packages services tests

@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+
+repository_root = Path(__file__).resolve().parents[1]
+manifest_path = repository_root / "research/frozen/repository-repair-revision-30.json"
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+for source in manifest["source_files"]:
+    path = repository_root / source["path"]
+    worktree_payload = path.read_bytes()
+    observed_digest = hashlib.sha256(worktree_payload).hexdigest()
+    if observed_digest != source["sha256"]:
+        raise SystemExit(
+            f"{source['path']} changed after revision 30 was frozen: "
+            f"expected {source['sha256']}, observed {observed_digest}"
+        )
+    committed_payload = subprocess.run(
+        ["git", "show", f"{manifest['source_commit']}:{source['path']}"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    if committed_payload != worktree_payload:
+        raise SystemExit(
+            f"{source['path']} no longer matches frozen commit {manifest['source_commit']}"
+        )
+
+print("revision 30 freeze verified")
