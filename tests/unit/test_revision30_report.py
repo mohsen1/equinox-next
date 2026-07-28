@@ -117,6 +117,9 @@ def training_result(
         },
         "effective_policy_update_count": 3 if mutation_enabled else 0,
         "effective_optimizer_update_count": 3 if mutation_enabled else 0,
+        "reached_complexity_level": 1,
+        "maximum_sampled_complexity_level": 2,
+        "promotion_count": 1,
         "retention_passed": True,
         "final_evaluation_complete": True,
         "adapter_persisted": True,
@@ -386,6 +389,7 @@ def test_every_provider_failure_and_operator_attempt_is_rendered() -> None:
     assert "protocol gate failed" in markdown
     assert "External task transitions" in markdown
     assert "post-freeze-pack" in markdown
+    assert "L1 / sampled L2" in markdown
 
 
 def test_decision_digest_changes_when_a_per_seed_result_changes() -> None:

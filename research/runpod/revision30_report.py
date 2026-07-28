@@ -180,6 +180,7 @@ def result_metrics(result: dict[str, Any]) -> dict[str, Any]:
         "sampled_completions": sampled_completions(result),
         "reached_complexity_level": result.get("reached_complexity_level"),
         "maximum_sampled_complexity_level": result.get("maximum_sampled_complexity_level"),
+        "promotion_count": result.get("promotion_count"),
         "retention_passed": result.get("retention_passed"),
         "final_evaluation_complete": result.get("final_evaluation_complete"),
         "adapter_persisted": result.get("adapter_persisted"),
@@ -454,6 +455,7 @@ def condition_summaries(
                     "sampled_completions",
                     "reached_complexity_level",
                     "maximum_sampled_complexity_level",
+                    "promotion_count",
                     "retention_passed",
                     "final_evaluation_complete",
                     "adapter_persisted",
@@ -938,6 +940,14 @@ def format_value(value: Any) -> str:
     return str(value)
 
 
+def format_complexity(metrics: dict[str, Any]) -> str:
+    reached = metrics.get("reached_complexity_level")
+    sampled = metrics.get("maximum_sampled_complexity_level")
+    if reached is None and sampled is None:
+        return "—"
+    return f"L{format_value(reached)} / sampled L{format_value(sampled)}"
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Revision 30 confirmatory study",
@@ -962,8 +972,8 @@ def render_markdown(report: dict[str, Any]) -> str:
             "",
             "## Optimization conditions",
             "",
-            "| Condition | Status | Seed | K | Updates | Completions | Initial | Final | Gain | + | − |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| Condition | Status | Seed | K | Updates | Completions | Complexity | Initial | Final | Gain | + | − |",
+            "|---|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|",
         ]
     )
     for condition_id, metrics in report["conditions"].items():
@@ -977,6 +987,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                     format_value(metrics["branch_width"]),
                     format_value(metrics["policy_updates"]),
                     format_value(metrics["sampled_completions"]),
+                    format_complexity(metrics),
                     format_value(metrics["initial_successes"]),
                     format_value(metrics["final_successes"]),
                     format_value(metrics["gain"]),
