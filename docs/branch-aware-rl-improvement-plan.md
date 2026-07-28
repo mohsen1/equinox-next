@@ -239,6 +239,33 @@ all four siblings solve, and decreases after all four fail. Retained-checkpoint
 promotion, validation-derived family targeting, base-policy anchoring, and every
 zero-regression gate are unchanged.
 
+The completed seed `113` revision-25 run showed that adaptive probing corrected the
+difficulty-selection defect but exposed a separate stale-feedback defect. Level-1 probes
+repeatedly supplied mixed outcomes; the probe advanced to level 2 after `4/4` solves and
+returned to level 1 after `0/4` solves. Update 15 retained a `+2/−0` fixed-guard and
+`+2/−0` rotating-guard checkpoint. After that checkpoint, however, the sampler continued
+targeting only the weak families discovered before training. It exhausted contrast on
+already-learned analogues and stopped at update 23. The retained adapter again improved
+paired test completion from `17/48` to `21/48`, with four improvements, zero regressions,
+and exact McNemar `p=0.125`. Proof
+`research_proof_6d23d53844b84aaead1be28a93a94a2b`, artifacts, teardown, zero pods, and
+zero ongoing spend were verified; estimated cost was `$0.894085`.
+
+Objective v13,
+`verified-fix-dynamic-target-retention-policy-gradient@13`, runs under workload revision
+`runpod-repository-repair-causal-credit@26`. The disabled-adapter observations from each
+fixed and disjoint rotating validation window now expand a cumulative set of weak
+validation families. The declared structural-mirror graph is traversed transitively to
+resolve reachable train-split analogues, including multi-edge relationships such as
+`coalesce → default_zero → fallback` and `last → middle → second/head_or`. Final-test
+outcomes never enter this feedback path. When validation evidence adds at least one new
+train family, the sampler distribution changes and the no-contrast streak resets; a
+repeated or unreachable weakness cannot reset it. The accumulated failures, active
+training targets, newly added targets, and expansion count are checkpointed and emitted
+as run evidence. Static `K=4`, adaptive probe routing, causal edit credit, base-policy
+anchoring, paired retention, and the final zero-regression significance gate remain
+unchanged.
+
 ## What we learned
 
 ### From the current Equinox runs

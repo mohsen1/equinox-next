@@ -34,9 +34,11 @@ from research.runpod.repository_repair_rl import (
     complete_json_object,
     configure_from_environment,
     correctness_contrast_advantages,
+    defer_uninformative_stop_for_validation,
     discarded_collection_accounting,
     emit_progress,
     evaluation_reward_summary,
+    expanded_validation_training_targets,
     failure_directed_training_tasks,
     fault_fixing_edit_actions,
     fixed_retention_guard_levels,
@@ -175,8 +177,56 @@ def test_frontier_probe_follows_static_k_branch_contrast() -> None:
 def test_training_analogues_follow_declared_cross_split_relationships() -> None:
     assert training_analogue_family_ids(["nonempty"]) == ["has_items"]
     assert training_analogue_family_ids(["first"]) == ["head_or", "second"]
-    assert training_analogue_family_ids(["contains"]) == ["key_exists"]
+    assert training_analogue_family_ids(["contains"]) == ["key_exists", "lookup"]
+    assert training_analogue_family_ids(["coalesce"]) == ["fallback"]
+    assert training_analogue_family_ids(["last"]) == ["head_or", "second"]
+    assert training_analogue_family_ids(["different"]) == ["all_true"]
+    assert training_analogue_family_ids(["minimum"]) == ["clamp", "largest"]
     assert training_analogue_family_ids([]) == []
+
+
+def test_validation_feedback_expands_only_declared_training_targets() -> None:
+    failure_families, training_targets, new_targets = expanded_validation_training_targets(
+        ["contains", "nonempty"],
+        [
+            {
+                "task_outcomes": [
+                    {"solved": False, "family_ids": ["coalesce"]},
+                    {"solved": False, "family_ids": ["last"]},
+                    {"solved": True, "family_ids": ["different"]},
+                ]
+            }
+        ],
+    )
+
+    assert failure_families == ["coalesce", "contains", "last", "nonempty"]
+    assert training_targets == [
+        "fallback",
+        "has_items",
+        "head_or",
+        "key_exists",
+        "lookup",
+        "second",
+    ]
+    assert new_targets == ["fallback", "head_or", "second"]
+
+
+def test_validation_feedback_reports_no_distribution_change_for_known_weaknesses() -> None:
+    failure_families, training_targets, new_targets = expanded_validation_training_targets(
+        ["contains", "nonempty"],
+        [
+            {
+                "task_outcomes": [
+                    {"solved": False, "family_ids": ["contains"]},
+                    {"solved": True, "family_ids": ["coalesce"]},
+                ]
+            }
+        ],
+    )
+
+    assert failure_families == ["contains", "nonempty"]
+    assert training_targets == ["has_items", "key_exists", "lookup"]
+    assert new_targets == []
 
 
 def test_failure_directed_tasks_cover_weak_analogues_without_reusing_semantics() -> None:
@@ -340,6 +390,24 @@ def test_uninformative_group_limit_cannot_be_reset_after_it_is_reached() -> None
         is True
     )
     assert next_uninformative_group_streak(4, collections) == 0  # type: ignore[arg-type]
+
+
+def test_contrast_exhaustion_defers_only_at_a_validation_boundary() -> None:
+    assert defer_uninformative_stop_for_validation(
+        update=10,
+        evaluation_interval=5,
+        limit_reached=True,
+    )
+    assert not defer_uninformative_stop_for_validation(
+        update=11,
+        evaluation_interval=5,
+        limit_reached=True,
+    )
+    assert not defer_uninformative_stop_for_validation(
+        update=10,
+        evaluation_interval=5,
+        limit_reached=False,
+    )
 
 
 def test_validation_regression_requires_two_lower_windows() -> None:

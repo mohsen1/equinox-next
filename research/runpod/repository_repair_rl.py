@@ -85,8 +85,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@25"
-OBJECTIVE_ID = "verified-fix-accumulated-retention-policy-gradient@12"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@26"
+OBJECTIVE_ID = "verified-fix-dynamic-target-retention-policy-gradient@13"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -431,6 +431,17 @@ def uninformative_group_limit_reached(
     return False
 
 
+def defer_uninformative_stop_for_validation(
+    *,
+    update: int,
+    evaluation_interval: int,
+    limit_reached: bool,
+) -> bool:
+    if update < 1 or evaluation_interval < 1:
+        raise ValueError("update and evaluation interval must be positive")
+    return limit_reached and update % evaluation_interval == 0
+
+
 def validation_regression_decision(
     *,
     best_exact_successes: int,
@@ -470,6 +481,10 @@ def lightweight_validation_history(history: list[dict[str, Any]]) -> list[dict[s
         "curriculum_exact_successes",
         "curriculum_exact_rate",
         "curriculum_paired_change",
+        "curriculum_failure_family_ids",
+        "targeted_training_family_ids",
+        "newly_targeted_training_family_ids",
+        "curriculum_target_expansion_count",
         "fixed_guard_levels",
         "fixed_guard_paired_change",
         "retention_guard_passed",
@@ -829,12 +844,45 @@ def training_analogue_family_ids(
         for family in families:
             adjacency.setdefault(family, set()).update(families - {family})
 
-    analogues = {
-        analogue
-        for failure_family in failure_family_ids
-        for analogue in adjacency.get(failure_family, set())
-    }
-    return sorted(analogues & training_families)
+    reachable = set(failure_family_ids)
+    frontier = list(reachable)
+    while frontier:
+        family = frontier.pop()
+        for analogue in adjacency.get(family, set()):
+            if analogue in reachable:
+                continue
+            reachable.add(analogue)
+            frontier.append(analogue)
+    return sorted(reachable & training_families)
+
+
+def expanded_validation_training_targets(
+    current_failure_family_ids: list[str] | tuple[str, ...],
+    observations: list[dict[str, Any]],
+) -> tuple[list[str], list[str], list[str]]:
+    """Accumulate validation-only weaknesses and report newly reachable train families."""
+    expanded_failure_family_ids = sorted(
+        {
+            *current_failure_family_ids,
+            *(
+                str(family_id)
+                for observation in observations
+                for outcome in observation["task_outcomes"]
+                if not outcome["solved"]
+                for family_id in outcome["family_ids"]
+            ),
+        }
+    )
+    previous_targets = set(training_analogue_family_ids(current_failure_family_ids))
+    targeted_training_family_ids = training_analogue_family_ids(expanded_failure_family_ids)
+    newly_targeted_training_family_ids = sorted(
+        set(targeted_training_family_ids) - previous_targets
+    )
+    return (
+        expanded_failure_family_ids,
+        targeted_training_family_ids,
+        newly_targeted_training_family_ids,
+    )
 
 
 def failure_directed_training_tasks(
@@ -1859,7 +1907,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "frontier_probe_offset": MAXIMUM_FRONTIER_PROBE_OFFSET,
         "frontier_probe_routing": "mixed_correctness_branch_contrast_feedback",
         "training_level_allocation": "current_and_adaptive_probe_even_split",
-        "task_sampling": "validation_failure_structural_analogues",
+        "task_sampling": "cumulative_validation_failure_structural_analogues",
+        "curriculum_feedback_source": ("disabled_adapter_fixed_and_disjoint_rotating_validation"),
+        "contrast_streak_reset": "new_validation_supported_training_family",
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
@@ -2345,7 +2395,19 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             for family_id in outcome["family_ids"]
         }
     )
-    targeted_training_family_ids = training_analogue_family_ids(baseline_failure_family_ids)
+    curriculum_failure_family_ids = (
+        list(resume_state["curriculum_failure_family_ids"])
+        if resume_state
+        else list(baseline_failure_family_ids)
+    )
+    targeted_training_family_ids = (
+        list(resume_state["targeted_training_family_ids"])
+        if resume_state
+        else training_analogue_family_ids(curriculum_failure_family_ids)
+    )
+    curriculum_target_expansion_count = (
+        int(resume_state["curriculum_target_expansion_count"]) if resume_state else 0
+    )
     emit_progress(
         "protocol_evaluation",
         "Action protocol evaluated on the held-out active-level baseline.",
@@ -2359,7 +2421,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         action_protocol_validity_rate=baseline_protocol_validity,
         minimum_protocol_validity_rate=MINIMUM_PROTOCOL_VALIDITY_RATE,
         baseline_failure_family_ids=baseline_failure_family_ids,
+        curriculum_failure_family_ids=curriculum_failure_family_ids,
         targeted_training_family_ids=targeted_training_family_ids,
+        curriculum_target_expansion_count=curriculum_target_expansion_count,
     )
     if (
         baseline_protocol_validity is None
@@ -2614,6 +2678,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "frontier_probe_task_groups": frontier_probe_task_groups,
             "frontier_probe_level": frontier_probe_level,
             "frontier_probe_decision": frontier_probe_decision,
+            "curriculum_failure_family_ids": curriculum_failure_family_ids,
+            "targeted_training_family_ids": targeted_training_family_ids,
+            "curriculum_target_expansion_count": curriculum_target_expansion_count,
             "maximum_sampled_complexity_level": maximum_sampled_complexity_level,
             "informative_task_groups": informative_task_groups,
             "excluded_task_groups": excluded_task_groups,
@@ -2918,7 +2985,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 "next_frontier_probe_level": frontier_probe_level,
                 "frontier_probe_decision": frontier_probe_decision,
                 "baseline_failure_family_ids": baseline_failure_family_ids,
+                "curriculum_failure_family_ids": curriculum_failure_family_ids,
                 "targeted_training_family_ids": targeted_training_family_ids,
+                "curriculum_target_expansion_count": curriculum_target_expansion_count,
                 "replay_probability": round(
                     len(replay_tasks) / max(1, len(task_specs)),
                     6,
@@ -2939,7 +3008,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             mastery_streak=mastery_streak,
             teacher_data_used=False,
             baseline_failure_family_ids=baseline_failure_family_ids,
+            curriculum_failure_family_ids=curriculum_failure_family_ids,
             targeted_training_family_ids=targeted_training_family_ids,
+            curriculum_target_expansion_count=curriculum_target_expansion_count,
             informative_group_rate=round(
                 informative_task_groups / total_task_groups,
                 6,
@@ -3015,7 +3086,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         )
         if decision_reason is not None:
             stop_reason = decision_reason
-        if uninformative_group_stop:
+        contrast_stop_deferred = defer_uninformative_stop_for_validation(
+            update=update,
+            evaluation_interval=EVALUATION_INTERVAL,
+            limit_reached=uninformative_group_stop,
+        )
+        if uninformative_group_stop and not contrast_stop_deferred:
             stop_after_checkpoint = True
             stop_reason = "consecutive_uninformative_groups"
         if consecutive_malformed_windows >= MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS:
@@ -3181,6 +3257,20 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 training_complete = True
                 persist_training_checkpoint(update)
                 break
+            (
+                curriculum_failure_family_ids,
+                targeted_training_family_ids,
+                newly_targeted_training_family_ids,
+            ) = expanded_validation_training_targets(
+                curriculum_failure_family_ids,
+                [
+                    *fixed_baseline_observations.values(),
+                    curriculum_baseline_observation,
+                ],
+            )
+            if newly_targeted_training_family_ids:
+                consecutive_uninformative_groups = 0
+                curriculum_target_expansion_count += 1
             curriculum_observation = evaluate_tasks(
                 validation_tasks,
                 level=level,
@@ -3340,6 +3430,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         curriculum_observation["checkpoint_rate_95ci"]
                     ),
                     "curriculum_paired_change": curriculum_paired_change,
+                    "curriculum_failure_family_ids": curriculum_failure_family_ids,
+                    "targeted_training_family_ids": targeted_training_family_ids,
+                    "newly_targeted_training_family_ids": (newly_targeted_training_family_ids),
+                    "curriculum_target_expansion_count": (curriculum_target_expansion_count),
                     "retention_guard_passed": retention_guard_passed,
                     "policy_loss": round(policy_loss, 6),
                     "reinforce_loss": round(reinforce_loss, 6),
@@ -3415,10 +3509,15 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             regression_stop = (
                 consecutive_regression_windows >= MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS
             )
+            contrast_stop_after_validation = (
+                contrast_stop_deferred and not newly_targeted_training_family_ids
+            )
             if regression_stop:
                 stop_reason = "validation_regression"
                 restore_trainable_state(best_trainable_state)
                 rollback_applied = True
+            elif contrast_stop_after_validation:
+                stop_reason = "consecutive_uninformative_groups"
             (
                 provider_stop_after_checkpoint,
                 decision_reason,
@@ -3432,8 +3531,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 ),
                 maximum_level_mastered=maximum_level_mastered,
             )
-            stop_after_checkpoint = regression_stop or provider_stop_after_checkpoint
-            if decision_reason is not None and not regression_stop:
+            stop_after_checkpoint = (
+                regression_stop or contrast_stop_after_validation or provider_stop_after_checkpoint
+            )
+            if (
+                decision_reason is not None
+                and not regression_stop
+                and not contrast_stop_after_validation
+            ):
                 stop_reason = decision_reason
         training_complete = stop_after_checkpoint
         persist_training_checkpoint(update)
@@ -3733,7 +3838,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "initial_by_level": initial_by_level,
         "validation_baseline_by_level": validation_baseline_by_level,
         "baseline_failure_family_ids": baseline_failure_family_ids,
+        "curriculum_failure_family_ids": curriculum_failure_family_ids,
         "targeted_training_family_ids": targeted_training_family_ids,
+        "curriculum_target_expansion_count": curriculum_target_expansion_count,
         "final_by_level": final_by_level,
         "paired_test_change": paired_test_change,
         "paired_test_change_by_level": paired_test_change_by_level,
@@ -3861,6 +3968,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         pending_training_example_count=len(pending_training_examples),
         frontier_probe_task_groups=frontier_probe_task_groups,
         maximum_sampled_complexity_level=maximum_sampled_complexity_level,
+        baseline_failure_family_ids=baseline_failure_family_ids,
+        curriculum_failure_family_ids=curriculum_failure_family_ids,
+        targeted_training_family_ids=targeted_training_family_ids,
+        curriculum_target_expansion_count=curriculum_target_expansion_count,
         hypothesis_passed=hypothesis_passed,
         paired_test_change=paired_test_change,
         claim_strength=result["claim_strength"],

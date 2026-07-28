@@ -459,6 +459,25 @@ solve, and moves down after all siblings fail. This changes task difficulty sele
 not branch width, reward, credit assignment, checkpoint retention, or the held-out
 hypothesis gate.
 
+The seed `113` revision-25 run validated the probe controller: mixed level-1 outcomes
+held the frontier, `4/4` solved outcomes raised it, and `0/4` solved level-2 outcomes
+lowered it. Update 15 retained a zero-regression checkpoint, but the sampler continued
+using only the validation failures discovered before training. It stopped at update 23
+after contrast disappeared and reproduced the revision-23 result: `17/48` to `21/48`,
+four improvements, zero regressions, and `p=0.125`. The run cost an estimated
+`$0.894085`; proof ingestion, artifact verification, provider teardown, and zero
+ongoing spend succeeded.
+
+Revision 26 makes validation-derived task focus an adaptive curriculum dimension. Each
+fixed and disjoint rotating validation window evaluates the disabled-adapter base. Its
+failed families are accumulated without consulting final-test outcomes. The structural
+mirror disclosures are treated as a graph, so a validation family can reach a
+train-split analogue across multiple declared relationships. A newly reachable training
+family changes the sampler and resets contrast exhaustion; repeated failures and
+families with no declared train analogue do not. This feedback state is durable and
+observable. Static `K=4`, the adaptive difficulty probe, causal edit credit, reference
+anchor, retention guard, and final paired gate do not change.
+
 ## Non-goals
 
 - Dynamic branch width.
