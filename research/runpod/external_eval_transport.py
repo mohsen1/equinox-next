@@ -157,7 +157,7 @@ class ExternalEvalTransportHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def do_PUT(self) -> None:
+    def _store_input(self) -> None:
         if self._reject_unless_authorized():
             return
         path = urlsplit(self.path).path
@@ -219,6 +219,12 @@ class ExternalEvalTransportHandler(BaseHTTPRequestHandler):
                 "sha256": sha256_file(destination),
             },
         )
+
+    def do_POST(self) -> None:
+        self._store_input()
+
+    def do_PUT(self) -> None:
+        self._store_input()
 
     def log_message(self, format: str, *args: object) -> None:
         return

@@ -208,7 +208,7 @@ def proxy_put_file(
             "--max-time",
             str(timeout),
             "-X",
-            "PUT",
+            "POST",
             "-H",
             f"Authorization: Bearer {token}",
             "-H",

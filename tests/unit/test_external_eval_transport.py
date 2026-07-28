@@ -90,15 +90,16 @@ def test_transport_authenticates_and_atomically_accepts_complete_inputs(
     )
     assert unauthorized == HTTPStatus.UNAUTHORIZED
 
-    for path, body in (
-        ("/inputs/manifest.json", manifest),
-        (f"/inputs/adapter-{adapter_sha}.tgz", adapter),
+    for method, path, body in (
+        ("POST", "/inputs/manifest.json", manifest),
+        ("PUT", f"/inputs/adapter-{adapter_sha}.tgz", adapter),
         (
+            "POST",
             "/inputs/ready",
             transport.canonical_json({"manifest_sha256": manifest_sha}),
         ),
     ):
-        status, payload = request(running, "PUT", path, token=token, body=body)
+        status, payload = request(running, method, path, token=token, body=body)
         assert status == HTTPStatus.CREATED
         assert payload["size_bytes"] == len(body)
 
