@@ -9,6 +9,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY packages /app/packages
 COPY schemas /app/schemas
+COPY research/studies /app/research/studies
 COPY services/orchestrator /app/services/orchestrator
 
 RUN useradd --create-home --uid 10001 equinox && chown -R equinox:equinox /app

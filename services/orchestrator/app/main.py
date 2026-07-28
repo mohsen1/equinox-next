@@ -27,6 +27,7 @@ from .environments import (
 )
 from .providers import POLICY_COMPUTE_PROVIDERS, assert_local_registry
 from .science import artifact_store, emit_event
+from .studies import find_study_report, list_study_summaries
 from .workflow import execute_run_attempt, rejudge_transition, release_run_resources
 
 
@@ -2209,6 +2210,22 @@ def list_research_compute_executions() -> dict[str, Any]:
             )
         )
     return {"items": items}
+
+
+@app.get("/v1/studies")
+def list_research_studies() -> dict[str, Any]:
+    return {"items": list_study_summaries()}
+
+
+@app.get("/v1/studies/{study_id}")
+def get_research_study(study_id: str) -> dict[str, Any]:
+    report = find_study_report(study_id)
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "RESEARCH_STUDY_NOT_FOUND"},
+        )
+    return report
 
 
 @app.get("/v1/research-compute-executions/{execution_id}")

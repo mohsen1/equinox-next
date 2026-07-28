@@ -137,6 +137,75 @@ export interface EstimatedComputeCost {
   elapsed_seconds: number | null;
 }
 
+export interface ResearchStudySummary {
+  study_id: string;
+  report_id: string | null;
+  generated_at: string;
+  overall_status: "PASS" | "FAIL";
+  workload_revision: string | null;
+  model_id: string | null;
+  condition_count: number;
+  execution_count: number;
+  estimated_provider_cost_usd: number;
+  decisions: Record<string, "PASS" | "FAIL">;
+}
+
+export interface ResearchStudyCondition {
+  role?: string;
+  status?: string;
+  seed?: number;
+  branch_width?: number;
+  policy_mutation_enabled?: boolean;
+  sampled_completions?: number;
+  policy_updates?: number;
+  optimizer_updates?: number;
+  initial_successes?: number;
+  final_successes?: number;
+  gain?: number;
+  paired_improved?: number;
+  paired_regressed?: number;
+  paired_p_value?: number;
+}
+
+export interface ResearchStudyReport {
+  study_id: string;
+  report_id: string;
+  generated_at: string;
+  overall_status: "PASS" | "FAIL";
+  aggregation_policy: string;
+  report_digest: string;
+  freeze: {
+    frozen_workload_revision?: string;
+    frozen_source_commit?: string;
+    model?: { id?: string; revision?: string };
+  };
+  conditions: Record<string, ResearchStudyCondition>;
+  decisions: Record<
+    string,
+    {
+      status: "PASS" | "FAIL";
+      evidence: Record<string, unknown>;
+    }
+  >;
+  external_evaluation?: {
+    pack_id?: string;
+    task_count?: number;
+    domain_task_counts?: Record<string, number>;
+  };
+  failure_count: {
+    provider_executions: number;
+    operator_attempts: number;
+  };
+  executions: Array<{
+    execution_id: string;
+    condition_id?: string | null;
+    outcome: string;
+    gpu_id?: string | null;
+    estimated_cost_usd?: number | null;
+    teardown_confirmed: boolean;
+  }>;
+}
+
 export interface ResearchProofSummary {
   proof_id: string;
   execution_id: string | null;

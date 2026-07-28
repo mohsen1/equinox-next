@@ -10,6 +10,7 @@ import { EnvironmentsPage } from "./pages/environments";
 import { ResearchTrajectoryPage } from "./pages/research-trajectory";
 import { ResearchRunPage, RunsPage } from "./pages/runs";
 import { ProofDetailPage, ProofsPage } from "./pages/proofs";
+import { StudyPage, StudiesPage } from "./pages/studies";
 import { Navigate, Route, Routes } from "./router";
 
 export function App() {
@@ -27,6 +28,8 @@ export function App() {
           element={<ResearchTrajectoryPage />}
         />
         <Route path="/environments" element={<EnvironmentsPage />} />
+        <Route path="/studies" element={<StudiesPage />} />
+        <Route path="/studies/:studyId" element={<StudyPage />} />
         <Route path="/proofs" element={<ProofsPage />} />
         <Route path="/proofs/:proofId" element={<ProofDetailPage />} />
         <Route path="/resources" element={<Navigate to="/proofs" replace />} />

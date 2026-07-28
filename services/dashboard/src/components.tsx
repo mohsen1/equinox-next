@@ -5,6 +5,7 @@ import type { ArtifactRef } from "./types";
 
 const NAV_ITEMS = [
   { to: "/runs", label: "Runs" },
+  { to: "/studies", label: "Studies" },
   { to: "/environments", label: "Environments" },
   { to: "/proofs", label: "Proofs" },
 ];
@@ -90,13 +91,18 @@ function statusTone(status: string): string {
       "VERIFIED",
       "PROMOTED",
       "RELEASED",
+      "PASS",
     ].includes(status)
   )
     return "positive";
   if (
-    ["FAILED", "INTEGRITY_VIOLATION", "EXCLUDED", "CANDIDATE_FAILED"].includes(
-      status,
-    )
+    [
+      "FAILED",
+      "FAIL",
+      "INTEGRITY_VIOLATION",
+      "EXCLUDED",
+      "CANDIDATE_FAILED",
+    ].includes(status)
   )
     return "negative";
   if (
