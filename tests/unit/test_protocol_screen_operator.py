@@ -125,11 +125,27 @@ def test_screen_environment_is_baseline_only() -> None:
 
 def test_repository_amendment_is_current() -> None:
     root = Path(__file__).resolve().parents[2]
-    observed = load_amendment(root / "research/studies/revision30-confirmatory-amendment-1.json")
+    observed = load_amendment(root / "research/studies/revision30-confirmatory-amendment-2.json")
+    original = json.loads(
+        (root / "research/studies/revision30-confirmatory-amendment-1.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
+    assert observed["candidate_order"][:4] == original["candidate_order"]
+    assert observed["algorithm_change"] is False
+    assert observed["gate_change"] is False
     assert [item["optimization_seed"] for item in observed["candidate_order"]] == [
         307,
         401,
         503,
         601,
+        701,
+        809,
+        907,
+        1009,
+        1103,
+        1201,
+        1303,
+        1409,
     ]

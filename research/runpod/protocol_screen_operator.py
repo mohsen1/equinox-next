@@ -29,7 +29,7 @@ except ModuleNotFoundError:
         utc_now,
     )
 
-AMENDMENT_ID = "repository-repair-confirmatory-study@1/amendment-1"
+AMENDMENT_ID = "repository-repair-confirmatory-study@1/amendment-2"
 SCREEN_REVISION = "revision30-protocol-eligibility@1"
 SCREEN_WORKLOAD = "repository-repair-protocol-eligibility-screen"
 REQUIRED_ELIGIBLE_CANDIDATES = 2
@@ -179,7 +179,7 @@ def main() -> None:
         repository_root / "research/studies/revision30-confirmatory-study.json"
     )
     amendment = load_amendment(
-        repository_root / "research/studies/revision30-confirmatory-amendment-1.json"
+        repository_root / "research/studies/revision30-confirmatory-amendment-2.json"
     )
     receipt_directory = repository_root / "var/research-proofs"
     study_state_directory = repository_root / "var/revision30-study"

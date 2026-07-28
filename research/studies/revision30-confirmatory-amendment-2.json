@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "amendment_id": "repository-repair-confirmatory-study@1/amendment-2",
+  "study_id": "repository-repair-confirmatory-study@1",
+  "supersedes_candidate_roster_from": "repository-repair-confirmatory-study@1/amendment-1",
+  "authored_at": "2026-07-28",
+  "effective_before_next_candidate_screen": true,
+  "frozen_source_commit": "e6a139375a4e6ec92df362873237b398aa0041c0",
+  "algorithm_change": false,
+  "gate_change": false,
+  "reason": {
+    "code": "INSUFFICIENT_ELIGIBLE_CANDIDATES",
+    "summary": "The first fixed candidate roster yielded only one of the two protocol-eligible fresh optimization conditions required by the study.",
+    "scientific_interpretation": "Eligibility selection remains blind to correctness, training, test, and external-pack outcomes. The candidate roster is extended before any new split is generated or evaluated.",
+    "stopping_rule": "Stop screening immediately when two total candidates have passed the frozen action-protocol gate."
+  },
+  "amendment_1_outcomes": [
+    {
+      "optimization_seed": 307,
+      "execution_id": "runpod-proof-20260728T175652Z",
+      "action_protocol_validity_rate": 1.0,
+      "protocol_eligible": true,
+      "estimated_cost_usd": 0.018411,
+      "teardown_confirmed": true
+    },
+    {
+      "optimization_seed": 401,
+      "execution_id": "runpod-proof-20260728T180041Z",
+      "action_protocol_validity_rate": 0.988095,
+      "protocol_eligible": false,
+      "estimated_cost_usd": 0.023327,
+      "teardown_confirmed": true
+    },
+    {
+      "optimization_seed": 503,
+      "execution_id": "runpod-proof-20260728T180557Z",
+      "action_protocol_validity_rate": 0.988095,
+      "protocol_eligible": false,
+      "estimated_cost_usd": 0.02143,
+      "teardown_confirmed": true
+    },
+    {
+      "optimization_seed": 601,
+      "execution_id": "runpod-proof-20260728T181027Z",
+      "action_protocol_validity_rate": 0.988235,
+      "protocol_eligible": false,
+      "estimated_cost_usd": 0.03823,
+      "teardown_confirmed": true,
+      "preceding_operational_failures": [
+        {
+          "execution_id": "runpod-proof-20260728T180933Z",
+          "failure_code": "RUNPOD_CAPACITY_UNAVAILABLE",
+          "provider_handle": null,
+          "gpu_work_started": false,
+          "estimated_cost_usd": 0,
+          "teardown_confirmed": true
+        }
+      ]
+    }
+  ],
+  "blind_eligibility_protocol": {
+    "inherits": "repository-repair-confirmatory-study@1/amendment-1",
+    "workload_revision": "revision30-protocol-eligibility@1",
+    "eligible_when": "complete action_protocol_validity_rate >= 0.99",
+    "prohibited_observations_unchanged": true,
+    "candidate_selection": "Use the first protocol-eligible candidate after seed 307 in the fixed full order below.",
+    "causal_control_selection": "Seed 307 remains the first eligible candidate and therefore remains the matched causal-control block."
+  },
+  "candidate_order": [
+    {
+      "optimization_seed": 307,
+      "validation_seed_base": 220000000,
+      "test_seed_base": 260000000
+    },
+    {
+      "optimization_seed": 401,
+      "validation_seed_base": 320000000,
+      "test_seed_base": 360000000
+    },
+    {
+      "optimization_seed": 503,
+      "validation_seed_base": 420000000,
+      "test_seed_base": 460000000
+    },
+    {
+      "optimization_seed": 601,
+      "validation_seed_base": 520000000,
+      "test_seed_base": 560000000
+    },
+    {
+      "optimization_seed": 701,
+      "validation_seed_base": 620000000,
+      "test_seed_base": 660000000
+    },
+    {
+      "optimization_seed": 809,
+      "validation_seed_base": 720000000,
+      "test_seed_base": 760000000
+    },
+    {
+      "optimization_seed": 907,
+      "validation_seed_base": 820000000,
+      "test_seed_base": 860000000
+    },
+    {
+      "optimization_seed": 1009,
+      "validation_seed_base": 920000000,
+      "test_seed_base": 960000000
+    },
+    {
+      "optimization_seed": 1103,
+      "validation_seed_base": 1020000000,
+      "test_seed_base": 1060000000
+    },
+    {
+      "optimization_seed": 1201,
+      "validation_seed_base": 1120000000,
+      "test_seed_base": 1160000000
+    },
+    {
+      "optimization_seed": 1303,
+      "validation_seed_base": 1220000000,
+      "test_seed_base": 1260000000
+    },
+    {
+      "optimization_seed": 1409,
+      "validation_seed_base": 1320000000,
+      "test_seed_base": 1360000000
+    }
+  ],
+  "reporting": {
+    "all_amendment_1_outcomes_remain_primary_rows": true,
+    "all_extended_roster_screens_remain_primary_rows": true,
+    "capacity_failures_remain_primary_rows": true,
+    "no_failure_is_removed_from_aggregates": true,
+    "replacement_runs_are_labeled_post_preregistration_amendment": true
+  }
+}
