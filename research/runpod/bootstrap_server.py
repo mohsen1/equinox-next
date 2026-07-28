@@ -29,7 +29,20 @@ WORKLOAD_SUPPORT_FILES = {
             "repository_repair_study.py",
         }
     ),
+    "research/runpod/revision30_external_eval.py": frozenset(
+        {
+            "external_eval_remote_runner.sh",
+            "research/__init__.py",
+            "research/external/revision30_task_pack.py",
+            "research/frozen/revision30-external-pack.json",
+            "research/runpod/__init__.py",
+            "research/runpod/external_eval_transport.py",
+            "research/runpod/repository_repair_env.py",
+            "research/runpod/repository_repair_rl.py",
+        }
+    ),
 }
+EXTERNAL_EVALUATION_WORKLOAD = "research/runpod/revision30_external_eval.py"
 
 
 def expected_bundle_files(workload_file: str) -> frozenset[str]:
@@ -37,7 +50,21 @@ def expected_bundle_files(workload_file: str) -> frozenset[str]:
         support_files = WORKLOAD_SUPPORT_FILES[workload_file]
     except KeyError as error:
         raise ValueError("Unsupported workload file.") from error
-    return COMMON_BUNDLE_FILES | support_files | {workload_file}
+    common_files = (
+        frozenset({"external_eval_remote_runner.sh"})
+        if workload_file == EXTERNAL_EVALUATION_WORKLOAD
+        else COMMON_BUNDLE_FILES
+    )
+    return common_files | support_files | {workload_file}
+
+
+def runner_file(workload_file: str) -> str:
+    expected_bundle_files(workload_file)
+    return (
+        "external_eval_remote_runner.sh"
+        if workload_file == EXTERNAL_EVALUATION_WORKLOAD
+        else "remote_runner.sh"
+    )
 
 
 def install_bundle(
@@ -55,18 +82,28 @@ def install_bundle(
             if observed_files != expected_files:
                 raise ValueError("Bundle file set did not match the workload allowlist.")
             for member in members:
-                if not member.isfile() or Path(member.name).name != member.name:
-                    raise ValueError("Bundle members must be regular top-level files.")
+                relative_path = Path(member.name)
+                if (
+                    not member.isfile()
+                    or relative_path.is_absolute()
+                    or ".." in relative_path.parts
+                    or any(part in {"", "."} for part in relative_path.parts)
+                    or member.name not in expected_files
+                ):
+                    raise ValueError("Bundle members must be allowlisted regular files.")
                 source = archive.extractfile(member)
                 if source is None:
                     raise ValueError("Bundle member could not be read.")
-                destination = staging_directory / member.name
+                destination = staging_directory / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
                 with destination.open("xb") as handle:
                     shutil.copyfileobj(source, handle)
                     handle.flush()
                     os.fsync(handle.fileno())
         for filename in sorted(expected_files):
-            os.replace(staging_directory / filename, work_directory / filename)
+            destination = work_directory / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staging_directory / filename, destination)
         directory_descriptor = os.open(work_directory, os.O_RDONLY)
         try:
             os.fsync(directory_descriptor)
@@ -189,7 +226,7 @@ def main() -> None:
     time.sleep(0.5)
     os.execvpe(
         "bash",
-        ["bash", str(work_directory / "remote_runner.sh")],
+        ["bash", str(work_directory / runner_file(workload_file))],
         os.environ,
     )
 

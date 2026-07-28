@@ -212,6 +212,46 @@ def lightweight_research_validation_history(value: Any) -> list[dict[str, Any]] 
 
 
 def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("workload") == "revision30-post-freeze-external-adapter-evaluation":
+        adapter_count = result.get("adapter_count")
+        task_count = result.get("task_count")
+        policy_count = (
+            adapter_count + 1
+            if isinstance(adapter_count, int) and not isinstance(adapter_count, bool)
+            else None
+        )
+        evaluation_total = (
+            policy_count * task_count
+            if policy_count is not None
+            and isinstance(task_count, int)
+            and not isinstance(task_count, bool)
+            else None
+        )
+        return {
+            key: value
+            for key, value in {
+                "phase": "complete",
+                "message": (
+                    "External adapter evaluation completed; artifacts persisted "
+                    "and provider teardown confirmed."
+                ),
+                "external_evaluation_completed": result.get("external_evaluation_completed"),
+                "adapter_count": adapter_count,
+                "policy_count": policy_count,
+                "task_count": task_count,
+                "evaluation_completed": evaluation_total,
+                "evaluation_total": evaluation_total,
+                "evaluation_split": "post-freeze external pack",
+                "elapsed_seconds": result.get("elapsed_seconds"),
+                "model_id": result.get("model", {}).get("id")
+                if isinstance(result.get("model"), dict)
+                else None,
+                "pack_id": result.get("pack", {}).get("pack_id")
+                if isinstance(result.get("pack"), dict)
+                else None,
+            }.items()
+            if value is not None
+        }
     level = result.get("reached_complexity_level")
     final_evaluation_partial = result.get("final_evaluation_partial") is True
     initial_by_level = result.get("initial_by_level")

@@ -163,6 +163,33 @@ def test_remote_runner_refuses_to_start_without_result_transport_token(
     assert "refusing to start" in (tmp_path / "error.log").read_text(encoding="utf-8")
 
 
+def test_external_eval_remote_runner_refuses_unobservable_work(
+    tmp_path: Path,
+) -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    environment = {
+        **os.environ,
+        "EQUINOX_REMOTE_WORKDIR": str(tmp_path),
+        "EQUINOX_WORKLOAD_FILE": "research/runpod/revision30_external_eval.py",
+    }
+    environment.pop("EQUINOX_RESULT_TOKEN", None)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(repository_root / "research/runpod/external_eval_remote_runner.sh"),
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+    assert completed.returncode == 78
+    assert (tmp_path / "exit_code").read_text(encoding="utf-8").strip() == "78"
+    assert "unobservable evaluation" in (tmp_path / "error.log").read_text(encoding="utf-8")
+
+
 def test_remote_runner_serves_progress_serialization_failure(
     tmp_path: Path,
 ) -> None:

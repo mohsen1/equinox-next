@@ -445,6 +445,38 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
     assert "paired_test_change" not in progress
 
 
+def test_research_result_progress_preserves_external_evaluation_evidence() -> None:
+    progress = research_result_progress(
+        {
+            "workload": "revision30-post-freeze-external-adapter-evaluation",
+            "external_evaluation_completed": True,
+            "adapter_count": 5,
+            "task_count": 9,
+            "elapsed_seconds": 812.5,
+            "model": {"id": "Qwen/Qwen2.5-Coder-3B-Instruct"},
+            "pack": {"pack_id": "revision30-post-freeze-external-pack@1"},
+        }
+    )
+
+    assert progress == {
+        "phase": "complete",
+        "message": (
+            "External adapter evaluation completed; artifacts persisted "
+            "and provider teardown confirmed."
+        ),
+        "external_evaluation_completed": True,
+        "adapter_count": 5,
+        "policy_count": 6,
+        "task_count": 9,
+        "evaluation_completed": 54,
+        "evaluation_total": 54,
+        "evaluation_split": "post-freeze external pack",
+        "elapsed_seconds": 812.5,
+        "model_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+        "pack_id": "revision30-post-freeze-external-pack@1",
+    }
+
+
 def test_research_result_progress_falls_back_only_for_exact_rate() -> None:
     progress = research_result_progress(
         {

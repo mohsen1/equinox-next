@@ -91,6 +91,32 @@ def test_eligibility_bundle_requires_the_screen_and_frozen_study_sources(
     }
 
 
+def test_external_evaluation_bundle_preserves_the_frozen_package_layout(
+    tmp_path: Path,
+) -> None:
+    workload_file = "research/runpod/revision30_external_eval.py"
+    files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+
+    install_bundle(
+        bundle_payload(files),
+        work_directory=tmp_path,
+        workload_file=workload_file,
+    )
+
+    assert set(files) == {
+        "external_eval_remote_runner.sh",
+        "research/__init__.py",
+        "research/external/revision30_task_pack.py",
+        "research/frozen/revision30-external-pack.json",
+        "research/runpod/__init__.py",
+        "research/runpod/external_eval_transport.py",
+        "research/runpod/repository_repair_env.py",
+        "research/runpod/repository_repair_rl.py",
+        "research/runpod/revision30_external_eval.py",
+    }
+    assert (tmp_path / workload_file).read_bytes() == files[workload_file]
+
+
 def test_install_bundle_rejects_an_unexpected_file(tmp_path: Path) -> None:
     files = {name: b"expected" for name in expected_bundle_files("branching_sequence_ladder.py")}
     files["unexpected.py"] = b"untrusted"
