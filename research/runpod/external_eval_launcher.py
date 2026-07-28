@@ -253,11 +253,15 @@ def ssh_endpoint_from_pod(pod: Any) -> tuple[str, int] | None:
         value = pending.pop()
         if isinstance(value, dict):
             private_port = value.get("privatePort", value.get("private_port"))
-            public_port = value.get("publicPort", value.get("public_port"))
+            public_port = value.get(
+                "publicPort",
+                value.get("public_port", value.get("port")),
+            )
             host = value.get("ip", value.get("host"))
             is_public = value.get("isIpPublic", value.get("is_ip_public", True))
+            cli_ssh_record = isinstance(value.get("ssh_command"), str)
             if (
-                private_port == 22
+                (private_port == 22 or cli_ssh_record)
                 and is_public is not False
                 and isinstance(host, str)
                 and isinstance(public_port, int)

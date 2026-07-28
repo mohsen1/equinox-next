@@ -244,3 +244,15 @@ def test_ssh_endpoint_requires_a_public_port_22_mapping() -> None:
     assert ssh_endpoint_from_pod(pod) == ("203.0.113.17", 32061)
     pod["runtime"]["ports"][0]["isIpPublic"] = False
     assert ssh_endpoint_from_pod(pod) is None
+
+
+def test_ssh_endpoint_accepts_current_runpodctl_schema() -> None:
+    pod = {
+        "ssh": {
+            "ip": "69.30.85.59",
+            "port": 22001,
+            "ssh_command": ("ssh -i /Users/operator/.runpod/ssh/key root@69.30.85.59 -p 22001"),
+        }
+    }
+
+    assert ssh_endpoint_from_pod(pod) == ("69.30.85.59", 22001)
