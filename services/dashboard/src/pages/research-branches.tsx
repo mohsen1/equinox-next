@@ -75,12 +75,16 @@ export function ResearchBranchWorkspace({
   const selectedPosition = selected
     ? navigation.findIndex((item) => item.actionId === selected.actionId)
     : -1;
+  const continuationCount = snapshot.siblings.length;
+  const continuationLabel = `${continuationCount} restored continuation${
+    continuationCount === 1 ? "" : "s"
+  }`;
 
   return (
     <div className="research-trajectory-workspace branch-workspace">
       <section
         className="research-trajectory-canvas branch-canvas"
-        aria-label="Shared prefix and four restored continuations"
+        aria-label={`Shared prefix and ${continuationLabel}`}
       >
         {view === "graph" ? (
           <ReactFlow
@@ -104,7 +108,9 @@ export function ResearchBranchWorkspace({
             nodesFocusable
             edgesFocusable={false}
             autoPanOnNodeFocus
-            aria-label="One diagnostic prefix restored into four multi-step continuations."
+            aria-label={`One diagnostic prefix restored into ${continuationCount} multi-step continuation${
+              continuationCount === 1 ? "" : "s"
+            }.`}
             proOptions={{ hideAttribution: true }}
           >
             <Background color="var(--rule)" gap={32} size={1} />
@@ -145,7 +151,8 @@ export function buildBranchFlow(
   const prefix = snapshot.shared_prefix.steps;
   const rootId = `${snapshot.snapshot_id}-task`;
   const checkpointId = `${snapshot.snapshot_id}-checkpoint`;
-  const centerX = 330;
+  const laneWidth = 190;
+  const centerX = Math.max(0, ((snapshot.siblings.length - 1) * laneWidth) / 2);
   nodes.push({
     id: rootId,
     type: "task",
@@ -202,7 +209,7 @@ export function buildBranchFlow(
 
   snapshot.siblings.forEach((sibling, lanePosition) => {
     let lanePreviousId = checkpointId;
-    const laneX = lanePosition * 190;
+    const laneX = lanePosition * laneWidth;
     (sibling.steps ?? []).forEach((step, stepPosition) => {
       const actionId = siblingActionId(sibling, step);
       const nodeId = `${snapshot.snapshot_id}-${actionId}`;
@@ -421,7 +428,7 @@ export function BranchOutline({
   return (
     <div className="research-trajectory-outline branch-outline">
       <table>
-        <caption>K=4 sibling actions</caption>
+        <caption>K={snapshot.siblings.length} sibling actions</caption>
         <thead>
           <tr>
             <th>Sibling</th>
@@ -477,7 +484,9 @@ function MultiStepBranchOutline({
   return (
     <div className="research-trajectory-outline branch-outline">
       <table>
-        <caption>Shared prefix and K=4 continuation steps</caption>
+        <caption>
+          Shared prefix and K={snapshot.siblings.length} continuation steps
+        </caption>
         <thead>
           <tr>
             <th>Lane</th>

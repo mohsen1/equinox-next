@@ -333,6 +333,41 @@ describe("research trajectory", () => {
     expect(html).toContain('class="selected"');
   });
 
+  it("centers and labels the K=1 ablation as one continuation", () => {
+    const k1Snapshot: ResearchBranchSnapshot = {
+      ...multiStepSnapshot,
+      checkpoint: {
+        ...multiStepSnapshot.checkpoint!,
+        static_branch_width: 1,
+      },
+      siblings: [multiStepSnapshot.siblings[0]],
+    };
+    const flow = buildBranchFlow(k1Snapshot, 0, "sibling-0-3");
+    const prefixNode = flow.nodes.find((node) => node.data.prefix);
+    const continuationNode = flow.nodes.find(
+      (node) => node.data.siblingIndex === 0,
+    );
+    const html = renderToStaticMarkup(
+      <ResearchBranchWorkspace
+        snapshot={k1Snapshot}
+        selectedSibling={k1Snapshot.siblings[0]}
+        selectedActionId="sibling-0-3"
+        view="outline"
+        selectSibling={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+
+    expect(prefixNode?.position.x).toBe(0);
+    expect(continuationNode?.position.x).toBe(0);
+    expect(html).toContain(
+      'aria-label="Shared prefix and 1 restored continuation"',
+    );
+    expect(html).toContain(
+      "<caption>Shared prefix and K=1 continuation steps</caption>",
+    );
+  });
+
   it("exposes reward and optimizer provenance in the branch inspector", () => {
     const html = renderToStaticMarkup(
       <ResearchBranchWorkspace

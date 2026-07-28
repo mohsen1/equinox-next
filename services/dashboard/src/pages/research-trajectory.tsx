@@ -1,7 +1,7 @@
 /**
  * THESIS: A run is understood as a sequence of verified learning checkpoints, not a KPI summary.
  * OWN-WORLD: Drafting-table lanes, ruled evidence panes, and one oxide-blue selected path.
- * STORY: Follow curriculum movement, then inspect the four sampled actions behind each saved branch.
+ * STORY: Follow curriculum movement, then inspect every sampled action behind each saved branch.
  * FIRST VIEWPORT: One graph fills the canvas; selection opens exact verifier evidence in a fixed inspector.
  * FORM: Operate surface; React Flow graph with an equivalent outline and URL-addressed selection.
  */

@@ -19,6 +19,9 @@ COMMON_BUNDLE_FILES = frozenset({"remote_runner.sh", "result_server.py"})
 WORKLOAD_SUPPORT_FILES = {
     "branching_sequence_ladder.py": frozenset(),
     "repository_repair_rl.py": frozenset({"repository_repair_env.py"}),
+    "repository_repair_study.py": frozenset(
+        {"repository_repair_env.py", "repository_repair_rl.py"}
+    ),
 }
 
 

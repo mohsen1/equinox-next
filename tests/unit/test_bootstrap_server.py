@@ -48,6 +48,27 @@ def test_install_bundle_accepts_only_the_expected_workload_files(
         assert (tmp_path / name).read_bytes() == content
 
 
+def test_study_bundle_requires_the_frozen_trainer_and_environment(
+    tmp_path: Path,
+) -> None:
+    workload_file = "repository_repair_study.py"
+    files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+
+    install_bundle(
+        bundle_payload(files),
+        work_directory=tmp_path,
+        workload_file=workload_file,
+    )
+
+    assert set(files) == {
+        "remote_runner.sh",
+        "repository_repair_env.py",
+        "repository_repair_rl.py",
+        "repository_repair_study.py",
+        "result_server.py",
+    }
+
+
 def test_install_bundle_rejects_an_unexpected_file(tmp_path: Path) -> None:
     files = {name: b"expected" for name in expected_bundle_files("branching_sequence_ladder.py")}
     files["unexpected.py"] = b"untrusted"

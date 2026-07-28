@@ -56,7 +56,7 @@ export interface ResearchComputeExecution {
   name: string;
   workload_id: string;
   model_id: string | null;
-  branch_width: 4;
+  branch_width: 1 | 4;
   complexity_strategy: "adaptive";
   status: ResearchComputeStatus;
   provider_name: "RunPod";
@@ -378,7 +378,7 @@ export interface ResearchBranchSnapshot {
     environment_revision: string;
     verifier_revision: string;
     action_protocol_revision: string;
-    static_branch_width: 4;
+    static_branch_width: 1 | 4;
   } | null;
   shared_prefix?: {
     policy_generated: boolean;
@@ -427,7 +427,7 @@ export interface ResearchBranchSnapshot {
 
 export interface ResearchTrajectory {
   schema_version: 1 | 2;
-  branch_width: 4;
+  branch_width: 1 | 4;
   complexity_strategy: "adaptive";
   multi_step?: boolean;
   restored_continuations?: boolean;

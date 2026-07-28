@@ -13,6 +13,14 @@ mastery_windows="${EQUINOX_RL_MASTERY_WINDOWS:-}"
 training_tasks_per_update="${EQUINOX_RL_TRAINING_TASKS_PER_UPDATE:-}"
 replay_tasks_per_level="${EQUINOX_RL_REPLAY_TASKS_PER_LEVEL:-}"
 maximum_final_evaluation_reserve_seconds="${EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS:-}"
+study_condition="${EQUINOX_STUDY_CONDITION:-}"
+study_validation_seed_base="${EQUINOX_STUDY_VALIDATION_SEED_BASE:-}"
+study_test_seed_base="${EQUINOX_STUDY_TEST_SEED_BASE:-}"
+study_completion_budget="${EQUINOX_STUDY_COMPLETION_BUDGET:-}"
+branch_width=4
+if [[ "$study_condition" == "k1_train" ]]; then
+  branch_width=1
+fi
 work_directory="${EQUINOX_REMOTE_WORKDIR:-/tmp}"
 progress_path="$work_directory/progress.json"
 result_pending_path="$work_directory/result.pending.json"
@@ -121,7 +129,8 @@ write_progress() {
     "$attempt" \
     "$error_code" \
     "$preserve_context" \
-    "$progress_path" <<'PY'
+    "$progress_path" \
+    "$branch_width" <<'PY'
 import json
 import os
 import sys
@@ -135,12 +144,13 @@ import sys
     error_code,
     preserve_context,
     live_path,
+    branch_width,
 ) = sys.argv[1:]
 payload = {
     "schema_version": int(schema_version),
     "phase": phase,
     "message": message,
-    "branch_width": 4,
+    "branch_width": int(branch_width),
     "complexity_strategy": "adaptive",
     "attempt": int(attempt),
     "error": error_code or None,
@@ -198,11 +208,13 @@ serve_boot_failure() {
 }
 
 case "$workload_file" in
-  repository_repair_rl.py)
+  repository_repair_rl.py | repository_repair_study.py)
     progress_schema_version=2
+    repository_workload=true
     ;;
   branching_sequence_ladder.py)
     progress_schema_version=1
+    repository_workload=false
     ;;
   *)
     serve_boot_failure \
@@ -212,7 +224,7 @@ case "$workload_file" in
     ;;
 esac
 
-if [[ "$workload_file" == "repository_repair_rl.py" && -z "$model_id" ]]; then
+if [[ "$repository_workload" == "true" && -z "$model_id" ]]; then
   serve_boot_failure \
     "$progress_schema_version" \
     "MODEL_ID_MISSING" \
@@ -230,7 +242,7 @@ for common_configuration_value in \
   fi
 done
 
-if [[ "$workload_file" == "repository_repair_rl.py" ]]; then
+if [[ "$repository_workload" == "true" ]]; then
   for configuration_value in \
     "$maximum_updates" \
     "$maximum_resume_gap_seconds" \
@@ -247,6 +259,25 @@ if [[ "$workload_file" == "repository_repair_rl.py" ]]; then
         "Repository repair is missing required workload configuration."
     fi
   done
+fi
+if [[ "$workload_file" == "repository_repair_study.py" ]]; then
+  for study_configuration_value in \
+    "$study_condition" \
+    "$study_validation_seed_base" \
+    "$study_test_seed_base"; do
+    if [[ -z "$study_configuration_value" ]]; then
+      serve_boot_failure \
+        "$progress_schema_version" \
+        "STUDY_CONFIGURATION_MISSING" \
+        "The confirmatory study is missing its condition or fresh split seeds."
+    fi
+  done
+  if [[ "$study_condition" != "k4_train" && -z "$study_completion_budget" ]]; then
+    serve_boot_failure \
+      "$progress_schema_version" \
+      "STUDY_CONFIGURATION_MISSING" \
+      "The matched-compute study condition is missing its completion budget."
+  fi
 fi
 
 touch "$error_path"
@@ -287,7 +318,10 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     result = json.load(handle)
 if not isinstance(result, dict):
     raise SystemExit(1)
-if sys.argv[2] == "repository_repair_rl.py" and result.get("experiment_completed") is not True:
+if (
+    sys.argv[2] in {"repository_repair_rl.py", "repository_repair_study.py"}
+    and result.get("experiment_completed") is not True
+):
     raise SystemExit(1)
 if (
     sys.argv[2] == "branching_sequence_ladder.py"
@@ -452,6 +486,10 @@ PY
     EQUINOX_RL_TRAINING_TASKS_PER_UPDATE="$training_tasks_per_update" \
     EQUINOX_RL_REPLAY_TASKS_PER_LEVEL="$replay_tasks_per_level" \
     EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS="$maximum_final_evaluation_reserve_seconds" \
+    EQUINOX_STUDY_CONDITION="$study_condition" \
+    EQUINOX_STUDY_VALIDATION_SEED_BASE="$study_validation_seed_base" \
+    EQUINOX_STUDY_TEST_SEED_BASE="$study_test_seed_base" \
+    EQUINOX_STUDY_COMPLETION_BUDGET="$study_completion_budget" \
     EQUINOX_WORKLOAD_ATTEMPT="$workload_attempt" \
     PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
     python3 "$work_directory/$workload_file" \

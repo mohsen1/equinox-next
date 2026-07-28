@@ -67,6 +67,15 @@ def test_research_execution_keeps_static_k_and_adaptive_complexity() -> None:
     )
     assert request.branch_width == 4
     assert request.complexity_strategy == "adaptive"
+    assert (
+        ResearchComputeExecutionRequest(
+            **{
+                **request.model_dump(),
+                "branch_width": 1,
+            }
+        ).branch_width
+        == 1
+    )
 
     with pytest.raises(ValidationError):
         ResearchComputeExecutionRequest(

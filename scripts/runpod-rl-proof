@@ -11,7 +11,13 @@ if [[ ${#internal_token} -lt 32 ]]; then
   exit 1
 fi
 experiment="${EQUINOX_RUNPOD_EXPERIMENT:-repository-repair}"
-support_file=""
+support_files=()
+study_condition="${EQUINOX_STUDY_CONDITION:-}"
+study_validation_seed_base="${EQUINOX_STUDY_VALIDATION_SEED_BASE:-}"
+study_test_seed_base="${EQUINOX_STUDY_TEST_SEED_BASE:-}"
+study_completion_budget="${EQUINOX_STUDY_COMPLETION_BUDGET:-}"
+expected_branch_width=4
+expected_algorithm="verified-fix-group-conditioned-policy-gradient"
 case "$experiment" in
   sequence-ladder)
     workload_file="branching_sequence_ladder.py"
@@ -32,10 +38,34 @@ case "$experiment" in
     default_replay_tasks_per_level="1"
     ;;
   repository-repair)
-    workload_file="repository_repair_rl.py"
-    support_file="repository_repair_env.py"
+    contract_workload_file="repository_repair_rl.py"
+    environment_file="repository_repair_env.py"
+    if [[ -z "$study_condition" ]]; then
+      workload_file="$contract_workload_file"
+      support_files=("$environment_file")
+    else
+      workload_file="repository_repair_study.py"
+      support_files=("$contract_workload_file" "$environment_file")
+      case "$study_condition" in
+        k4_train)
+          execution_name="K=4 training · seed ${EQUINOX_RL_SEED:-unset}"
+          ;;
+        k4_no_update)
+          execution_name="K=4 no-update control · seed ${EQUINOX_RL_SEED:-unset}"
+          ;;
+        k1_train)
+          execution_name="K=1 training · seed ${EQUINOX_RL_SEED:-unset}"
+          expected_branch_width=1
+          expected_algorithm="verified-fix-positive-only-policy-gradient-k1"
+          ;;
+        *)
+          echo "EQUINOX_STUDY_CONDITION must be k4_train, k4_no_update, or k1_train." >&2
+          exit 1
+          ;;
+      esac
+    fi
     workload_id="repository-repair-restored-continuation-post-training"
-    execution_name="Repository repair post-training"
+    execution_name="${execution_name:-Repository repair post-training}"
     default_model_id="Qwen/Qwen2.5-Coder-3B-Instruct"
     default_gpu_id="NVIDIA A40"
     default_cloud_type="SECURE"
@@ -49,6 +79,14 @@ case "$experiment" in
     default_mastery_windows="2"
     default_training_tasks_per_update="4"
     default_replay_tasks_per_level="1"
+    if [[ -n "$study_condition" ]]; then
+      default_target_runtime_seconds="10800"
+      default_maximum_lifetime_minutes="360"
+      default_test_examples="12"
+      if [[ "$study_condition" == "k1_train" ]]; then
+        default_training_tasks_per_update="12"
+      fi
+    fi
     ;;
   *)
     echo "EQUINOX_RUNPOD_EXPERIMENT must be sequence-ladder or repository-repair." >&2
@@ -56,7 +94,8 @@ case "$experiment" in
     ;;
 esac
 workload_path="$repository_root/research/runpod/$workload_file"
-support_path="$repository_root/research/runpod/$support_file"
+contract_workload_path="$repository_root/research/runpod/${contract_workload_file:-$workload_file}"
+environment_path="$repository_root/research/runpod/${environment_file:-$workload_file}"
 bootstrap_server_path="$repository_root/research/runpod/bootstrap_server.py"
 remote_runner_path="$repository_root/research/runpod/remote_runner.sh"
 result_server_path="$repository_root/research/runpod/result_server.py"
@@ -120,9 +159,9 @@ test -f "$workload_path"
 test -f "$bootstrap_server_path"
 test -f "$remote_runner_path"
 test -f "$result_server_path"
-if [[ -n "$support_file" ]]; then
-  test -f "$support_path"
-fi
+for support_file in "${support_files[@]}"; do
+  test -f "$repository_root/research/runpod/$support_file"
+done
 read_python_string_constant() {
   python3 - "$1" "$2" <<'PY'
 import ast
@@ -151,16 +190,16 @@ expected_action_protocol_revision=""
 expected_shared_prefix_checkpoint=""
 if [[ "$experiment" == "repository-repair" ]]; then
   expected_workload_revision="$(
-    read_python_string_constant "$workload_path" WORKLOAD_REVISION
+    read_python_string_constant "$contract_workload_path" WORKLOAD_REVISION
   )"
   expected_objective_id="$(
-    read_python_string_constant "$workload_path" OBJECTIVE_ID
+    read_python_string_constant "$contract_workload_path" OBJECTIVE_ID
   )"
   expected_action_protocol_revision="$(
-    read_python_string_constant "$support_path" ACTION_PROTOCOL_REVISION
+    read_python_string_constant "$environment_path" ACTION_PROTOCOL_REVISION
   )"
   expected_shared_prefix_checkpoint="$(
-    read_python_string_constant "$workload_path" SHARED_PREFIX_CHECKPOINT_STRATEGY
+    read_python_string_constant "$contract_workload_path" SHARED_PREFIX_CHECKPOINT_STRATEGY
   )"
 fi
 template_response="$(runpodctl template get "$template_id")"
@@ -197,6 +236,36 @@ if [[ "$experiment" == "sequence-ladder" ]]; then
       exit 1
     fi
   done
+fi
+if [[ "$experiment" != "repository-repair" && -n "$study_condition" ]]; then
+  echo "Confirmatory study conditions are only valid for repository-repair." >&2
+  exit 1
+fi
+if [[ -n "$study_condition" ]]; then
+  for split_seed in "$study_validation_seed_base" "$study_test_seed_base"; do
+    if [[ ! "$split_seed" =~ ^[1-9][0-9]*$ ]] || ((split_seed > 2147483647)); then
+      echo "Study validation and test seed bases must be positive 32-bit integers." >&2
+      exit 1
+    fi
+  done
+  if [[ "$study_validation_seed_base" == "$study_test_seed_base" ]]; then
+    echo "Study validation and test seed bases must be disjoint." >&2
+    exit 1
+  fi
+  if [[ "$study_validation_seed_base" == "40000" || "$study_test_seed_base" == "190000" ]]; then
+    echo "Confirmatory study splits must be fresh relative to the frozen reference." >&2
+    exit 1
+  fi
+  if [[ "$study_condition" == "k4_train" ]]; then
+    if [[ -n "$study_completion_budget" ]]; then
+      echo "Fresh K=4 training determines the matched continuation budget; do not preset it." >&2
+      exit 1
+    fi
+  elif [[ ! "$study_completion_budget" =~ ^[1-9][0-9]*$ ]] ||
+    ((study_completion_budget % expected_branch_width != 0)); then
+    echo "Matched controls require a positive whole-group completion budget." >&2
+    exit 1
+  fi
 fi
 if [[ ! "$boot_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
   echo "EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS must be a positive integer." >&2
@@ -263,6 +332,10 @@ if [[ "$experiment" == "repository-repair" ]]; then
     EQUINOX_RL_TRAINING_TASKS_PER_UPDATE="$training_tasks_per_update" \
     EQUINOX_RL_REPLAY_TASKS_PER_LEVEL="$replay_tasks_per_level" \
     EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS="$maximum_final_evaluation_reserve_seconds" \
+    EQUINOX_STUDY_CONDITION="$study_condition" \
+    EQUINOX_STUDY_VALIDATION_SEED_BASE="$study_validation_seed_base" \
+    EQUINOX_STUDY_TEST_SEED_BASE="$study_test_seed_base" \
+    EQUINOX_STUDY_COMPLETION_BUDGET="$study_completion_budget" \
     python3 "$workload_path" --validate-configuration
 fi
 if ((
@@ -274,9 +347,7 @@ if ((
   exit 1
 fi
 bundle_files=("$workload_file" "remote_runner.sh" "result_server.py")
-if [[ -n "$support_file" ]]; then
-  bundle_files+=("$support_file")
-fi
+bundle_files+=("${support_files[@]}")
 bundle_source_path="$(
   mktemp "${TMPDIR:-/tmp}/equinox-runpod-bundle.XXXXXX"
 )"
@@ -307,7 +378,41 @@ pod_environment="$(
       EQUINOX_BUNDLE_B64: $bundle
     }'
 )"
-docker_args="bash -lc \"mkdir -p $persistent_work_directory; echo $bootstrap_source_b64 | base64 -d > $persistent_work_directory/bootstrap_server.py; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds python3 $persistent_work_directory/bootstrap_server.py\""
+docker_args="bash -lc \"mkdir -p $persistent_work_directory; echo $bootstrap_source_b64 | base64 -d > $persistent_work_directory/bootstrap_server.py; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds EQUINOX_STUDY_CONDITION=$study_condition EQUINOX_STUDY_VALIDATION_SEED_BASE=$study_validation_seed_base EQUINOX_STUDY_TEST_SEED_BASE=$study_test_seed_base EQUINOX_STUDY_COMPLETION_BUDGET=$study_completion_budget python3 $persistent_work_directory/bootstrap_server.py\""
+preflight_only="${EQUINOX_RUNPOD_PREFLIGHT_ONLY:-}"
+if [[ -n "$preflight_only" && "$preflight_only" != "1" ]]; then
+  echo "EQUINOX_RUNPOD_PREFLIGHT_ONLY must be 1 when set." >&2
+  exit 1
+fi
+if [[ "$preflight_only" == "1" ]]; then
+  jq -n \
+    --arg experiment "$experiment" \
+    --arg workload_file "$workload_file" \
+    --arg study_condition "$study_condition" \
+    --arg model_id "$model_id" \
+    --argjson optimization_seed "$optimization_seed" \
+    --argjson branch_width "$expected_branch_width" \
+    --argjson validation_seed_base "${study_validation_seed_base:-null}" \
+    --argjson test_seed_base "${study_test_seed_base:-null}" \
+    --argjson completion_budget "${study_completion_budget:-null}" \
+    --argjson bundle_size_bytes "$bundle_size_bytes" \
+    '{
+      preflight_passed: true,
+      experiment: $experiment,
+      workload_file: $workload_file,
+      study_condition: (
+        if $study_condition == "" then null else $study_condition end
+      ),
+      model_id: $model_id,
+      optimization_seed: $optimization_seed,
+      branch_width: $branch_width,
+      validation_seed_base: $validation_seed_base,
+      test_seed_base: $test_seed_base,
+      completion_budget: $completion_budget,
+      bundle_size_bytes: $bundle_size_bytes
+    }'
+  exit 0
+fi
 
 mkdir -p "$receipt_directory"
 proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')"
@@ -385,12 +490,13 @@ publish_execution() {
       --argjson progress "$progress" \
       --arg started_at "$started_at" \
       --arg completed_at "$completed_at" \
+      --argjson branch_width "$expected_branch_width" \
       --argjson teardown_confirmed "$teardown_confirmed" \
       '{
         name: $name,
         workload_id: $workload_id,
         model_id: (if $model_id == "" then null else $model_id end),
-        branch_width: 4,
+        branch_width: $branch_width,
         complexity_strategy: "adaptive",
         status: $status,
         provider_name: "RunPod",
@@ -792,7 +898,7 @@ else
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
     and .workload_revision == $expected_workload_revision
-    and .algorithm == "verified-fix-group-conditioned-policy-gradient"
+    and .algorithm == $expected_algorithm
     and .objective_id == $expected_objective_id
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
     and .reward_contract.revision == "correctness-gated-efficiency@1"
@@ -810,8 +916,8 @@ else
     and .optimizer_contract.minimum_informative_groups_per_policy_update == 2
     and .optimizer_contract.policy_batching == "durable_cross_update_verified_fix_accumulation"
     and .teacher_data_used == false
-    and .branch_width == 4
-    and .static_branch_width == 4
+    and .branch_width == $expected_branch_width
+    and .static_branch_width == $expected_branch_width
     and .multi_step == true
     and .restored_continuations == true
     and .prefix_gradient == false
@@ -873,6 +979,24 @@ else
     and .training_configuration.learning_signal == "verified_fault_fixing_edits_from_mixed_correctness_sibling_group"
     and .training_configuration.sibling_sampling_temperature == 0.6
     and .training_configuration.sibling_sampling_top_p == 0.9
+    and (
+      if $expected_study_condition == "" then
+        (.study // null) == null
+      else
+        .study.study_id == "repository-repair-confirmatory-study@1"
+        and .study.condition == $expected_study_condition
+        and .study.frozen_source_commit == "e6a139375a4e6ec92df362873237b398aa0041c0"
+        and .study.optimization_seed == $expected_optimization_seed
+        and .study.validation_seed_base == $expected_validation_seed_base
+        and .study.test_seed_base == $expected_test_seed_base
+        and .study.branch_width == $expected_branch_width
+        and .study.completion_budget == $expected_completion_budget
+        and .study.sampled_completions == .total_sampled_completions
+        and .study.training_tasks_per_update == $expected_training_tasks_per_update
+        and .training_configuration.study_id == "repository-repair-confirmatory-study@1"
+        and .training_configuration.study_condition == $expected_study_condition
+      end
+    )
     and .evaluation_interval_method == "wilson-score-95"
     and (.attempt_count == 1 or .attempt_count == 2)
     and .resumed_from_checkpoint == (.attempt_count == 2)
@@ -923,14 +1047,23 @@ else
       (
         .final_evaluation_complete == true
         and (
-          (
+          if $expected_study_condition == "k4_no_update" then
             .probative_post_training == false
-            and .claim_strength == "NONPROBATIVE_RESERVE_STOP"
-          )
-          or (
-            .probative_post_training == true
-            and .claim_strength == "EXPLORATORY_SINGLE_SEED"
-          )
+            and .claim_strength == "CONTROL_NO_POLICY_MUTATION"
+          elif $expected_study_condition == "k1_train" then
+            .claim_strength == "EXPLORATORY_CAUSAL_ABLATION_SINGLE_SEED"
+          else
+            (
+              (
+                .probative_post_training == false
+                and .claim_strength == "NONPROBATIVE_RESERVE_STOP"
+              )
+              or (
+                .probative_post_training == true
+                and .claim_strength == "EXPLORATORY_SINGLE_SEED"
+              )
+            )
+          end
         )
         and ([.initial_by_level[], .final_by_level[]
           | .examples == $expected_test_examples
@@ -952,9 +1085,16 @@ else
     and (.total_post_branch_actions | type) == "number"
     and (.branch_snapshots | type) == "array"
     and .probative_post_training == (
-      .updates_completed >= 1
-      and .policy_update_count >= 1
-      and .restored_branching_observed == true
+      if $expected_study_condition == "k4_no_update" then
+        false
+      elif $expected_study_condition == "k1_train" then
+        .effective_policy_update_count >= 1
+        and .single_trajectory_observed == true
+      else
+        .updates_completed >= 1
+        and .policy_update_count >= 1
+        and .restored_branching_observed == true
+      end
     )
     and (.discarded_task_groups | type) == "number"
     and (.discarded_sampled_actions | type) == "number"
@@ -969,7 +1109,47 @@ else
       | not
     ] | all)
     and (
-      if .probative_post_training == false then
+      if $expected_study_condition == "k4_no_update" then
+        .stop_reason == "study_completion_budget"
+        and .study.policy_mutation_enabled == false
+        and .study.attempted_policy_update_count == .policy_update_count
+        and .study.attempted_optimizer_update_count == .optimizer_update_count
+        and .study.effective_policy_update_count == 0
+        and .study.effective_optimizer_update_count == 0
+        and .effective_policy_update_count == 0
+        and .effective_optimizer_update_count == 0
+        and .study.optimizer_step_calls == .optimizer_update_count
+        and .study.optimizer_step_calls >= 1
+        and .study.parameter_restore_verified == true
+        and (
+          (.study.optimizer_step_calls == 0 and .study.restored_parameter_tensors == 0)
+          or (
+            .study.optimizer_step_calls > 0
+            and .study.restored_parameter_tensors >= .study.optimizer_step_calls
+          )
+        )
+        and .hypothesis_passed == false
+      elif $expected_study_condition == "k1_train" then
+        .stop_reason == "study_completion_budget"
+        and .study.policy_mutation_enabled == true
+        and .study.advantage_estimator == "verified-success-positive-only@1"
+        and .effective_policy_update_count >= 1
+        and .probative_post_training == true
+        and .restored_branching_observed == false
+        and .single_trajectory_observed == true
+        and (.branch_snapshots | length) >= 1
+        and (
+          [.branch_snapshots[]
+            | select(
+              .checkpoint != null
+              and .checkpoint.static_branch_width == 1
+              and (.shared_prefix.steps | length) >= 2
+              and (.siblings | length) == 1
+              and ([.siblings[].steps | length] | all(. >= 1))
+            )
+          ] | length
+        ) >= 1
+      elif .probative_post_training == false then
         .stop_reason == "final_evaluation_reserve_ceiling"
         and .updates_completed >= 0
         and .optimizer_update_count >= 0
@@ -993,9 +1173,9 @@ else
           [.branch_snapshots[]
             | select(
               .checkpoint != null
-              and .checkpoint.static_branch_width == 4
+              and .checkpoint.static_branch_width == $expected_branch_width
               and (.shared_prefix.steps | length) >= 2
-              and (.siblings | length) == 4
+              and (.siblings | length) == $expected_branch_width
               and ([.siblings[].steps | length] | all(. >= 1))
             )
           ] | length
@@ -1009,8 +1189,15 @@ if ! jq -e \
   --arg expected_model "$model_id" \
   --arg expected_workload_revision "$expected_workload_revision" \
   --arg expected_objective_id "$expected_objective_id" \
+  --arg expected_algorithm "$expected_algorithm" \
+  --arg expected_study_condition "$study_condition" \
   --arg expected_action_protocol_revision "$expected_action_protocol_revision" \
   --arg expected_shared_prefix_checkpoint "$expected_shared_prefix_checkpoint" \
+  --argjson expected_branch_width "$expected_branch_width" \
+  --argjson expected_optimization_seed "$optimization_seed" \
+  --argjson expected_validation_seed_base "${study_validation_seed_base:-null}" \
+  --argjson expected_test_seed_base "${study_test_seed_base:-null}" \
+  --argjson expected_completion_budget "${study_completion_budget:-null}" \
   --argjson expected_validation_examples "$validation_examples" \
   --argjson expected_test_examples "$test_examples" \
   --argjson expected_mastery_windows "$mastery_windows" \

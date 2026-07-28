@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "study_id": "repository-repair-confirmatory-study@1",
+  "freeze_commit": "7195efc",
+  "frozen_source_commit": "e6a139375a4e6ec92df362873237b398aa0041c0",
+  "frozen_workload_revision": "runpod-repository-repair-causal-credit@30",
+  "frozen_objective_id": "verified-fix-coverage-retention-policy-gradient@15",
+  "model": {
+    "id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+    "revision": "488639f1ff808d1d3d0ba301aef8c11461451ec5"
+  },
+  "shared_configuration": {
+    "complexity_strategy": "adaptive",
+    "validation_examples": 8,
+    "test_examples_per_level": 12,
+    "mastery_windows": 2,
+    "replay_tasks_per_level": 1,
+    "maximum_updates": 120,
+    "target_runtime_seconds": 10800,
+    "maximum_resume_gap_seconds": 2700,
+    "maximum_final_evaluation_reserve_seconds": 2700,
+    "maximum_completion_tokens_per_action": 96
+  },
+  "conditions": [
+    {
+      "condition_id": "k4_train_seed113",
+      "role": "frozen_reference",
+      "optimization_seed": 113,
+      "validation_seed_base": 40000,
+      "test_seed_base": 190000,
+      "branch_width": 4,
+      "policy_mutation_enabled": true,
+      "training_tasks_per_update": 4,
+      "completion_budget": 440,
+      "execution_id": "runpod-proof-20260728T142404Z"
+    },
+    {
+      "condition_id": "k4_train_seed211",
+      "role": "fresh_replication",
+      "optimization_seed": 211,
+      "validation_seed_base": 20000000,
+      "test_seed_base": 50000000,
+      "branch_width": 4,
+      "policy_mutation_enabled": true,
+      "training_tasks_per_update": 4,
+      "completion_budget": null
+    },
+    {
+      "condition_id": "k4_train_seed307",
+      "role": "fresh_replication",
+      "optimization_seed": 307,
+      "validation_seed_base": 220000000,
+      "test_seed_base": 260000000,
+      "branch_width": 4,
+      "policy_mutation_enabled": true,
+      "training_tasks_per_update": 4,
+      "completion_budget": null
+    },
+    {
+      "condition_id": "k4_no_update_seed211",
+      "role": "matched_frozen_policy_control",
+      "optimization_seed": 211,
+      "validation_seed_base": 20000000,
+      "test_seed_base": 50000000,
+      "branch_width": 4,
+      "policy_mutation_enabled": false,
+      "training_tasks_per_update": 4,
+      "completion_budget": "k4_train_seed211.total_sampled_completions",
+      "optimizer_control": "adamw-step-then-byte-exact-parameter-restore"
+    },
+    {
+      "condition_id": "k1_train_seed211",
+      "role": "branch_width_ablation",
+      "optimization_seed": 211,
+      "validation_seed_base": 20000000,
+      "test_seed_base": 50000000,
+      "branch_width": 1,
+      "policy_mutation_enabled": true,
+      "training_tasks_per_update": 12,
+      "completion_budget": "k4_train_seed211.total_sampled_completions",
+      "advantage_estimator": "verified-success-positive-only@1"
+    }
+  ],
+  "reporting": {
+    "show_every_seed": true,
+    "show_every_regression": true,
+    "aggregate_only_after_per_seed_rows": true,
+    "primary_replication_claim": "all three K4 training seeds have positive clean paired gains",
+    "branching_claim": "K4 training exceeds matched K1 on the shared seed-211 split",
+    "learning_claim": "K4 training exceeds the no-update K4 control on the shared seed-211 split",
+    "transfer_claim": "retained adapters improve the post-freeze external task pack without regressions"
+  }
+}

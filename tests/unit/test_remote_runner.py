@@ -93,6 +93,7 @@ exec /usr/bin/tar "$@"
     fake_tar.chmod(0o755)
     (tmp_path / "result_server.py").write_text("", encoding="utf-8")
     (tmp_path / "repository_repair_rl.py").write_text("", encoding="utf-8")
+    (tmp_path / "repository_repair_study.py").write_text("", encoding="utf-8")
     (tmp_path / "branching_sequence_ladder.py").write_text("", encoding="utf-8")
 
     environment = {
@@ -114,6 +115,9 @@ exec /usr/bin/tar "$@"
         "EQUINOX_RL_TRAINING_TASKS_PER_UPDATE": "2",
         "EQUINOX_RL_REPLAY_TASKS_PER_LEVEL": "1",
         "EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS": "2400",
+        "EQUINOX_STUDY_CONDITION": "k4_train",
+        "EQUINOX_STUDY_VALIDATION_SEED_BASE": "20000000",
+        "EQUINOX_STUDY_TEST_SEED_BASE": "50000000",
     }
     for variable in missing_variables:
         environment.pop(variable)
@@ -477,6 +481,39 @@ def test_remote_runner_reports_missing_repository_configuration_structurally(
     assert progress["phase"] == "failed"
     assert progress["error"] == "WORKLOAD_CONFIGURATION_MISSING"
     assert progress["attempt"] == 2
+
+
+def test_remote_runner_accepts_study_workload_and_publishes_k1(
+    tmp_path: Path,
+) -> None:
+    run_remote_runner(
+        tmp_path,
+        "retry-success",
+        workload_file="repository_repair_study.py",
+        environment_overrides={
+            "EQUINOX_STUDY_CONDITION": "k1_train",
+            "EQUINOX_STUDY_COMPLETION_BUDGET": "440",
+        },
+    )
+
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["branch_width"] == 1
+
+
+def test_remote_runner_rejects_study_without_matched_completion_budget(
+    tmp_path: Path,
+) -> None:
+    completed = run_remote_runner(
+        tmp_path,
+        "retry-success",
+        workload_file="repository_repair_study.py",
+        environment_overrides={"EQUINOX_STUDY_CONDITION": "k4_no_update"},
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["error"] == "STUDY_CONFIGURATION_MISSING"
 
 
 def test_remote_runner_preserves_progress_when_restart_configuration_is_missing(

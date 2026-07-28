@@ -133,7 +133,7 @@ class ResearchComputeExecutionRequest(StrictModel):
     name: str = Field(min_length=3, max_length=120)
     workload_id: str = Field(min_length=3, max_length=160)
     model_id: str | None = Field(default=None, max_length=200)
-    branch_width: Literal[4] = 4
+    branch_width: Literal[1, 4] = 4
     complexity_strategy: Literal["adaptive"] = "adaptive"
     status: Literal["PROVISIONING", "RUNNING", "FINALIZING", "SUCCEEDED", "FAILED"]
     provider_name: Literal["RunPod"] = "RunPod"

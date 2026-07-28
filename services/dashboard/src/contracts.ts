@@ -42,8 +42,8 @@ export function decodeResearchComputeExecution(
   requiredString(item.updated_at, "updated_at");
   record(item.resource_profile, "resource_profile");
   record(item.progress, "progress");
-  if (item.branch_width !== 4) {
-    throw new Error("Invalid API response: branch_width must be 4.");
+  if (item.branch_width !== 1 && item.branch_width !== 4) {
+    throw new Error("Invalid API response: branch_width must be 1 or 4.");
   }
   if (item.complexity_strategy !== "adaptive") {
     throw new Error(
@@ -104,8 +104,10 @@ export function decodeResearchTrajectoryResponse(
   const execution = decodeResearchComputeExecution(root.execution);
   if (root.trajectory === null) return { execution, trajectory: null };
   const trajectory = record(root.trajectory, "trajectory");
-  if (trajectory.branch_width !== 4) {
-    throw new Error("Invalid API response: trajectory branch_width must be 4.");
+  if (trajectory.branch_width !== 1 && trajectory.branch_width !== 4) {
+    throw new Error(
+      "Invalid API response: trajectory branch_width must be 1 or 4.",
+    );
   }
   array(trajectory.checkpoints, "trajectory checkpoints");
   array(trajectory.promotions, "trajectory promotions");
