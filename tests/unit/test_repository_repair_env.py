@@ -322,7 +322,7 @@ def test_teacher_continuation_solves_without_executing_repository_code() -> None
         "verifier_submission_cost": 0.0,
         "malformed_action_penalty": 0.0,
         "terminal_aggregate": 0.95,
-        "accepted_action_count": 10,
+        "accepted_action_count": 12,
         "malformed_action_count": 0,
         "verifier_submission_count": 2,
     }

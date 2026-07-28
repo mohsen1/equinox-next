@@ -85,7 +85,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@28"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@29"
 OBJECTIVE_ID = "verified-fix-priority-target-retention-policy-gradient@14"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -97,7 +97,7 @@ DEPENDENCY_VERSIONS = {
 }
 MAXIMUM_COMPLEXITY_LEVEL = len(COMPLEXITY_LEVELS) - 1
 MINIMUM_PREFIX_ACCEPTED_ACTIONS = 2
-PREFIX_MAX_ATTEMPTS = 5
+PREFIX_MAX_ATTEMPTS = 8
 EVALUATION_INTERVAL = 5
 VALIDATION_SEED_BASE = 40_000
 VALIDATION_WINDOW_SEED_STRIDE = 1_000_003
@@ -350,6 +350,35 @@ def branch_checkpoint_diagnostic_actions(task: RepairTask) -> int:
         PREFIX_MAX_ATTEMPTS,
         max(MINIMUM_PREFIX_ACCEPTED_ACTIONS, len(task.faults) + 1),
     )
+
+
+def branch_checkpoint_fault_source_reads(
+    task: RepairTask,
+    prefix: RepositoryRepairEnvironment,
+) -> list[str]:
+    fault_paths = {fault.path for fault in task.faults}
+    return sorted(
+        {
+            str(step.action["path"])
+            for step in prefix.steps
+            if step.accepted
+            and step.tool == "read"
+            and step.action is not None
+            and step.action.get("path") in fault_paths
+        }
+    )
+
+
+def branch_checkpoint_reached(
+    task: RepairTask,
+    prefix: RepositoryRepairEnvironment,
+) -> bool:
+    accepted_diagnostics = sum(
+        step.accepted and step.tool in DIAGNOSTIC_TOOLS for step in prefix.steps
+    )
+    return accepted_diagnostics >= branch_checkpoint_diagnostic_actions(task) and len(
+        branch_checkpoint_fault_source_reads(task, prefix)
+    ) == len(task.faults)
 
 
 def sampled_action_count(collections: list[BranchCollection]) -> int:
@@ -1234,8 +1263,6 @@ def collect_branch_group(
 ) -> BranchCollection:
     prefix = RepositoryRepairEnvironment(task)
     generated_prefix: list[GeneratedAction] = []
-    accepted_diagnostics = 0
-    checkpoint_diagnostic_actions = branch_checkpoint_diagnostic_actions(task)
     for attempt in range(PREFIX_MAX_ATTEMPTS):
         if deadline_reached is not None and deadline_reached():
             return BranchCollection(
@@ -1258,13 +1285,11 @@ def collect_branch_group(
             sampling_seed + attempt,
         )
         generated_prefix.append(generated)
-        step = prefix.step(generated.response, allowed_tools=DIAGNOSTIC_TOOLS)
-        if step.accepted:
-            accepted_diagnostics += 1
-        if accepted_diagnostics >= checkpoint_diagnostic_actions:
+        prefix.step(generated.response, allowed_tools=DIAGNOSTIC_TOOLS)
+        if branch_checkpoint_reached(task, prefix):
             break
 
-    if accepted_diagnostics < checkpoint_diagnostic_actions:
+    if not branch_checkpoint_reached(task, prefix):
         return BranchCollection(
             task=task,
             snapshot=None,
@@ -1337,8 +1362,6 @@ def collect_greedy_trajectory(
     deadline_reached: Callable[[], bool] | None = None,
 ) -> dict[str, Any] | None:
     prefix = RepositoryRepairEnvironment(task)
-    accepted_diagnostics = 0
-    checkpoint_diagnostic_actions = branch_checkpoint_diagnostic_actions(task)
     for attempt in range(PREFIX_MAX_ATTEMPTS):
         if deadline_reached is not None and deadline_reached():
             return None
@@ -1347,12 +1370,10 @@ def collect_greedy_trajectory(
             False,
             sampling_seed + attempt,
         )
-        step = prefix.step(generated.response, allowed_tools=DIAGNOSTIC_TOOLS)
-        if step.accepted:
-            accepted_diagnostics += 1
-        if accepted_diagnostics >= checkpoint_diagnostic_actions:
+        prefix.step(generated.response, allowed_tools=DIAGNOSTIC_TOOLS)
+        if branch_checkpoint_reached(task, prefix):
             break
-    if accepted_diagnostics < checkpoint_diagnostic_actions:
+    if not branch_checkpoint_reached(task, prefix):
         return {
             "solved": False,
             "checkpoint_reached": False,
@@ -1713,8 +1734,13 @@ def serialize_branch_group(
         ),
         "shared_prefix": {
             "policy_generated": True,
-            "checkpoint_strategy": "fault_count_plus_one_accepted_diagnostics",
+            "checkpoint_strategy": "all_fault_sources_observed",
             "required_diagnostic_actions": branch_checkpoint_diagnostic_actions(collection.task),
+            "required_fault_source_reads": len(collection.task.faults),
+            "observed_fault_source_paths": branch_checkpoint_fault_source_reads(
+                collection.task,
+                collection.prefix,
+            ),
             "accepted_diagnostic_actions": sum(
                 step.accepted and step.tool in DIAGNOSTIC_TOOLS for step in collection.prefix.steps
             ),
@@ -1814,17 +1840,16 @@ def self_test() -> dict[str, Any]:
         raise AssertionError("finite perfect samples must retain statistical uncertainty")
 
     task = make_task(2, seed=DEFAULT_SEED)
+    diagnostics = diagnostic_actions(task)
     continuation = teacher_continuation_actions(task)
     calls = 0
 
     def scripted_sample(_: str, __: bool, ___: int) -> GeneratedAction:
         nonlocal calls
-        if calls == 0:
-            action = diagnostic_actions(task)[0]
-        elif calls == 1:
-            action = diagnostic_actions(task)[1]
+        if calls < len(diagnostics):
+            action = diagnostics[calls]
         else:
-            continuation_index = (calls - 2) // BRANCH_WIDTH
+            continuation_index = (calls - len(diagnostics)) // BRANCH_WIDTH
             action = continuation[min(continuation_index, len(continuation) - 1)]
         calls += 1
         return GeneratedAction(response=encode_action(action))
@@ -1852,7 +1877,7 @@ def self_test() -> dict[str, Any]:
         "workload_revision": WORKLOAD_REVISION,
         "branch_width": BRANCH_WIDTH,
         "shared_prefix_actions": expected_prefix_actions,
-        "shared_prefix_strategy": "fault_count_plus_one_accepted_diagnostics",
+        "shared_prefix_strategy": "all_fault_sources_observed",
         "sibling_steps": [len(sibling.steps) for sibling in collection.siblings],
         "environment_revision": ENVIRONMENT_REVISION,
         "structural_mirror_disclosures": STRUCTURAL_MIRROR_DISCLOSURES,
@@ -1943,7 +1968,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
         "maximum_consecutive_malformed_windows": (MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS),
         "shared_prefix_sampling": "greedy",
-        "shared_prefix_checkpoint": "fault_count_plus_one_accepted_diagnostics",
+        "shared_prefix_checkpoint": "all_fault_sources_observed",
         "minimum_shared_prefix_actions": MINIMUM_PREFIX_ACCEPTED_ACTIONS,
         "maximum_shared_prefix_actions": PREFIX_MAX_ATTEMPTS,
         "sibling_sampling_temperature": SIBLING_SAMPLING_TEMPERATURE,

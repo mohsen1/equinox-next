@@ -8,6 +8,8 @@ import pytest
 import research.runpod.repository_repair_rl as repository_repair_rl
 from research.runpod.repository_repair_env import (
     BRANCH_WIDTH,
+    DIAGNOSTIC_TOOLS,
+    RepositoryRepairEnvironment,
     diagnostic_actions,
     encode_action,
     make_task,
@@ -28,6 +30,8 @@ from research.runpod.repository_repair_rl import (
     adaptive_frontier_probe_decision,
     bounded_final_evaluation_reserve,
     branch_checkpoint_diagnostic_actions,
+    branch_checkpoint_fault_source_reads,
+    branch_checkpoint_reached,
     checkpoint_target_disposition,
     checkpoint_validation_seed,
     collect_branch_group,
@@ -142,6 +146,30 @@ def test_branch_checkpoint_gathers_more_shared_evidence_as_fault_count_grows() -
     assert branch_checkpoint_diagnostic_actions(make_task(1, seed=31)) == 2
     assert branch_checkpoint_diagnostic_actions(make_task(2, seed=31)) == 3
     assert branch_checkpoint_diagnostic_actions(make_task(3, seed=31)) == 4
+
+
+def test_branch_checkpoint_requires_every_fault_source_to_be_observed() -> None:
+    task = make_task(2, seed=31)
+    prefix = RepositoryRepairEnvironment(task)
+    prefix.step('{"tool":"list","path":""}', allowed_tools=DIAGNOSTIC_TOOLS)
+    prefix.step(
+        encode_action({"tool": "read", "path": task.faults[0].path}),
+        allowed_tools=DIAGNOSTIC_TOOLS,
+    )
+    prefix.step('{"tool":"test"}', allowed_tools=DIAGNOSTIC_TOOLS)
+
+    assert branch_checkpoint_fault_source_reads(task, prefix) == [task.faults[0].path]
+    assert branch_checkpoint_reached(task, prefix) is False
+
+    prefix.step(
+        encode_action({"tool": "read", "path": task.faults[1].path}),
+        allowed_tools=DIAGNOSTIC_TOOLS,
+    )
+
+    assert branch_checkpoint_fault_source_reads(task, prefix) == sorted(
+        fault.path for fault in task.faults
+    )
+    assert branch_checkpoint_reached(task, prefix) is True
 
 
 def test_frontier_probe_follows_static_k_branch_contrast() -> None:
@@ -1212,10 +1240,7 @@ def test_greedy_evaluation_stops_before_sampling_after_its_deadline() -> None:
 def test_serialized_branch_has_one_prefix_checkpoint_and_four_step_lanes() -> None:
     task = make_task(0, seed=44)
     calls = 0
-    diagnostic = (
-        '{"tool":"list","path":""}',
-        '{"tool":"read","path":"tests/failures.txt"}',
-    )
+    diagnostic = tuple(encode_action(action) for action in diagnostic_actions(task))
     fault = task.faults[0]
     continuation = (
         encode_action({"tool": "read", "path": fault.path}),
@@ -1251,10 +1276,10 @@ def test_serialized_branch_has_one_prefix_checkpoint_and_four_step_lanes() -> No
 
     assert serialized["checkpoint"]["fidelity"] == "logical_restore"
     assert serialized["checkpoint"]["static_branch_width"] == 4
-    assert serialized["shared_prefix"]["checkpoint_strategy"] == (
-        "fault_count_plus_one_accepted_diagnostics"
-    )
+    assert serialized["shared_prefix"]["checkpoint_strategy"] == "all_fault_sources_observed"
     assert serialized["shared_prefix"]["required_diagnostic_actions"] == 2
+    assert serialized["shared_prefix"]["required_fault_source_reads"] == 1
+    assert serialized["shared_prefix"]["observed_fault_source_paths"] == [fault.path]
     assert len(serialized["shared_prefix"]["steps"]) == 2
     assert len(serialized["siblings"]) == 4
     assert all(len(sibling["steps"]) == 4 for sibling in serialized["siblings"])

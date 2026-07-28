@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 ENVIRONMENT_REVISION = "repository-repair-simulator@4"
 VERIFIER_REVISION = "repository-repair-hidden-state@3"
-ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@2"
+ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@3"
 BRANCH_WIDTH = 4
 MAXIMUM_EFFICIENCY_PENALTY = 0.05
 ACCEPTED_ACTION_PENALTY = 0.005
@@ -1157,8 +1157,9 @@ class RepositoryRepairEnvironment:
 
     def policy_prompt(self, phase: Literal["shared_prefix", "continuation"]) -> str:
         phase_instruction = (
-            "Collect diagnostic evidence. Use only list, read, search, or test; "
-            "do not edit or finish before the checkpoint."
+            f"Collect diagnostic evidence for all {len(self.task.faults)} known failing "
+            "tests. Read each relevant implementation file before the checkpoint. "
+            "Use only list, read, search, or test; do not edit or finish before the checkpoint."
             if phase == "shared_prefix"
             else "The checkpoint is captured. Repair the repository, run tests, and finish."
         )
@@ -1345,7 +1346,7 @@ class RepositoryRepairEnvironment:
 def diagnostic_actions(task: RepairTask) -> list[dict[str, str]]:
     return [
         {"tool": "list", "path": ""},
-        {"tool": "read", "path": "tests/failures.txt"},
+        *({"tool": "read", "path": fault.path} for fault in task.faults),
     ]
 
 
