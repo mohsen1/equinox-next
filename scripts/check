@@ -9,8 +9,10 @@ cd "$repository_root"
 ./scripts/verify-revision30-external-pack
 docker compose config --quiet
 docker compose build
-docker compose run --rm --build test ruff format --check packages services tests
-docker compose run --rm --build test ruff check packages services tests
+docker compose run --rm --build test \
+  ruff format --check packages services research/runpod/revision30_report.py tests
+docker compose run --rm --build test \
+  ruff check packages services research/runpod/revision30_report.py tests
 docker compose run --rm test pytest tests/unit
 docker run --rm \
   -v "${repository_root}/services/dashboard:/app" \
