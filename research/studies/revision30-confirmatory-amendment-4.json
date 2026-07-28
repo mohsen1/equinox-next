@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "amendment_id": "repository-repair-confirmatory-study@1/amendment-4",
+  "study_id": "repository-repair-confirmatory-study@1",
+  "authored_at": "2026-07-28",
+  "effective_before_seed_307_retry": true,
+  "frozen_source_commit": "e6a139375a4e6ec92df362873237b398aa0041c0",
+  "algorithm_change": false,
+  "gate_change": false,
+  "task_change": false,
+  "reason": {
+    "code": "GREEDY_PROTOCOL_HARDWARE_MISMATCH",
+    "summary": "Seed 307 passed its blind frozen-gate screen on an NVIDIA A40, then failed the same pre-training protocol gate when the full condition was allocated on an NVIDIA RTX PRO 4500 Blackwell.",
+    "scientific_interpretation": "The failed Blackwell attempt contains no optimizer or policy-learning evidence. Greedy generation near a token boundary was not invariant across the two GPU classes despite the deterministic execution envelope.",
+    "corrective_action": "Retry seed 307 only on the NVIDIA A40 class used for its eligibility screen. Run both seed-307 causal controls on that same class. Keep seed 701 on the Blackwell class used for its successful screen."
+  },
+  "triggering_failure": {
+    "condition_id": "k4_train_seed307",
+    "execution_id": "runpod-proof-20260728T182638Z",
+    "screen_execution_id": "runpod-proof-20260728T175652Z",
+    "screen_gpu_id": "NVIDIA A40",
+    "failed_attempt_gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+    "failure_code": "ACTION_PROTOCOL_VALIDITY_BELOW_THRESHOLD",
+    "training_started": false,
+    "policy_updates_observed": 0,
+    "optimizer_updates_observed": 0,
+    "evaluation_completed_before_last_published_progress": 15,
+    "evaluation_total": 16,
+    "estimated_cost_usd": 0.039191,
+    "teardown_confirmed": true
+  },
+  "hardware_bindings": [
+    {
+      "condition_ids": [
+        "k4_train_seed307",
+        "k4_no_update_seed307",
+        "k1_train_seed307"
+      ],
+      "gpu_id": "NVIDIA A40",
+      "maximum_hourly_cost_usd": 0.5,
+      "basis": "seed-307 blind eligibility screen"
+    },
+    {
+      "condition_ids": [
+        "k4_train_seed701"
+      ],
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "maximum_hourly_cost_usd": 0.75,
+      "basis": "seed-701 blind eligibility screen"
+    }
+  ],
+  "reporting": {
+    "cross_hardware_failure_remains_a_primary_row": true,
+    "retry_is_labeled_post_preregistration_amendment": true,
+    "no_failure_is_removed_from_aggregates": true
+  }
+}

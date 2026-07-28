@@ -41,6 +41,8 @@ def manifest() -> dict:
                 "test_seed_base": 50_000_000,
                 "training_tasks_per_update": 4,
                 "completion_budget": None,
+                "gpu_id": "NVIDIA A40",
+                "maximum_hourly_cost_usd": 0.5,
             },
             {
                 "condition_id": "k1_train_seed211",
@@ -50,6 +52,8 @@ def manifest() -> dict:
                 "test_seed_base": 50_000_000,
                 "training_tasks_per_update": 12,
                 "completion_budget": "k4_train_seed211.total_sampled_completions",
+                "gpu_id": "NVIDIA A40",
+                "maximum_hourly_cost_usd": 0.5,
             },
         ],
     }
@@ -153,4 +157,6 @@ def test_launcher_environment_matches_preregistered_k1(monkeypatch: pytest.Monke
     assert environment["EQUINOX_RL_TARGET_SECONDS"] == "10800"
     assert environment["EQUINOX_STUDY_COMPLETION_BUDGET"] == "516"
     assert environment["EQUINOX_RUNPOD_PREFLIGHT_ONLY"] == "1"
+    assert environment["EQUINOX_RUNPOD_GPU"] == "NVIDIA A40"
+    assert environment["EQUINOX_RUNPOD_MAX_HOURLY_COST"] == "0.5"
     assert environment["UNRELATED_OPERATOR_SETTING"] == "preserved"

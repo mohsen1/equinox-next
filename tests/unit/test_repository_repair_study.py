@@ -174,6 +174,11 @@ def test_frozen_source_digests_and_preregistration_are_current() -> None:
             encoding="utf-8"
         )
     )
+    hardware_amendment = json.loads(
+        (repository_root / "research/studies/revision30-confirmatory-amendment-4.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert manifest["study_id"] == study.STUDY_ID
     assert [item["condition_id"] for item in manifest["conditions"]] == [
@@ -195,3 +200,7 @@ def test_frozen_source_digests_and_preregistration_are_current() -> None:
         "k4_no_update_seed307",
         "k1_train_seed307",
     ]
+    assert hardware_amendment["algorithm_change"] is False
+    assert hardware_amendment["triggering_failure"]["training_started"] is False
+    assert manifest["conditions"][2]["gpu_id"] == "NVIDIA A40"
+    assert manifest["conditions"][3]["gpu_id"] == "NVIDIA RTX PRO 4500 Blackwell"

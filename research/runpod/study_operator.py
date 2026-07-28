@@ -159,6 +159,16 @@ def launcher_environment(
         environment["EQUINOX_STUDY_COMPLETION_BUDGET"] = str(completion_budget)
     else:
         environment.pop("EQUINOX_STUDY_COMPLETION_BUDGET", None)
+    gpu_id = condition.get("gpu_id")
+    maximum_hourly_cost = condition.get("maximum_hourly_cost_usd")
+    if isinstance(gpu_id, str) and gpu_id:
+        environment["EQUINOX_RUNPOD_GPU"] = gpu_id
+    if (
+        isinstance(maximum_hourly_cost, (int, float))  # noqa: UP038 - Python 3.9.
+        and not isinstance(maximum_hourly_cost, bool)
+        and maximum_hourly_cost > 0
+    ):
+        environment["EQUINOX_RUNPOD_MAX_HOURLY_COST"] = str(maximum_hourly_cost)
     if preflight_only:
         environment["EQUINOX_RUNPOD_PREFLIGHT_ONLY"] = "1"
     else:
