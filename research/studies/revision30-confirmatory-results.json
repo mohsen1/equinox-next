@@ -1,0 +1,2734 @@
+{
+  "aggregation_policy": "Every execution, seed, and regression is reported before any conclusion; no mean replaces per-seed outcomes.",
+  "conditions": {
+    "k1_train_seed307": {
+      "adapter_persisted": true,
+      "branch_width": 1,
+      "declared_completion_budget": "k4_train_seed307.total_sampled_completions",
+      "execution_ids": [
+        "runpod-proof-20260728T214307Z"
+      ],
+      "final_evaluation_complete": true,
+      "final_successes": 0.541667,
+      "gain": 0.25,
+      "initial_successes": 0.291667,
+      "maximum_sampled_complexity_level": 2,
+      "optimizer_updates": 14,
+      "paired_improved": 13,
+      "paired_net_improved": 12,
+      "paired_p_value": 0.0018310546875,
+      "paired_regressed": 1,
+      "policy_mutation_enabled": true,
+      "policy_updates": 14,
+      "promotion_count": 0,
+      "reached_complexity_level": 0,
+      "retention_passed": true,
+      "role": "branch_width_ablation",
+      "sampled_completions": 156,
+      "seed": 307,
+      "status": "SUCCEEDED",
+      "stop_reason": "study_completion_budget"
+    },
+    "k4_no_update_seed307": {
+      "adapter_persisted": true,
+      "branch_width": 4,
+      "declared_completion_budget": "k4_train_seed307.total_sampled_completions",
+      "execution_ids": [
+        "runpod-proof-20260728T205904Z"
+      ],
+      "final_evaluation_complete": true,
+      "final_successes": 0.291667,
+      "gain": 0.0,
+      "initial_successes": 0.291667,
+      "maximum_sampled_complexity_level": 1,
+      "optimizer_updates": 0,
+      "paired_improved": 0,
+      "paired_net_improved": 0,
+      "paired_p_value": 1.0,
+      "paired_regressed": 0,
+      "policy_mutation_enabled": false,
+      "policy_updates": 0,
+      "promotion_count": 0,
+      "reached_complexity_level": 0,
+      "retention_passed": true,
+      "role": "matched_frozen_policy_control",
+      "sampled_completions": 156,
+      "seed": 307,
+      "status": "SUCCEEDED",
+      "stop_reason": "study_completion_budget"
+    },
+    "k4_train_seed113": {
+      "adapter_persisted": true,
+      "branch_width": 4,
+      "declared_completion_budget": 440,
+      "execution_ids": [
+        "runpod-proof-20260728T142404Z"
+      ],
+      "final_evaluation_complete": true,
+      "final_successes": 0.5,
+      "gain": 0.1875,
+      "initial_successes": 0.3125,
+      "maximum_sampled_complexity_level": 2,
+      "optimizer_updates": 17,
+      "paired_improved": 9,
+      "paired_net_improved": 9,
+      "paired_p_value": 0.00390625,
+      "paired_regressed": 0,
+      "policy_mutation_enabled": true,
+      "policy_updates": 15,
+      "promotion_count": 1,
+      "reached_complexity_level": 1,
+      "retention_passed": true,
+      "role": "frozen_reference",
+      "sampled_completions": 440,
+      "seed": 113,
+      "status": "SUCCEEDED",
+      "stop_reason": "validation_regression"
+    },
+    "k4_train_seed211": {
+      "adapter_persisted": null,
+      "branch_width": 4,
+      "declared_completion_budget": null,
+      "execution_ids": [
+        "runpod-proof-20260728T173307Z",
+        "runpod-proof-20260728T173849Z"
+      ],
+      "final_evaluation_complete": null,
+      "final_successes": null,
+      "gain": null,
+      "initial_successes": null,
+      "maximum_sampled_complexity_level": null,
+      "optimizer_updates": null,
+      "paired_improved": null,
+      "paired_net_improved": null,
+      "paired_p_value": null,
+      "paired_regressed": null,
+      "policy_mutation_enabled": true,
+      "policy_updates": null,
+      "promotion_count": null,
+      "reached_complexity_level": null,
+      "retention_passed": null,
+      "role": "protocol_ineligible_failure",
+      "sampled_completions": null,
+      "seed": 211,
+      "status": "FAILED",
+      "stop_reason": null
+    },
+    "k4_train_seed307": {
+      "adapter_persisted": true,
+      "branch_width": 4,
+      "declared_completion_budget": null,
+      "execution_ids": [
+        "runpod-proof-20260728T175652Z",
+        "runpod-proof-20260728T182638Z",
+        "runpod-proof-20260728T201339Z"
+      ],
+      "final_evaluation_complete": true,
+      "final_successes": 0.291667,
+      "gain": 0.0,
+      "initial_successes": 0.291667,
+      "maximum_sampled_complexity_level": 2,
+      "optimizer_updates": 8,
+      "paired_improved": 0,
+      "paired_net_improved": 0,
+      "paired_p_value": 1.0,
+      "paired_regressed": 0,
+      "policy_mutation_enabled": true,
+      "policy_updates": 8,
+      "promotion_count": 0,
+      "reached_complexity_level": 0,
+      "retention_passed": true,
+      "role": "fresh_replication",
+      "sampled_completions": 156,
+      "seed": 307,
+      "status": "SUCCEEDED",
+      "stop_reason": "validation_regression"
+    },
+    "k4_train_seed701": {
+      "adapter_persisted": true,
+      "branch_width": 4,
+      "declared_completion_budget": null,
+      "execution_ids": [
+        "runpod-proof-20260728T181623Z",
+        "runpod-proof-20260728T184042Z"
+      ],
+      "final_evaluation_complete": true,
+      "final_successes": 0.458333,
+      "gain": 0.166667,
+      "initial_successes": 0.291666,
+      "maximum_sampled_complexity_level": 2,
+      "optimizer_updates": 19,
+      "paired_improved": 8,
+      "paired_net_improved": 8,
+      "paired_p_value": 0.0078125,
+      "paired_regressed": 0,
+      "policy_mutation_enabled": true,
+      "policy_updates": 16,
+      "promotion_count": 0,
+      "reached_complexity_level": 0,
+      "retention_passed": true,
+      "role": "fresh_replication",
+      "sampled_completions": 416,
+      "seed": 701,
+      "status": "SUCCEEDED",
+      "stop_reason": "consecutive_uninformative_groups"
+    }
+  },
+  "decisions": {
+    "all_retained_adapters_evaluated_externally": {
+      "evidence": {
+        "expected_condition_ids": [
+          "k4_train_seed113",
+          "k4_train_seed307",
+          "k4_train_seed701",
+          "k4_no_update_seed307",
+          "k1_train_seed307"
+        ],
+        "observed_condition_ids": [
+          "k1_train_seed307",
+          "k4_no_update_seed307",
+          "k4_train_seed113",
+          "k4_train_seed307",
+          "k4_train_seed701"
+        ],
+        "task_count": 9
+      },
+      "status": "PASS"
+    },
+    "fresh_k4_gains_transfer_without_regressions": {
+      "evidence": {
+        "k4_train_seed307": {
+          "examples": 9,
+          "improved": 0,
+          "mcnemar_exact_p_value": 1.0,
+          "net_improved": 0,
+          "regressed": 0,
+          "unchanged": 9
+        },
+        "k4_train_seed701": {
+          "examples": 9,
+          "improved": 1,
+          "mcnemar_exact_p_value": 1.0,
+          "net_improved": 1,
+          "regressed": 0,
+          "unchanged": 8
+        }
+      },
+      "status": "FAIL"
+    },
+    "gains_repeat_across_fresh_seeds": {
+      "evidence": {
+        "k4_train_seed307": {
+          "adapter_persisted": true,
+          "branch_width": 4,
+          "final_evaluation_complete": true,
+          "final_successes": 0.291667,
+          "gain": 0.0,
+          "initial_successes": 0.291667,
+          "maximum_sampled_complexity_level": 2,
+          "optimizer_updates": 8,
+          "paired_improved": 0,
+          "paired_net_improved": 0,
+          "paired_p_value": 1.0,
+          "paired_regressed": 0,
+          "policy_mutation_enabled": true,
+          "policy_updates": 8,
+          "promotion_count": 0,
+          "reached_complexity_level": 0,
+          "retention_passed": true,
+          "sampled_completions": 156,
+          "seed": 307,
+          "stop_reason": "validation_regression"
+        },
+        "k4_train_seed701": {
+          "adapter_persisted": true,
+          "branch_width": 4,
+          "final_evaluation_complete": true,
+          "final_successes": 0.458333,
+          "gain": 0.166667,
+          "initial_successes": 0.291666,
+          "maximum_sampled_complexity_level": 2,
+          "optimizer_updates": 19,
+          "paired_improved": 8,
+          "paired_net_improved": 8,
+          "paired_p_value": 0.0078125,
+          "paired_regressed": 0,
+          "policy_mutation_enabled": true,
+          "policy_updates": 16,
+          "promotion_count": 0,
+          "reached_complexity_level": 0,
+          "retention_passed": true,
+          "sampled_completions": 416,
+          "seed": 701,
+          "stop_reason": "consecutive_uninformative_groups"
+        }
+      },
+      "status": "FAIL"
+    },
+    "k4_training_beats_frozen_policy_k4": {
+      "evidence": {
+        "branch_contract_verified": true,
+        "completion_budget": 156,
+        "control_final": 0.291667,
+        "control_net_improved": 0,
+        "control_policy_mutation_enabled": false,
+        "evaluation_task_count": 48,
+        "final_evaluations_complete": true,
+        "matched_completion_budget": true,
+        "matched_evaluation_tasks": true,
+        "matched_frozen_runtime": true,
+        "matched_initial_score": true,
+        "matched_seed_and_splits": true,
+        "mutation_contract_verified": true,
+        "paired_trained_vs_control": {
+          "examples": 48,
+          "improved": 0,
+          "mcnemar_exact_p_value": 1.0,
+          "net_improved": 0,
+          "regressed": 0,
+          "unchanged": 48
+        },
+        "realized_training_schedule": {
+          "available": true,
+          "comparison_task_count": 20,
+          "difference_count": 3,
+          "differences": [
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-f5597614904f",
+                "update": 5
+              },
+              "position": 9,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-43616e1e27cf",
+                "update": 5
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-b900796f34bd",
+                "update": 9
+              },
+              "position": 17,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-a97651f56d1e",
+                "update": 9
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-ceb8a3ae9bbb",
+                "update": 10
+              },
+              "position": 19,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-34a707682c8d",
+                "update": 10
+              }
+            }
+          ],
+          "identical": false,
+          "interpretation": "Adaptive task routing is policy-mediated and therefore part of the treatment. Matching the generator inputs does not guarantee an identical realized training schedule.",
+          "matching_position_count": 17,
+          "trained_task_count": 20
+        },
+        "trained_final": 0.291667,
+        "trained_net_improved": 0
+      },
+      "status": "FAIL"
+    },
+    "k4_training_beats_matched_k1": {
+      "evidence": {
+        "branch_contract_verified": true,
+        "completion_budget": 156,
+        "control_final": 0.541667,
+        "control_net_improved": 12,
+        "control_policy_mutation_enabled": true,
+        "evaluation_task_count": 48,
+        "final_evaluations_complete": true,
+        "matched_completion_budget": true,
+        "matched_evaluation_tasks": true,
+        "matched_frozen_runtime": true,
+        "matched_initial_score": true,
+        "matched_seed_and_splits": true,
+        "mutation_contract_verified": true,
+        "paired_trained_vs_control": {
+          "examples": 48,
+          "improved": 1,
+          "mcnemar_exact_p_value": 0.0018310546875,
+          "net_improved": -12,
+          "regressed": 13,
+          "unchanged": 34
+        },
+        "realized_training_schedule": {
+          "available": true,
+          "comparison_task_count": 28,
+          "difference_count": 23,
+          "differences": [
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-24c48679cc79",
+                "update": 1
+              },
+              "position": 1,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-6d07af48ec70",
+                "update": 1
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-5674ca7c73f5",
+                "update": 2
+              },
+              "position": 2,
+              "trained": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-6fb625421af3",
+                "update": 2
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-00b782f63686",
+                "update": 2
+              },
+              "position": 3,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-642fa1c9c238",
+                "update": 2
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-206f4083e89b",
+                "update": 4
+              },
+              "position": 6,
+              "trained": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-7b491916e8e6",
+                "update": 4
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-26c1f3f5c82c",
+                "update": 4
+              },
+              "position": 7,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-55e1407e536e",
+                "update": 4
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-3494ed55d812",
+                "update": 5
+              },
+              "position": 8,
+              "trained": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-554eb2ba956b",
+                "update": 5
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-8687c3b73b8e",
+                "update": 5
+              },
+              "position": 9,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-43616e1e27cf",
+                "update": 5
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-05c5036c66e8",
+                "update": 6
+              },
+              "position": 10,
+              "trained": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-e219f91e4926",
+                "update": 6
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-ce0b6febfb89",
+                "update": 6
+              },
+              "position": 11,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-7a9ad1c5d384",
+                "update": 6
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-1c32bffc96fe",
+                "update": 7
+              },
+              "position": 13,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-5d5d8240c926",
+                "update": 7
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-0119bc5564b9",
+                "update": 8
+              },
+              "position": 14,
+              "trained": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-bdb45920650c",
+                "update": 8
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-52c70f42ed28",
+                "update": 8
+              },
+              "position": 15,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 1,
+                "replay": false,
+                "task_id": "repo-1-b721904ee845",
+                "update": 8
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-020002c1fc59",
+                "update": 9
+              },
+              "position": 16,
+              "trained": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-26ec98c81507",
+                "update": 9
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-7f56434d9ab1",
+                "update": 9
+              },
+              "position": 17,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-a97651f56d1e",
+                "update": 9
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-a9d3035f0a2d",
+                "update": 10
+              },
+              "position": 19,
+              "trained": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-34a707682c8d",
+                "update": 10
+              }
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-23da1e187a25",
+                "update": 11
+              },
+              "position": 20,
+              "trained": null
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-0f61a096082e",
+                "update": 11
+              },
+              "position": 21,
+              "trained": null
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-25e111fe3471",
+                "update": 12
+              },
+              "position": 22,
+              "trained": null
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-654149a0cc6d",
+                "update": 12
+              },
+              "position": 23,
+              "trained": null
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-183edcbcd435",
+                "update": 13
+              },
+              "position": 24,
+              "trained": null
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-51ab7a67737b",
+                "update": 13
+              },
+              "position": 25,
+              "trained": null
+            },
+            {
+              "comparison": {
+                "curriculum_role": "active_frontier",
+                "level": 0,
+                "replay": false,
+                "task_id": "repo-0-1edf61df80ec",
+                "update": 14
+              },
+              "position": 26,
+              "trained": null
+            },
+            {
+              "comparison": {
+                "curriculum_role": "adjacent_complexity_probe",
+                "level": 2,
+                "replay": false,
+                "task_id": "repo-2-2f27e59cd0f5",
+                "update": 14
+              },
+              "position": 27,
+              "trained": null
+            }
+          ],
+          "identical": false,
+          "interpretation": "Adaptive task routing is policy-mediated and therefore part of the treatment. Matching the generator inputs does not guarantee an identical realized training schedule.",
+          "matching_position_count": 5,
+          "trained_task_count": 20
+        },
+        "trained_final": 0.291667,
+        "trained_net_improved": 0
+      },
+      "status": "FAIL"
+    },
+    "regression_guard_remains_clean": {
+      "evidence": {
+        "k4_train_seed307": {
+          "paired_regressed": 0,
+          "retention_passed": true
+        },
+        "k4_train_seed701": {
+          "paired_regressed": 0,
+          "retention_passed": true
+        }
+      },
+      "status": "PASS"
+    }
+  },
+  "executions": [
+    {
+      "action_protocol_validity_rate": 0.995324,
+      "completed_at": "2026-07-28T15:56:46Z",
+      "condition_id": "k4_train_seed113",
+      "error": null,
+      "estimated_cost_usd": 1.137499,
+      "execution_id": "runpod-proof-20260728T142404Z",
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": true,
+        "branch_width": 4,
+        "final_evaluation_complete": true,
+        "final_successes": 0.5,
+        "gain": 0.1875,
+        "initial_successes": 0.3125,
+        "maximum_sampled_complexity_level": 2,
+        "optimizer_updates": 17,
+        "paired_improved": 9,
+        "paired_net_improved": 9,
+        "paired_p_value": 0.00390625,
+        "paired_regressed": 0,
+        "policy_mutation_enabled": true,
+        "policy_updates": 15,
+        "promotion_count": 1,
+        "reached_complexity_level": 1,
+        "retention_passed": true,
+        "sampled_completions": 440,
+        "seed": 113,
+        "stop_reason": "validation_regression"
+      },
+      "name": "Repository repair post-training",
+      "optimization_seed": null,
+      "outcome": "SUCCEEDED",
+      "provider_handle": "runpod://pods/i3vh7ui76s0ahn",
+      "started_at": "2026-07-28T14:24:04Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-restored-continuation-post-training"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T17:35:50Z",
+      "condition_id": "k4_train_seed211",
+      "error": "The remote workload failed with exit code 1.",
+      "estimated_cost_usd": 0.0159,
+      "execution_id": "runpod-proof-20260728T173307Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": false,
+      "name": "K=4 training \u00b7 seed 211",
+      "optimization_seed": 211,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/t8ag81dy3i48jv",
+      "started_at": "2026-07-28T17:33:07Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-restored-continuation-post-training"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T17:41:42Z",
+      "condition_id": "k4_train_seed211",
+      "error": "The remote workload failed with exit code 1.",
+      "estimated_cost_usd": 0.018659,
+      "execution_id": "runpod-proof-20260728T173849Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": false,
+      "name": "K=4 training \u00b7 seed 211",
+      "optimization_seed": 211,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/ku4ca6a043es2u",
+      "started_at": "2026-07-28T17:38:49Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-restored-continuation-post-training"
+    },
+    {
+      "action_protocol_validity_rate": 1.0,
+      "completed_at": "2026-07-28T17:59:48Z",
+      "condition_id": "k4_train_seed307",
+      "error": null,
+      "estimated_cost_usd": 0.018411,
+      "execution_id": "runpod-proof-20260728T175652Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": null,
+        "branch_width": 4,
+        "final_evaluation_complete": null,
+        "final_successes": null,
+        "gain": null,
+        "initial_successes": null,
+        "maximum_sampled_complexity_level": null,
+        "optimizer_updates": null,
+        "paired_improved": null,
+        "paired_net_improved": null,
+        "paired_p_value": null,
+        "paired_regressed": null,
+        "policy_mutation_enabled": true,
+        "policy_updates": null,
+        "promotion_count": null,
+        "reached_complexity_level": null,
+        "retention_passed": null,
+        "sampled_completions": null,
+        "seed": null,
+        "stop_reason": null
+      },
+      "name": "Protocol eligibility \u00b7 seed 307",
+      "optimization_seed": 307,
+      "outcome": "ELIGIBLE",
+      "provider_handle": "runpod://pods/1gw1zo21j9oyyq",
+      "started_at": "2026-07-28T17:56:52Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-protocol-eligibility"
+    },
+    {
+      "action_protocol_validity_rate": 0.988095,
+      "completed_at": "2026-07-28T18:04:14Z",
+      "condition_id": "k4_train_seed401",
+      "error": null,
+      "estimated_cost_usd": 0.023327,
+      "execution_id": "runpod-proof-20260728T180041Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": null,
+        "branch_width": 4,
+        "final_evaluation_complete": null,
+        "final_successes": null,
+        "gain": null,
+        "initial_successes": null,
+        "maximum_sampled_complexity_level": null,
+        "optimizer_updates": null,
+        "paired_improved": null,
+        "paired_net_improved": null,
+        "paired_p_value": null,
+        "paired_regressed": null,
+        "policy_mutation_enabled": true,
+        "policy_updates": null,
+        "promotion_count": null,
+        "reached_complexity_level": null,
+        "retention_passed": null,
+        "sampled_completions": null,
+        "seed": null,
+        "stop_reason": null
+      },
+      "name": "Protocol eligibility \u00b7 seed 401",
+      "optimization_seed": 401,
+      "outcome": "INELIGIBLE",
+      "provider_handle": "runpod://pods/7k8jj9mae02759",
+      "started_at": "2026-07-28T18:00:41Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-protocol-eligibility"
+    },
+    {
+      "action_protocol_validity_rate": 0.988095,
+      "completed_at": "2026-07-28T18:09:05Z",
+      "condition_id": "k4_train_seed503",
+      "error": null,
+      "estimated_cost_usd": 0.02143,
+      "execution_id": "runpod-proof-20260728T180557Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": null,
+        "branch_width": 4,
+        "final_evaluation_complete": null,
+        "final_successes": null,
+        "gain": null,
+        "initial_successes": null,
+        "maximum_sampled_complexity_level": null,
+        "optimizer_updates": null,
+        "paired_improved": null,
+        "paired_net_improved": null,
+        "paired_p_value": null,
+        "paired_regressed": null,
+        "policy_mutation_enabled": true,
+        "policy_updates": null,
+        "promotion_count": null,
+        "reached_complexity_level": null,
+        "retention_passed": null,
+        "sampled_completions": null,
+        "seed": null,
+        "stop_reason": null
+      },
+      "name": "Protocol eligibility \u00b7 seed 503",
+      "optimization_seed": 503,
+      "outcome": "INELIGIBLE",
+      "provider_handle": "runpod://pods/z7ou6hmg9fky27",
+      "started_at": "2026-07-28T18:05:57Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-protocol-eligibility"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T18:09:35Z",
+      "condition_id": "protocol_screen_seed601",
+      "error": "RunPod pod creation failed before a provider handle was returned.",
+      "estimated_cost_usd": null,
+      "execution_id": "runpod-proof-20260728T180933Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": false,
+      "name": "Protocol eligibility \u00b7 seed 601",
+      "optimization_seed": null,
+      "outcome": "FAILED",
+      "provider_handle": null,
+      "started_at": "2026-07-28T18:09:33Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-protocol-eligibility"
+    },
+    {
+      "action_protocol_validity_rate": 0.988235,
+      "completed_at": "2026-07-28T18:13:45Z",
+      "condition_id": "k4_train_seed601",
+      "error": null,
+      "estimated_cost_usd": 0.03823,
+      "execution_id": "runpod-proof-20260728T181027Z",
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": null,
+        "branch_width": 4,
+        "final_evaluation_complete": null,
+        "final_successes": null,
+        "gain": null,
+        "initial_successes": null,
+        "maximum_sampled_complexity_level": null,
+        "optimizer_updates": null,
+        "paired_improved": null,
+        "paired_net_improved": null,
+        "paired_p_value": null,
+        "paired_regressed": null,
+        "policy_mutation_enabled": true,
+        "policy_updates": null,
+        "promotion_count": null,
+        "reached_complexity_level": null,
+        "retention_passed": null,
+        "sampled_completions": null,
+        "seed": null,
+        "stop_reason": null
+      },
+      "name": "Protocol eligibility \u00b7 seed 601",
+      "optimization_seed": 601,
+      "outcome": "INELIGIBLE",
+      "provider_handle": "runpod://pods/gf4dylauoh5zl7",
+      "started_at": "2026-07-28T18:10:27Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-protocol-eligibility"
+    },
+    {
+      "action_protocol_validity_rate": 1.0,
+      "completed_at": "2026-07-28T18:22:14Z",
+      "condition_id": "k4_train_seed701",
+      "error": null,
+      "estimated_cost_usd": 0.065337,
+      "execution_id": "runpod-proof-20260728T181623Z",
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": null,
+        "branch_width": 4,
+        "final_evaluation_complete": null,
+        "final_successes": null,
+        "gain": null,
+        "initial_successes": null,
+        "maximum_sampled_complexity_level": null,
+        "optimizer_updates": null,
+        "paired_improved": null,
+        "paired_net_improved": null,
+        "paired_p_value": null,
+        "paired_regressed": null,
+        "policy_mutation_enabled": true,
+        "policy_updates": null,
+        "promotion_count": null,
+        "reached_complexity_level": null,
+        "retention_passed": null,
+        "sampled_completions": null,
+        "seed": null,
+        "stop_reason": null
+      },
+      "name": "Protocol eligibility \u00b7 seed 701",
+      "optimization_seed": 701,
+      "outcome": "ELIGIBLE",
+      "provider_handle": "runpod://pods/9v9gf76enbcomb",
+      "started_at": "2026-07-28T18:16:23Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-protocol-eligibility"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T18:30:12Z",
+      "condition_id": "k4_train_seed307",
+      "error": "The remote workload failed with exit code 1.",
+      "estimated_cost_usd": 0.039191,
+      "execution_id": "runpod-proof-20260728T182638Z",
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "has_result_artifact": false,
+      "name": "K=4 training \u00b7 seed 307",
+      "optimization_seed": 307,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/jpm9vuh0zsrmdn",
+      "started_at": "2026-07-28T18:26:38Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-restored-continuation-post-training"
+    },
+    {
+      "action_protocol_validity_rate": 0.995354,
+      "completed_at": "2026-07-28T20:12:58Z",
+      "condition_id": "k4_train_seed701",
+      "error": null,
+      "estimated_cost_usd": 1.133015,
+      "execution_id": "runpod-proof-20260728T184042Z",
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": true,
+        "branch_width": 4,
+        "final_evaluation_complete": true,
+        "final_successes": 0.458333,
+        "gain": 0.166667,
+        "initial_successes": 0.291666,
+        "maximum_sampled_complexity_level": 2,
+        "optimizer_updates": 19,
+        "paired_improved": 8,
+        "paired_net_improved": 8,
+        "paired_p_value": 0.0078125,
+        "paired_regressed": 0,
+        "policy_mutation_enabled": true,
+        "policy_updates": 16,
+        "promotion_count": 0,
+        "reached_complexity_level": 0,
+        "retention_passed": true,
+        "sampled_completions": 416,
+        "seed": 701,
+        "stop_reason": "consecutive_uninformative_groups"
+      },
+      "name": "K=4 training \u00b7 seed 701",
+      "optimization_seed": 701,
+      "outcome": "SUCCEEDED",
+      "provider_handle": "runpod://pods/co6obfnnf3oxow",
+      "started_at": "2026-07-28T18:40:42Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-restored-continuation-post-training"
+    },
+    {
+      "action_protocol_validity_rate": 0.991334,
+      "completed_at": "2026-07-28T20:57:57Z",
+      "condition_id": "k4_train_seed307",
+      "error": null,
+      "estimated_cost_usd": 0.321196,
+      "execution_id": "runpod-proof-20260728T201339Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": true,
+        "branch_width": 4,
+        "final_evaluation_complete": true,
+        "final_successes": 0.291667,
+        "gain": 0.0,
+        "initial_successes": 0.291667,
+        "maximum_sampled_complexity_level": 2,
+        "optimizer_updates": 8,
+        "paired_improved": 0,
+        "paired_net_improved": 0,
+        "paired_p_value": 1.0,
+        "paired_regressed": 0,
+        "policy_mutation_enabled": true,
+        "policy_updates": 8,
+        "promotion_count": 0,
+        "reached_complexity_level": 0,
+        "retention_passed": true,
+        "sampled_completions": 156,
+        "seed": 307,
+        "stop_reason": "validation_regression"
+      },
+      "name": "K=4 training \u00b7 seed 307",
+      "optimization_seed": 307,
+      "outcome": "SUCCEEDED",
+      "provider_handle": "runpod://pods/jrw552mq5koic9",
+      "started_at": "2026-07-28T20:13:39Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-restored-continuation-post-training"
+    },
+    {
+      "action_protocol_validity_rate": 0.986159,
+      "completed_at": "2026-07-28T21:37:58Z",
+      "condition_id": "k4_no_update_seed307",
+      "error": null,
+      "estimated_cost_usd": 0.281729,
+      "execution_id": "runpod-proof-20260728T205904Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": true,
+        "branch_width": 4,
+        "final_evaluation_complete": true,
+        "final_successes": 0.291667,
+        "gain": 0.0,
+        "initial_successes": 0.291667,
+        "maximum_sampled_complexity_level": 1,
+        "optimizer_updates": 0,
+        "paired_improved": 0,
+        "paired_net_improved": 0,
+        "paired_p_value": 1.0,
+        "paired_regressed": 0,
+        "policy_mutation_enabled": false,
+        "policy_updates": 0,
+        "promotion_count": 0,
+        "reached_complexity_level": 0,
+        "retention_passed": true,
+        "sampled_completions": 156,
+        "seed": 307,
+        "stop_reason": "study_completion_budget"
+      },
+      "name": "K=4 no-update control \u00b7 seed 307",
+      "optimization_seed": 307,
+      "outcome": "SUCCEEDED",
+      "provider_handle": "runpod://pods/fhpsqjwsuxqi2m",
+      "started_at": "2026-07-28T20:59:04Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-restored-continuation-post-training"
+    },
+    {
+      "action_protocol_validity_rate": 0.995657,
+      "completed_at": "2026-07-28T22:35:15Z",
+      "condition_id": "k1_train_seed307",
+      "error": null,
+      "estimated_cost_usd": 0.378751,
+      "execution_id": "runpod-proof-20260728T214307Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": true,
+      "metrics": {
+        "adapter_persisted": true,
+        "branch_width": 1,
+        "final_evaluation_complete": true,
+        "final_successes": 0.541667,
+        "gain": 0.25,
+        "initial_successes": 0.291667,
+        "maximum_sampled_complexity_level": 2,
+        "optimizer_updates": 14,
+        "paired_improved": 13,
+        "paired_net_improved": 12,
+        "paired_p_value": 0.0018310546875,
+        "paired_regressed": 1,
+        "policy_mutation_enabled": true,
+        "policy_updates": 14,
+        "promotion_count": 0,
+        "reached_complexity_level": 0,
+        "retention_passed": true,
+        "sampled_completions": 156,
+        "seed": 307,
+        "stop_reason": "study_completion_budget"
+      },
+      "name": "K=1 training \u00b7 seed 307",
+      "optimization_seed": 307,
+      "outcome": "SUCCEEDED",
+      "provider_handle": "runpod://pods/tgo3et5sfj9gzv",
+      "started_at": "2026-07-28T21:43:07Z",
+      "teardown_confirmed": true,
+      "workload_id": "repository-repair-restored-continuation-post-training"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T22:37:13Z",
+      "condition_id": "revision30-external-20260728t223641z",
+      "error": "curl: (56) The requested URL returned error: 404",
+      "estimated_cost_usd": 0.005602,
+      "execution_id": "runpod-proof-20260728T223646Z",
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "has_result_artifact": false,
+      "name": "External adapter evaluation",
+      "optimization_seed": null,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/7tdbmwa6fzyd9r",
+      "started_at": "2026-07-28T22:36:46Z",
+      "teardown_confirmed": true,
+      "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T22:39:55Z",
+      "condition_id": "revision30-external-20260728t223927z",
+      "error": "curl: (56) The requested URL returned error: 404",
+      "estimated_cost_usd": 0.004722,
+      "execution_id": "runpod-proof-20260728T223932Z",
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "has_result_artifact": false,
+      "name": "External adapter evaluation",
+      "optimization_seed": null,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/eygrt2heuq6z3e",
+      "started_at": "2026-07-28T22:39:32Z",
+      "teardown_confirmed": true,
+      "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T22:42:25Z",
+      "condition_id": "revision30-external-20260728t224150z",
+      "error": "curl: (56) The requested URL returned error: 404",
+      "estimated_cost_usd": 0.003626,
+      "execution_id": "runpod-proof-20260728T224155Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": false,
+      "name": "External adapter evaluation",
+      "optimization_seed": null,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/svfnwp0wuig8sd",
+      "started_at": "2026-07-28T22:41:55Z",
+      "teardown_confirmed": true,
+      "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T22:47:56Z",
+      "condition_id": "revision30-external-20260728t224547z",
+      "error": "No RunPod pod or active hourly spend remained.",
+      "estimated_cost_usd": 0.0,
+      "execution_id": "runpod-proof-20260728T224553Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": false,
+      "name": "External adapter evaluation",
+      "optimization_seed": null,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/c6iygrb90r6z5u",
+      "started_at": "2026-07-28T22:45:53Z",
+      "teardown_confirmed": true,
+      "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T22:50:17Z",
+      "condition_id": "revision30-external-20260728t224749z",
+      "error": "No RunPod pod or active hourly spend remained.",
+      "estimated_cost_usd": 0.0,
+      "execution_id": "runpod-proof-20260728T224755Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": false,
+      "name": "External adapter evaluation",
+      "optimization_seed": null,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/w6wspl2finywbs",
+      "started_at": "2026-07-28T22:47:55Z",
+      "teardown_confirmed": true,
+      "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T23:00:40Z",
+      "condition_id": "revision30-external-20260728t225011z",
+      "error": "No RunPod pod or active hourly spend remained.",
+      "estimated_cost_usd": 0.022404,
+      "execution_id": "runpod-proof-20260728T225016Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": false,
+      "name": "External adapter evaluation",
+      "optimization_seed": null,
+      "outcome": "FAILED",
+      "provider_handle": "runpod://pods/2b52zamsn2vpmo",
+      "started_at": "2026-07-28T22:50:16Z",
+      "teardown_confirmed": true,
+      "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T23:00:41Z",
+      "condition_id": "revision30-external-20260728t230033z",
+      "error": "{\"error\":\"There are no longer any instances available with the requested specifications. Please refresh and try again.\"}\nUsage:\n  runpodctl pod create [flags]\n\nFlags:\n      --cloud-type string          cloud type (SECURE or COMMUNITY) (default \"SECURE\")\n      --compliance string          comma-separated compliance requirements (e.g., HIPAA,SOC_2_TYPE_2)\n      --compute-type string        compute type (GPU or CPU) (default \"GPU\")\n      --container-disk-in-gb int   container disk size in gb (default 20)\n      --country-code string        limit pod to a specific country (e.g., US, DE)\n      --data-center-ids string     comma-separated list of data center ids\n      --docker-args string         docker cmd arguments\n      --env string                 environment variables as json object\n      --global-networking          enable global networking (secure cloud only)\n      --gpu-count int              number of gpus (default 1)\n      --gpu-id string              gpu id (from 'runpodctl gpu list')\n  -h, --help                       help for create\n      --image string               docker image name (required if no template)\n      --min-cuda-version string    minimum cuda version (e.g., 12.6)\n      --name string                pod name\n      --network-volume-id string   network volume id to attach\n      --ports string               comma-separated list of ports (e.g., '8888/http,22/tcp')\n      --public-ip                  require public ip (community cloud only)\n      --registry-auth-id string    container registry auth id (from 'runpodctl registry list')\n      --ssh                        enable ssh on the pod (default true)\n      --stop-after string          auto-stop datetime (e.g., 2026-04-15T00:00:00Z)\n      --template-id string         template id (use 'runpodctl template search' to find templates)\n      --terminate-after string     auto-terminate datetime (e.g., 2026-04-15T00:00:00Z)\n      --volume-in-gb int           volume size in gb\n      --volume-mount-path string   volume mount path (default \"/workspace\")\n\nGlobal Flags:\n  -o, --output string   output format (json, yaml) (default \"json\")\n\n{\"error\":\"failed to create pod: There are no longer any instances available with the requested specifications. Please refresh and try again.\"}",
+      "estimated_cost_usd": null,
+      "execution_id": "runpod-proof-20260728T230039Z",
+      "gpu_id": "NVIDIA A40",
+      "has_result_artifact": false,
+      "name": "External adapter evaluation",
+      "optimization_seed": null,
+      "outcome": "FAILED",
+      "provider_handle": null,
+      "started_at": "2026-07-28T23:00:39Z",
+      "teardown_confirmed": true,
+      "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+    },
+    {
+      "action_protocol_validity_rate": null,
+      "completed_at": "2026-07-28T23:22:25Z",
+      "condition_id": "revision30-external-20260728t230051z",
+      "error": null,
+      "estimated_cost_usd": 0.236615,
+      "execution_id": "runpod-proof-20260728T230057Z",
+      "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+      "has_result_artifact": true,
+      "name": "External adapter evaluation",
+      "optimization_seed": null,
+      "outcome": "SUCCEEDED",
+      "provider_handle": "runpod://pods/7yz599ok1smkgo",
+      "started_at": "2026-07-28T23:00:57Z",
+      "teardown_confirmed": true,
+      "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+    }
+  ],
+  "external_evaluation": {
+    "adapters": [
+      {
+        "action_protocol_validity_rate": 0.978261,
+        "condition_id": "k4_train_seed113",
+        "domain_successes": {
+          "filesystem_cli": 0,
+          "micro_repository": 1,
+          "sqlite_data_repair": 1
+        },
+        "exact_rate": 0.222222,
+        "exact_successes": 2,
+        "examples": 9,
+        "optimization_seed": 113,
+        "paired_change_vs_base": {
+          "examples": 9,
+          "improved": 1,
+          "mcnemar_exact_p_value": 1.0,
+          "net_improved": 1,
+          "regressed": 0,
+          "unchanged": 8
+        },
+        "policy_id": "k4_train_seed113",
+        "role": "frozen_reference"
+      },
+      {
+        "action_protocol_validity_rate": 0.911765,
+        "condition_id": "k4_train_seed307",
+        "domain_successes": {
+          "filesystem_cli": 0,
+          "micro_repository": 0,
+          "sqlite_data_repair": 1
+        },
+        "exact_rate": 0.111111,
+        "exact_successes": 1,
+        "examples": 9,
+        "optimization_seed": 307,
+        "paired_change_vs_base": {
+          "examples": 9,
+          "improved": 0,
+          "mcnemar_exact_p_value": 1.0,
+          "net_improved": 0,
+          "regressed": 0,
+          "unchanged": 9
+        },
+        "policy_id": "k4_train_seed307",
+        "role": "fresh_replication"
+      },
+      {
+        "action_protocol_validity_rate": 1.0,
+        "condition_id": "k4_train_seed701",
+        "domain_successes": {
+          "filesystem_cli": 0,
+          "micro_repository": 1,
+          "sqlite_data_repair": 1
+        },
+        "exact_rate": 0.222222,
+        "exact_successes": 2,
+        "examples": 9,
+        "optimization_seed": 701,
+        "paired_change_vs_base": {
+          "examples": 9,
+          "improved": 1,
+          "mcnemar_exact_p_value": 1.0,
+          "net_improved": 1,
+          "regressed": 0,
+          "unchanged": 8
+        },
+        "policy_id": "k4_train_seed701",
+        "role": "fresh_replication"
+      },
+      {
+        "action_protocol_validity_rate": 0.911765,
+        "condition_id": "k4_no_update_seed307",
+        "domain_successes": {
+          "filesystem_cli": 0,
+          "micro_repository": 0,
+          "sqlite_data_repair": 1
+        },
+        "exact_rate": 0.111111,
+        "exact_successes": 1,
+        "examples": 9,
+        "optimization_seed": 307,
+        "paired_change_vs_base": {
+          "examples": 9,
+          "improved": 0,
+          "mcnemar_exact_p_value": 1.0,
+          "net_improved": 0,
+          "regressed": 0,
+          "unchanged": 9
+        },
+        "policy_id": "k4_no_update_seed307",
+        "role": "matched_frozen_policy_control"
+      },
+      {
+        "action_protocol_validity_rate": 0.967213,
+        "condition_id": "k1_train_seed307",
+        "domain_successes": {
+          "filesystem_cli": 0,
+          "micro_repository": 0,
+          "sqlite_data_repair": 0
+        },
+        "exact_rate": 0.0,
+        "exact_successes": 0,
+        "examples": 9,
+        "optimization_seed": 307,
+        "paired_change_vs_base": {
+          "examples": 9,
+          "improved": 0,
+          "mcnemar_exact_p_value": 1.0,
+          "net_improved": -1,
+          "regressed": 1,
+          "unchanged": 8
+        },
+        "policy_id": "k1_train_seed307",
+        "role": "branch_width_ablation"
+      }
+    ],
+    "base": {
+      "action_protocol_validity_rate": 0.911765,
+      "condition_id": null,
+      "domain_successes": {
+        "filesystem_cli": 0,
+        "micro_repository": 0,
+        "sqlite_data_repair": 1
+      },
+      "exact_rate": 0.111111,
+      "exact_successes": 1,
+      "examples": 9,
+      "optimization_seed": null,
+      "paired_change_vs_base": null,
+      "policy_id": "disabled_adapter_base",
+      "role": null
+    },
+    "domain_task_counts": {
+      "filesystem_cli": 3,
+      "micro_repository": 3,
+      "sqlite_data_repair": 3
+    },
+    "pack_id": "revision30-post-freeze-external-pack@1",
+    "result_digest": "sha256:45e8684c446839e73795c85d56c830a80c17e15d783e7dd06769717c0e0d612d",
+    "task_count": 9,
+    "task_transitions": [
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed113",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1"
+        ],
+        "task_id": "external-micro-label-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": true,
+        "base_solved": false,
+        "condition_id": "k4_train_seed113",
+        "domain": "micro_repository",
+        "failed_checks": [],
+        "task_id": "external-micro-retry-delay",
+        "transition": "improved"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed113",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1",
+          "semantic_case_3"
+        ],
+        "task_id": "external-micro-route-prefix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed113",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "disabled_rows_unchanged"
+        ],
+        "task_id": "external-sqlite-email-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed113",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "repair_execution"
+        ],
+        "task_id": "external-sqlite-stock-floor",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": true,
+        "base_solved": true,
+        "condition_id": "k4_train_seed113",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [],
+        "task_id": "external-sqlite-job-completion",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed113",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "renamed_tree"
+        ],
+        "task_id": "external-cli-rename-suffix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed113",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "numeric_order"
+        ],
+        "task_id": "external-cli-numeric-sort",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed113",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "literal_case_insensitive_match"
+        ],
+        "task_id": "external-cli-literal-grep",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1"
+        ],
+        "task_id": "external-micro-label-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1",
+          "semantic_case_2"
+        ],
+        "task_id": "external-micro-retry-delay",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1",
+          "semantic_case_3"
+        ],
+        "task_id": "external-micro-route-prefix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "disabled_rows_unchanged"
+        ],
+        "task_id": "external-sqlite-email-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "repair_execution"
+        ],
+        "task_id": "external-sqlite-stock-floor",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": true,
+        "base_solved": true,
+        "condition_id": "k4_train_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [],
+        "task_id": "external-sqlite-job-completion",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "renamed_tree"
+        ],
+        "task_id": "external-cli-rename-suffix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "numeric_order"
+        ],
+        "task_id": "external-cli-numeric-sort",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "literal_case_insensitive_match"
+        ],
+        "task_id": "external-cli-literal-grep",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed701",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1"
+        ],
+        "task_id": "external-micro-label-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": true,
+        "base_solved": false,
+        "condition_id": "k4_train_seed701",
+        "domain": "micro_repository",
+        "failed_checks": [],
+        "task_id": "external-micro-retry-delay",
+        "transition": "improved"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed701",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1",
+          "semantic_case_3"
+        ],
+        "task_id": "external-micro-route-prefix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed701",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "disabled_rows_unchanged"
+        ],
+        "task_id": "external-sqlite-email-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed701",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "repair_execution"
+        ],
+        "task_id": "external-sqlite-stock-floor",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": true,
+        "base_solved": true,
+        "condition_id": "k4_train_seed701",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [],
+        "task_id": "external-sqlite-job-completion",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed701",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "renamed_tree"
+        ],
+        "task_id": "external-cli-rename-suffix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed701",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "numeric_order"
+        ],
+        "task_id": "external-cli-numeric-sort",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_train_seed701",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "literal_case_insensitive_match"
+        ],
+        "task_id": "external-cli-literal-grep",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1"
+        ],
+        "task_id": "external-micro-label-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1",
+          "semantic_case_2"
+        ],
+        "task_id": "external-micro-retry-delay",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1",
+          "semantic_case_3"
+        ],
+        "task_id": "external-micro-route-prefix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "disabled_rows_unchanged"
+        ],
+        "task_id": "external-sqlite-email-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "repair_execution"
+        ],
+        "task_id": "external-sqlite-stock-floor",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": true,
+        "base_solved": true,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [],
+        "task_id": "external-sqlite-job-completion",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "renamed_tree"
+        ],
+        "task_id": "external-cli-rename-suffix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "numeric_order"
+        ],
+        "task_id": "external-cli-numeric-sort",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k4_no_update_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "literal_case_insensitive_match"
+        ],
+        "task_id": "external-cli-literal-grep",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k1_train_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1"
+        ],
+        "task_id": "external-micro-label-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k1_train_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1",
+          "semantic_case_2"
+        ],
+        "task_id": "external-micro-retry-delay",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k1_train_seed307",
+        "domain": "micro_repository",
+        "failed_checks": [
+          "semantic_case_0",
+          "semantic_case_1",
+          "semantic_case_3"
+        ],
+        "task_id": "external-micro-route-prefix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k1_train_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "disabled_rows_unchanged"
+        ],
+        "task_id": "external-sqlite-email-normalization",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k1_train_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "repair_execution"
+        ],
+        "task_id": "external-sqlite-stock-floor",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": true,
+        "condition_id": "k1_train_seed307",
+        "domain": "sqlite_data_repair",
+        "failed_checks": [
+          "finished_job_timestamp"
+        ],
+        "task_id": "external-sqlite-job-completion",
+        "transition": "regressed"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k1_train_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "renamed_tree"
+        ],
+        "task_id": "external-cli-rename-suffix",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k1_train_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "numeric_order"
+        ],
+        "task_id": "external-cli-numeric-sort",
+        "transition": "unchanged"
+      },
+      {
+        "adapter_solved": false,
+        "base_solved": false,
+        "condition_id": "k1_train_seed307",
+        "domain": "filesystem_cli",
+        "failed_checks": [
+          "literal_case_insensitive_match"
+        ],
+        "task_id": "external-cli-literal-grep",
+        "transition": "unchanged"
+      }
+    ]
+  },
+  "failure_count": {
+    "operator_attempts": 12,
+    "provider_executions": 11
+  },
+  "failures": {
+    "operator_attempts": [
+      {
+        "category": "study_condition",
+        "condition_id": "k4_train_seed211",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T17:35:50Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T17:33:06Z"
+      },
+      {
+        "category": "study_condition",
+        "condition_id": "k4_train_seed211",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T17:41:42Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T17:38:48Z"
+      },
+      {
+        "category": "eligibility_screen",
+        "condition_id": "protocol_screen_seed601",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T18:09:35Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T18:09:32Z"
+      },
+      {
+        "category": "study_condition",
+        "condition_id": "k4_train_seed307",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T18:30:12Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T18:26:37Z"
+      },
+      {
+        "category": "study_condition",
+        "condition_id": "k1_train_seed307",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T21:39:54Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T21:39:49Z"
+      },
+      {
+        "category": "external_evaluation",
+        "condition_id": "revision30-external-20260728t223641z",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T22:37:14Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T22:36:45Z"
+      },
+      {
+        "category": "external_evaluation",
+        "condition_id": "revision30-external-20260728t223927z",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T22:39:55Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T22:39:31Z"
+      },
+      {
+        "category": "external_evaluation",
+        "condition_id": "revision30-external-20260728t224150z",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T22:42:25Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T22:41:54Z"
+      },
+      {
+        "category": "external_evaluation",
+        "condition_id": "revision30-external-20260728t224547z",
+        "exit_code": -15,
+        "finished_at": "2026-07-28T22:47:38Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T22:45:52Z"
+      },
+      {
+        "category": "external_evaluation",
+        "condition_id": "revision30-external-20260728t224749z",
+        "exit_code": -15,
+        "finished_at": "2026-07-28T22:49:28Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T22:47:54Z"
+      },
+      {
+        "category": "external_evaluation",
+        "condition_id": "revision30-external-20260728t225011z",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T22:58:14Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T22:50:15Z"
+      },
+      {
+        "category": "external_evaluation",
+        "condition_id": "revision30-external-20260728t230033z",
+        "exit_code": 1,
+        "finished_at": "2026-07-28T23:00:41Z",
+        "outcome": "failed",
+        "preflight_only": false,
+        "result_artifacts": [],
+        "started_at": "2026-07-28T23:00:38Z"
+      }
+    ],
+    "provider_executions": [
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T17:35:50Z",
+        "condition_id": "k4_train_seed211",
+        "error": "The remote workload failed with exit code 1.",
+        "estimated_cost_usd": 0.0159,
+        "execution_id": "runpod-proof-20260728T173307Z",
+        "gpu_id": "NVIDIA A40",
+        "has_result_artifact": false,
+        "name": "K=4 training \u00b7 seed 211",
+        "optimization_seed": 211,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/t8ag81dy3i48jv",
+        "started_at": "2026-07-28T17:33:07Z",
+        "teardown_confirmed": true,
+        "workload_id": "repository-repair-restored-continuation-post-training"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T17:41:42Z",
+        "condition_id": "k4_train_seed211",
+        "error": "The remote workload failed with exit code 1.",
+        "estimated_cost_usd": 0.018659,
+        "execution_id": "runpod-proof-20260728T173849Z",
+        "gpu_id": "NVIDIA A40",
+        "has_result_artifact": false,
+        "name": "K=4 training \u00b7 seed 211",
+        "optimization_seed": 211,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/ku4ca6a043es2u",
+        "started_at": "2026-07-28T17:38:49Z",
+        "teardown_confirmed": true,
+        "workload_id": "repository-repair-restored-continuation-post-training"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T18:09:35Z",
+        "condition_id": "protocol_screen_seed601",
+        "error": "RunPod pod creation failed before a provider handle was returned.",
+        "estimated_cost_usd": null,
+        "execution_id": "runpod-proof-20260728T180933Z",
+        "gpu_id": "NVIDIA A40",
+        "has_result_artifact": false,
+        "name": "Protocol eligibility \u00b7 seed 601",
+        "optimization_seed": null,
+        "outcome": "FAILED",
+        "provider_handle": null,
+        "started_at": "2026-07-28T18:09:33Z",
+        "teardown_confirmed": true,
+        "workload_id": "repository-repair-protocol-eligibility"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T18:30:12Z",
+        "condition_id": "k4_train_seed307",
+        "error": "The remote workload failed with exit code 1.",
+        "estimated_cost_usd": 0.039191,
+        "execution_id": "runpod-proof-20260728T182638Z",
+        "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+        "has_result_artifact": false,
+        "name": "K=4 training \u00b7 seed 307",
+        "optimization_seed": 307,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/jpm9vuh0zsrmdn",
+        "started_at": "2026-07-28T18:26:38Z",
+        "teardown_confirmed": true,
+        "workload_id": "repository-repair-restored-continuation-post-training"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T22:37:13Z",
+        "condition_id": "revision30-external-20260728t223641z",
+        "error": "curl: (56) The requested URL returned error: 404",
+        "estimated_cost_usd": 0.005602,
+        "execution_id": "runpod-proof-20260728T223646Z",
+        "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+        "has_result_artifact": false,
+        "name": "External adapter evaluation",
+        "optimization_seed": null,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/7tdbmwa6fzyd9r",
+        "started_at": "2026-07-28T22:36:46Z",
+        "teardown_confirmed": true,
+        "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T22:39:55Z",
+        "condition_id": "revision30-external-20260728t223927z",
+        "error": "curl: (56) The requested URL returned error: 404",
+        "estimated_cost_usd": 0.004722,
+        "execution_id": "runpod-proof-20260728T223932Z",
+        "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+        "has_result_artifact": false,
+        "name": "External adapter evaluation",
+        "optimization_seed": null,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/eygrt2heuq6z3e",
+        "started_at": "2026-07-28T22:39:32Z",
+        "teardown_confirmed": true,
+        "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T22:42:25Z",
+        "condition_id": "revision30-external-20260728t224150z",
+        "error": "curl: (56) The requested URL returned error: 404",
+        "estimated_cost_usd": 0.003626,
+        "execution_id": "runpod-proof-20260728T224155Z",
+        "gpu_id": "NVIDIA A40",
+        "has_result_artifact": false,
+        "name": "External adapter evaluation",
+        "optimization_seed": null,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/svfnwp0wuig8sd",
+        "started_at": "2026-07-28T22:41:55Z",
+        "teardown_confirmed": true,
+        "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T22:47:56Z",
+        "condition_id": "revision30-external-20260728t224547z",
+        "error": "No RunPod pod or active hourly spend remained.",
+        "estimated_cost_usd": 0.0,
+        "execution_id": "runpod-proof-20260728T224553Z",
+        "gpu_id": "NVIDIA A40",
+        "has_result_artifact": false,
+        "name": "External adapter evaluation",
+        "optimization_seed": null,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/c6iygrb90r6z5u",
+        "started_at": "2026-07-28T22:45:53Z",
+        "teardown_confirmed": true,
+        "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T22:50:17Z",
+        "condition_id": "revision30-external-20260728t224749z",
+        "error": "No RunPod pod or active hourly spend remained.",
+        "estimated_cost_usd": 0.0,
+        "execution_id": "runpod-proof-20260728T224755Z",
+        "gpu_id": "NVIDIA A40",
+        "has_result_artifact": false,
+        "name": "External adapter evaluation",
+        "optimization_seed": null,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/w6wspl2finywbs",
+        "started_at": "2026-07-28T22:47:55Z",
+        "teardown_confirmed": true,
+        "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T23:00:40Z",
+        "condition_id": "revision30-external-20260728t225011z",
+        "error": "No RunPod pod or active hourly spend remained.",
+        "estimated_cost_usd": 0.022404,
+        "execution_id": "runpod-proof-20260728T225016Z",
+        "gpu_id": "NVIDIA A40",
+        "has_result_artifact": false,
+        "name": "External adapter evaluation",
+        "optimization_seed": null,
+        "outcome": "FAILED",
+        "provider_handle": "runpod://pods/2b52zamsn2vpmo",
+        "started_at": "2026-07-28T22:50:16Z",
+        "teardown_confirmed": true,
+        "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+      },
+      {
+        "action_protocol_validity_rate": null,
+        "completed_at": "2026-07-28T23:00:41Z",
+        "condition_id": "revision30-external-20260728t230033z",
+        "error": "{\"error\":\"There are no longer any instances available with the requested specifications. Please refresh and try again.\"}\nUsage:\n  runpodctl pod create [flags]\n\nFlags:\n      --cloud-type string          cloud type (SECURE or COMMUNITY) (default \"SECURE\")\n      --compliance string          comma-separated compliance requirements (e.g., HIPAA,SOC_2_TYPE_2)\n      --compute-type string        compute type (GPU or CPU) (default \"GPU\")\n      --container-disk-in-gb int   container disk size in gb (default 20)\n      --country-code string        limit pod to a specific country (e.g., US, DE)\n      --data-center-ids string     comma-separated list of data center ids\n      --docker-args string         docker cmd arguments\n      --env string                 environment variables as json object\n      --global-networking          enable global networking (secure cloud only)\n      --gpu-count int              number of gpus (default 1)\n      --gpu-id string              gpu id (from 'runpodctl gpu list')\n  -h, --help                       help for create\n      --image string               docker image name (required if no template)\n      --min-cuda-version string    minimum cuda version (e.g., 12.6)\n      --name string                pod name\n      --network-volume-id string   network volume id to attach\n      --ports string               comma-separated list of ports (e.g., '8888/http,22/tcp')\n      --public-ip                  require public ip (community cloud only)\n      --registry-auth-id string    container registry auth id (from 'runpodctl registry list')\n      --ssh                        enable ssh on the pod (default true)\n      --stop-after string          auto-stop datetime (e.g., 2026-04-15T00:00:00Z)\n      --template-id string         template id (use 'runpodctl template search' to find templates)\n      --terminate-after string     auto-terminate datetime (e.g., 2026-04-15T00:00:00Z)\n      --volume-in-gb int           volume size in gb\n      --volume-mount-path string   volume mount path (default \"/workspace\")\n\nGlobal Flags:\n  -o, --output string   output format (json, yaml) (default \"json\")\n\n{\"error\":\"failed to create pod: There are no longer any instances available with the requested specifications. Please refresh and try again.\"}",
+        "estimated_cost_usd": null,
+        "execution_id": "runpod-proof-20260728T230039Z",
+        "gpu_id": "NVIDIA A40",
+        "has_result_artifact": false,
+        "name": "External adapter evaluation",
+        "optimization_seed": null,
+        "outcome": "FAILED",
+        "provider_handle": null,
+        "started_at": "2026-07-28T23:00:39Z",
+        "teardown_confirmed": true,
+        "workload_id": "revision30-post-freeze-external-adapter-evaluation"
+      }
+    ]
+  },
+  "freeze": {
+    "amendments": [
+      "repository-repair-confirmatory-study@1/amendment-1",
+      "repository-repair-confirmatory-study@1/amendment-2",
+      "repository-repair-confirmatory-study@1/amendment-3",
+      "repository-repair-confirmatory-study@1/amendment-4"
+    ],
+    "freeze_commit": "7195efc",
+    "frozen_objective_id": "verified-fix-coverage-retention-policy-gradient@15",
+    "frozen_source_commit": "e6a139375a4e6ec92df362873237b398aa0041c0",
+    "frozen_workload_revision": "runpod-repository-repair-causal-credit@30",
+    "model": {
+      "id": "Qwen/Qwen2.5-Coder-3B-Instruct",
+      "revision": "488639f1ff808d1d3d0ba301aef8c11461451ec5"
+    }
+  },
+  "generated_at": "2026-07-28T23:27:16+00:00",
+  "operator_attempts": [
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed211",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T17:30:18Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T17:30:16Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed211",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T17:35:50Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T17:33:06Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed211",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T17:41:42Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T17:38:48Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T17:55:12Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T17:55:10Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T17:59:48Z",
+      "outcome": "eligible",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T175652Z.result.json",
+          "sha256": "d5587ca48a5445f6b0ac0d9fe4be382ce36a62ff8561094a5e18d1bbfd177968",
+          "size_bytes": 1431
+        }
+      ],
+      "started_at": "2026-07-28T17:56:50Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed401",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:00:31Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:00:29Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed401",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:04:14Z",
+      "outcome": "ineligible",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T180041Z.result.json",
+          "sha256": "5ceb38e7c20048443cfac787a0878f7ba99d4e35fb77b3c342399e0064139989",
+          "size_bytes": 1437
+        }
+      ],
+      "started_at": "2026-07-28T18:00:39Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed503",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:05:35Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:05:34Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed503",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:09:05Z",
+      "outcome": "ineligible",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T180557Z.result.json",
+          "sha256": "f3f862a2243baf69e8f9ca0ef5f6adf7125935546f79ef544c875059d2b8ebb5",
+          "size_bytes": 1437
+        }
+      ],
+      "started_at": "2026-07-28T18:05:56Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed601",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:09:21Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:09:20Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed601",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T18:09:35Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:09:32Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed601",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:10:15Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:10:13Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed601",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:13:45Z",
+      "outcome": "ineligible",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T181027Z.result.json",
+          "sha256": "83d06d83e2bbe7dedd78231089f151fe8815bffab25f1c37f2c456147de7b6d2",
+          "size_bytes": 1437
+        }
+      ],
+      "started_at": "2026-07-28T18:10:26Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed701",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:16:12Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:16:10Z"
+    },
+    {
+      "category": "eligibility_screen",
+      "condition_id": "protocol_screen_seed701",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:22:14Z",
+      "outcome": "eligible",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T181623Z.result.json",
+          "sha256": "54e5fed6799c9db29ebc6cfee227eb4c26475b597ec9f27cb53175b69ae90f37",
+          "size_bytes": 1431
+        }
+      ],
+      "started_at": "2026-07-28T18:16:22Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:26:07Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:26:06Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed307",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T18:30:12Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:26:37Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed701",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T18:40:41Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T18:40:40Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed701",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T20:12:58Z",
+      "outcome": "passed",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T184042Z.result.json",
+          "sha256": "51480984c435ebefacf544035433fe5eb663a89d39b7e7a7e4c628c171818423",
+          "size_bytes": 967656
+        }
+      ],
+      "started_at": "2026-07-28T18:40:41Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T20:13:34Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T20:13:33Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_train_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T20:57:57Z",
+      "outcome": "passed",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T201339Z.result.json",
+          "sha256": "c76723ce617d10bac7c5dae40c4713ac794e29fc2c3b50312bdc91b044ef7474",
+          "size_bytes": 507502
+        }
+      ],
+      "started_at": "2026-07-28T20:13:37Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_no_update_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T20:58:59Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T20:58:58Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k4_no_update_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T21:37:58Z",
+      "outcome": "passed",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T205904Z.result.json",
+          "sha256": "19d64fd6bb59e2dcadea08a7cbc9dc3b34baaeb3ca4688024ed1c26a3cae63e9",
+          "size_bytes": 503198
+        }
+      ],
+      "started_at": "2026-07-28T20:59:03Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k1_train_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T21:39:47Z",
+      "outcome": "passed",
+      "preflight_only": true,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T21:39:46Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k1_train_seed307",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T21:39:54Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T21:39:49Z"
+    },
+    {
+      "category": "study_condition",
+      "condition_id": "k1_train_seed307",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T22:35:15Z",
+      "outcome": "passed",
+      "preflight_only": false,
+      "result_artifacts": [
+        {
+          "path": "/Users/mohsen/code/equinox-next/var/research-proofs/runpod-proof-20260728T214307Z.result.json",
+          "sha256": "efd781dbc68353e65346c46fa63946e3a423dd1dd6becc79f71fa1ef1bbc23c4",
+          "size_bytes": 345039
+        }
+      ],
+      "started_at": "2026-07-28T21:43:05Z"
+    },
+    {
+      "category": "external_evaluation",
+      "condition_id": "revision30-external-20260728t223641z",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T22:37:14Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T22:36:45Z"
+    },
+    {
+      "category": "external_evaluation",
+      "condition_id": "revision30-external-20260728t223927z",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T22:39:55Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T22:39:31Z"
+    },
+    {
+      "category": "external_evaluation",
+      "condition_id": "revision30-external-20260728t224150z",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T22:42:25Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T22:41:54Z"
+    },
+    {
+      "category": "external_evaluation",
+      "condition_id": "revision30-external-20260728t224547z",
+      "exit_code": -15,
+      "finished_at": "2026-07-28T22:47:38Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T22:45:52Z"
+    },
+    {
+      "category": "external_evaluation",
+      "condition_id": "revision30-external-20260728t224749z",
+      "exit_code": -15,
+      "finished_at": "2026-07-28T22:49:28Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T22:47:54Z"
+    },
+    {
+      "category": "external_evaluation",
+      "condition_id": "revision30-external-20260728t225011z",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T22:58:14Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T22:50:15Z"
+    },
+    {
+      "category": "external_evaluation",
+      "condition_id": "revision30-external-20260728t230033z",
+      "exit_code": 1,
+      "finished_at": "2026-07-28T23:00:41Z",
+      "outcome": "failed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T23:00:38Z"
+    },
+    {
+      "category": "external_evaluation",
+      "condition_id": "revision30-external-20260728t230051z",
+      "exit_code": 0,
+      "finished_at": "2026-07-28T23:22:25Z",
+      "outcome": "passed",
+      "preflight_only": false,
+      "result_artifacts": [],
+      "started_at": "2026-07-28T23:00:55Z"
+    }
+  ],
+  "overall_status": "FAIL",
+  "report_digest": "sha256:063ad17d91ec6d11f4c31ce6790528829fd66619a6f783e579b8f3ad4714ecac",
+  "report_id": "repository-repair-confirmatory-study@1/failure-complete-report@1",
+  "schema_version": 1,
+  "study_id": "repository-repair-confirmatory-study@1"
+}
