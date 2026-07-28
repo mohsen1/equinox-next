@@ -112,6 +112,7 @@ REFERENCE_KL_COEFFICIENT = 0.2
 REFERENCE_KL_ESTIMATOR = "k3_log_ratio_penalty"
 REFERENCE_ANCHOR_SCOPE = "all_accepted_actions_including_greedy_prefix"
 POLICY_CREDIT_SCOPE = "fault_fixing_edits_from_verified_successful_siblings"
+SHARED_PREFIX_CHECKPOINT_STRATEGY = "all_fault_sources_observed"
 ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 MAXIMUM_ABSOLUTE_ADVANTAGE = 1.0
 MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE = 2
@@ -1734,7 +1735,7 @@ def serialize_branch_group(
         ),
         "shared_prefix": {
             "policy_generated": True,
-            "checkpoint_strategy": "all_fault_sources_observed",
+            "checkpoint_strategy": SHARED_PREFIX_CHECKPOINT_STRATEGY,
             "required_diagnostic_actions": branch_checkpoint_diagnostic_actions(collection.task),
             "required_fault_source_reads": len(collection.task.faults),
             "observed_fault_source_paths": branch_checkpoint_fault_source_reads(
@@ -1877,7 +1878,7 @@ def self_test() -> dict[str, Any]:
         "workload_revision": WORKLOAD_REVISION,
         "branch_width": BRANCH_WIDTH,
         "shared_prefix_actions": expected_prefix_actions,
-        "shared_prefix_strategy": "all_fault_sources_observed",
+        "shared_prefix_strategy": SHARED_PREFIX_CHECKPOINT_STRATEGY,
         "sibling_steps": [len(sibling.steps) for sibling in collection.siblings],
         "environment_revision": ENVIRONMENT_REVISION,
         "structural_mirror_disclosures": STRUCTURAL_MIRROR_DISCLOSURES,
@@ -1968,7 +1969,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
         "maximum_consecutive_malformed_windows": (MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS),
         "shared_prefix_sampling": "greedy",
-        "shared_prefix_checkpoint": "all_fault_sources_observed",
+        "shared_prefix_checkpoint": SHARED_PREFIX_CHECKPOINT_STRATEGY,
         "minimum_shared_prefix_actions": MINIMUM_PREFIX_ACCEPTED_ACTIONS,
         "maximum_shared_prefix_actions": PREFIX_MAX_ATTEMPTS,
         "sibling_sampling_temperature": SIBLING_SAMPLING_TEMPERATURE,

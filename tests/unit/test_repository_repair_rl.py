@@ -20,6 +20,7 @@ from research.runpod.repository_repair_rl import (
     DEFAULT_MODEL_ID,
     DEFAULT_RUNTIME_CONFIGURATION,
     OBJECTIVE_ID,
+    SHARED_PREFIX_CHECKPOINT_STRATEGY,
     SUPPORTED_MODELS,
     WORKLOAD_REVISION,
     BranchCollection,
@@ -170,6 +171,24 @@ def test_branch_checkpoint_requires_every_fault_source_to_be_observed() -> None:
         fault.path for fault in task.faults
     )
     assert branch_checkpoint_reached(task, prefix) is True
+
+
+def test_runpod_launcher_derives_revision_contract_from_the_bundled_workload() -> None:
+    script = (Path(__file__).resolve().parents[2] / "scripts" / "runpod-rl-proof").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'read_python_string_constant "$workload_path" WORKLOAD_REVISION' in script
+    assert 'read_python_string_constant "$support_path" ACTION_PROTOCOL_REVISION' in script
+    assert (
+        'read_python_string_constant "$workload_path" SHARED_PREFIX_CHECKPOINT_STRATEGY' in script
+    )
+    assert ".workload_revision == $expected_workload_revision" in script
+    assert (
+        ".training_configuration.shared_prefix_checkpoint "
+        "== $expected_shared_prefix_checkpoint" in script
+    )
+    assert SHARED_PREFIX_CHECKPOINT_STRATEGY == "all_fault_sources_observed"
 
 
 def test_frontier_probe_follows_static_k_branch_contrast() -> None:
@@ -1276,7 +1295,7 @@ def test_serialized_branch_has_one_prefix_checkpoint_and_four_step_lanes() -> No
 
     assert serialized["checkpoint"]["fidelity"] == "logical_restore"
     assert serialized["checkpoint"]["static_branch_width"] == 4
-    assert serialized["shared_prefix"]["checkpoint_strategy"] == "all_fault_sources_observed"
+    assert serialized["shared_prefix"]["checkpoint_strategy"] == SHARED_PREFIX_CHECKPOINT_STRATEGY
     assert serialized["shared_prefix"]["required_diagnostic_actions"] == 2
     assert serialized["shared_prefix"]["required_fault_source_reads"] == 1
     assert serialized["shared_prefix"]["observed_fault_source_paths"] == [fault.path]

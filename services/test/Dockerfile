@@ -11,6 +11,7 @@ COPY packages packages
 COPY schemas schemas
 COPY services services
 COPY research research
+COPY scripts scripts
 COPY tests tests
 COPY pyproject.toml .
 

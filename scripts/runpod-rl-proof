@@ -123,6 +123,42 @@ test -f "$result_server_path"
 if [[ -n "$support_file" ]]; then
   test -f "$support_path"
 fi
+read_python_string_constant() {
+  python3 - "$1" "$2" <<'PY'
+import ast
+import pathlib
+import sys
+
+path, name = sys.argv[1:]
+tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"), filename=path)
+matches = [
+    node.value
+    for node in tree.body
+    if isinstance(node, ast.Assign)
+    and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+]
+if len(matches) != 1:
+    raise SystemExit(f"{path} must assign {name} exactly once")
+value = ast.literal_eval(matches[0])
+if not isinstance(value, str) or not value:
+    raise SystemExit(f"{path} must assign {name} to a non-empty string")
+print(value)
+PY
+}
+expected_workload_revision=""
+expected_action_protocol_revision=""
+expected_shared_prefix_checkpoint=""
+if [[ "$experiment" == "repository-repair" ]]; then
+  expected_workload_revision="$(
+    read_python_string_constant "$workload_path" WORKLOAD_REVISION
+  )"
+  expected_action_protocol_revision="$(
+    read_python_string_constant "$support_path" ACTION_PROTOCOL_REVISION
+  )"
+  expected_shared_prefix_checkpoint="$(
+    read_python_string_constant "$workload_path" SHARED_PREFIX_CHECKPOINT_STRATEGY
+  )"
+fi
 template_response="$(runpodctl template get "$template_id")"
 image="$(jq -r '.imageName // empty' <<<"$template_response")"
 if [[ -z "$image" ]]; then
@@ -751,7 +787,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-causal-credit@27"
+    and .workload_revision == $expected_workload_revision
     and .algorithm == "verified-fix-group-conditioned-policy-gradient"
     and .objective_id == "verified-fix-priority-target-retention-policy-gradient@14"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
@@ -777,6 +813,7 @@ else
     and .prefix_gradient == false
     and .complexity_strategy == "adaptive"
     and .environment_revision == "repository-repair-simulator@4"
+    and .action_protocol_revision == $expected_action_protocol_revision
     and .replay_enabled == true
     and .snapshot_fidelity == "logical_restore"
     and .model_id == $expected_model
@@ -825,6 +862,9 @@ else
     and .training_configuration.curriculum_feedback_source == "disabled_adapter_fixed_and_disjoint_rotating_validation"
     and .training_configuration.contrast_streak_reset == "new_validation_supported_training_family"
     and .training_configuration.new_target_scheduling == "priority_active_frontier_before_rotation"
+    and .training_configuration.shared_prefix_checkpoint == $expected_shared_prefix_checkpoint
+    and .training_configuration.minimum_shared_prefix_actions == 2
+    and .training_configuration.maximum_shared_prefix_actions == 8
     and .training_configuration.checkpoint_retention_guard == "paired_active_adjacent_and_rotating_zero_regressions"
     and .training_configuration.learning_signal == "verified_fault_fixing_edits_from_mixed_correctness_sibling_group"
     and .training_configuration.sibling_sampling_temperature == 0.6
@@ -856,6 +896,16 @@ else
     and ([.branch_snapshots[].siblings[].steps[]
       | select(.policy_signal | not)
       | .effective_batch_weight == 0
+    ] | all)
+    and ([.branch_snapshots[]
+      | select(.checkpoint != null)
+      | .checkpoint.action_protocol_revision == $expected_action_protocol_revision
+        and .shared_prefix.checkpoint_strategy == $expected_shared_prefix_checkpoint
+        and (.shared_prefix.required_fault_source_reads | type) == "number"
+        and (.shared_prefix.observed_fault_source_paths | type) == "array"
+        and (
+          .shared_prefix.observed_fault_source_paths | length
+        ) == .shared_prefix.required_fault_source_reads
     ] | all)
     and (.best_validation.fixed_guard_levels | type) == "array"
     and (.final_evaluation_complete | type) == "boolean"
@@ -953,6 +1003,9 @@ else
 fi
 if ! jq -e \
   --arg expected_model "$model_id" \
+  --arg expected_workload_revision "$expected_workload_revision" \
+  --arg expected_action_protocol_revision "$expected_action_protocol_revision" \
+  --arg expected_shared_prefix_checkpoint "$expected_shared_prefix_checkpoint" \
   --argjson expected_validation_examples "$validation_examples" \
   --argjson expected_test_examples "$test_examples" \
   --argjson expected_mastery_windows "$mastery_windows" \
