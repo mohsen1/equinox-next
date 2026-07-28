@@ -491,6 +491,7 @@ PY
     EQUINOX_STUDY_TEST_SEED_BASE="$study_test_seed_base" \
     EQUINOX_STUDY_COMPLETION_BUDGET="$study_completion_budget" \
     EQUINOX_WORKLOAD_ATTEMPT="$workload_attempt" \
+    CUBLAS_WORKSPACE_CONFIG=":4096:8" \
     PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
     python3 "$work_directory/$workload_file" \
     >"$result_pending_path" 2>"$attempt_error_path"

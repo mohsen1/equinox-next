@@ -46,6 +46,11 @@ if [ "$EQUINOX_FAKE_FAILURE_MODE" = "assert-exit-cleared" ]; then
   printf '%s\\n' '{"experiment_completed":true}'
   exit 0
 fi
+if [ "$EQUINOX_FAKE_FAILURE_MODE" = "assert-cublas-workspace" ] &&
+  [ "$CUBLAS_WORKSPACE_CONFIG" != ":4096:8" ]; then
+  printf '%s\n' 'missing deterministic cuBLAS workspace' >&2
+  exit 89
+fi
 if [ "$EQUINOX_FAKE_FAILURE_MODE" = "invalid-once" ] && [ "$attempt" -eq 1 ]; then
   mkdir -p "$EQUINOX_ADAPTER_PATH/checkpoints"
   printf '%s\\n' '{"checkpoint":"update-1"}' \
@@ -181,6 +186,14 @@ def test_remote_runner_retries_once_from_a_persisted_checkpoint(tmp_path: Path) 
     assert "=== attempt 1 · exit 7 ===" in error_log
     assert "transient failure" in error_log
     assert "=== attempt 2 · exit 0 ===" in error_log
+
+
+def test_remote_runner_supplies_deterministic_cublas_workspace(tmp_path: Path) -> None:
+    run_remote_runner(tmp_path, "assert-cublas-workspace")
+
+    assert json.loads((tmp_path / "result.json").read_text(encoding="utf-8")) == {
+        "experiment_completed": True
+    }
 
 
 def test_remote_runner_does_not_retry_without_a_checkpoint(tmp_path: Path) -> None:
