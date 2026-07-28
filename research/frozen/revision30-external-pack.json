@@ -1,0 +1,118 @@
+{
+  "authored_at": "2026-07-28",
+  "candidate_execution": {
+    "cli": "fixed allowlisted argv with two-second timeout",
+    "credentials": "not_available_to_action_protocol",
+    "network": "not_available_to_action_protocol",
+    "python": "restricted_ast_interpreter",
+    "sqlite": "authorizer_denies_attach_detach_and_pragma"
+  },
+  "domains": {
+    "filesystem_cli": 3,
+    "micro_repository": 3,
+    "sqlite_data_repair": 3
+  },
+  "pack_id": "revision30-post-freeze-external-pack@1",
+  "schema_version": 1,
+  "source_sha256": "551d769cfdf67e6baa54b4644bcbff3181db537f78fc133eaddbade3caa27cc6",
+  "task_count": 9,
+  "tasks": [
+    {
+      "description": "Normalize user labels before they become cache keys.",
+      "domain": "micro_repository",
+      "fixture_digest": "e623b7771df8ee9983ded7d8f79ab8ffdcba0899e7859fa3ff8a096df575f4ec",
+      "known_failing_tests": [
+        "test_collapses_case_variants",
+        "test_trims_outer_space"
+      ],
+      "task_id": "external-micro-label-normalization",
+      "verifier_revision": "restricted-python-ast@1"
+    },
+    {
+      "description": "Return the delay for the current retry index.",
+      "domain": "micro_repository",
+      "fixture_digest": "9114fe14c3079d5c3ff946b5c7d46de0ca5f33ce2fd7f7f00f13b2c3d779c0e5",
+      "known_failing_tests": [
+        "test_first_retry_uses_base",
+        "test_growth_is_exponential"
+      ],
+      "task_id": "external-micro-retry-delay",
+      "verifier_revision": "restricted-python-ast@1"
+    },
+    {
+      "description": "Canonicalize a route fragment with exactly one leading slash.",
+      "domain": "micro_repository",
+      "fixture_digest": "3fd6d7c2ece4cd818a8ee717dffbeba72e5f8d79e48860fa99eca87f1a0c31b2",
+      "known_failing_tests": [
+        "test_adds_leading_slash",
+        "test_preserves_root"
+      ],
+      "task_id": "external-micro-route-prefix",
+      "verifier_revision": "restricted-python-ast@1"
+    },
+    {
+      "description": "Normalize email casing for active accounts only.",
+      "domain": "sqlite_data_repair",
+      "fixture_digest": "d243cbc184e3aeb220de63f73b5507228d8598c714bc19972dda83be0d6e6143",
+      "known_failing_tests": [
+        "active_email_invariant",
+        "disabled_rows_unchanged"
+      ],
+      "task_id": "external-sqlite-email-normalization",
+      "verifier_revision": "sqlite-authorized-hidden-queries@1"
+    },
+    {
+      "description": "Clamp negative stock for discontinued products without changing live stock.",
+      "domain": "sqlite_data_repair",
+      "fixture_digest": "25d40368f942c70843e5eff60ac44ed9ec8be6935469c2ffad0f2c7bb673adbe",
+      "known_failing_tests": [
+        "discontinued_stock_floor",
+        "live_stock_unchanged"
+      ],
+      "task_id": "external-sqlite-stock-floor",
+      "verifier_revision": "sqlite-authorized-hidden-queries@1"
+    },
+    {
+      "description": "Backfill completion timestamps from the final job event.",
+      "domain": "sqlite_data_repair",
+      "fixture_digest": "f068e24800110e4d7d2e40a3d7f70b4dedeeb0ef9e34d5bf7da06be0d9f36ae6",
+      "known_failing_tests": [
+        "finished_job_timestamp",
+        "running_job_remains_null"
+      ],
+      "task_id": "external-sqlite-job-completion",
+      "verifier_revision": "sqlite-authorized-hidden-queries@1"
+    },
+    {
+      "description": "Fix a bounded rename plan so Markdown sources receive the .md suffix.",
+      "domain": "filesystem_cli",
+      "fixture_digest": "1d4f9f455823cadf4c5a5178af0c6e93580a2037a917e71910263a6df8b8158a",
+      "known_failing_tests": [
+        "renamed_tree"
+      ],
+      "task_id": "external-cli-rename-suffix",
+      "verifier_revision": "allowlisted-cli-subprocess@1"
+    },
+    {
+      "description": "Fix a sort plan so the second CSV field is ordered numerically.",
+      "domain": "filesystem_cli",
+      "fixture_digest": "5980471058cb0ec13af5af51281f927bb58274e62e8a05d21964ee5ce26593c1",
+      "known_failing_tests": [
+        "numeric_order"
+      ],
+      "task_id": "external-cli-numeric-sort",
+      "verifier_revision": "allowlisted-cli-subprocess@1"
+    },
+    {
+      "description": "Fix a grep plan for a case-insensitive literal incident code.",
+      "domain": "filesystem_cli",
+      "fixture_digest": "6ae1fe64d97d48d2d3922fbfae2b04b028e92dc73e60e4059c68549a053db3f2",
+      "known_failing_tests": [
+        "literal_case_insensitive_match"
+      ],
+      "task_id": "external-cli-literal-grep",
+      "verifier_revision": "allowlisted-cli-subprocess@1"
+    }
+  ],
+  "trainer_freeze_commit": "7195efc"
+}

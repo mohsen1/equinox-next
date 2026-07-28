@@ -6,6 +6,7 @@ cd "$repository_root"
 
 ./scripts/preflight
 ./scripts/verify-revision30-freeze
+./scripts/verify-revision30-external-pack
 docker compose config --quiet
 docker compose build
 docker compose run --rm --build test ruff format --check packages services tests

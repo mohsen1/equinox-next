@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repository_root"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+from research.external.revision30_task_pack import pack_manifest
+
+frozen_path = Path("research/frozen/revision30-external-pack.json")
+frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
+observed = pack_manifest()
+if observed != frozen:
+    raise SystemExit("revision-30 external task pack changed after it was frozen")
+print("revision 30 external task pack verified")
+PY
