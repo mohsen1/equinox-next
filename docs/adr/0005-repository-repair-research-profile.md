@@ -494,6 +494,24 @@ only after a K=4 group for that family is collected at the current level. This i
 sampling-order correction; it does not change target provenance, reward, optimization,
 retention, or the held-out gate.
 
+The seed `113` revision-27 run confirmed that priority scheduling is effective but not
+sufficient. Validation added `fallback` at update 20, and update 21 immediately sampled
+that family on the active level-1 frontier. The group was already saturated at `4/4`, so
+it produced no policy signal. The retained adapter again improved four of 48 paired
+held-out tasks with zero regressions (`17/48` to `21/48`, exact McNemar `p=0.125`).
+Proof `research_proof_50c940d42cfe499e86db11a0a06ac664`, artifacts, provider teardown,
+zero pods, and zero ongoing spend were verified; estimated cost was `$0.844104`.
+
+Revision 27 also showed that the fixed branch checkpoint was too early for harder tasks.
+Every two-fault level-2 trajectory branched after a repository listing and one source
+read. Several sibling lanes semantically repaired the inspected fault, but none shared
+enough diagnosis to complete both faults. Revision 28 therefore retains static `K=4`
+and terminal-success-only edit credit while adapting shared-prefix length to fault
+count: two accepted diagnostics for one fault, three for two faults, and four for three
+faults. The paired disabled-adapter baseline uses the identical checkpoint rule.
+Sampling, reward, optimization, validation isolation, retention, and the final
+zero-regression significance gate remain unchanged.
+
 ## Non-goals
 
 - Dynamic branch width.

@@ -287,6 +287,27 @@ next active-level update must sample queued families; a family leaves the queue 
 after its active-frontier K=4 group is collected. Probe allocation, branch width,
 optimizer eligibility, regression protection, and final-test isolation are unchanged.
 
+The completed seed `113` revision-27 run proved that priority scheduling works, but it
+rejected the scheduling hypothesis as the remaining bottleneck. Update 20 discovered
+`fallback`, and update 21 immediately collected it in an active level-1 `K=4` group.
+All four siblings solved the task identically, so it supplied no policy gradient.
+Training stopped at update 23 after 12 policy updates and 13 optimizer steps. The
+retained adapter again moved paired test completion from `17/48` to `21/48`, with four
+improvements, zero regressions, and exact McNemar `p=0.125`. Proof
+`research_proof_50c940d42cfe499e86db11a0a06ac664`, artifacts, teardown, zero pods, and
+zero ongoing spend were verified; estimated cost was `$0.844104`.
+
+The branch record localized the next difficulty defect. Every two-fault level-2 group
+branched after the same fixed two-action prefix: a repository listing and one source
+read. Multiple continuations then verified one repaired fault, but none had shared
+diagnostic evidence for both faults and none solved the complete task. Revision 28 keeps
+static `K=4` and terminal-success-only causal credit, but makes checkpoint timing follow
+task complexity. One-fault tasks branch after two accepted diagnostics, two-fault tasks
+after three, and three-fault tasks after four. Baseline and trained evaluation use the
+same rule. This tests whether branching after proportionate shared diagnosis creates a
+learnable harder frontier without changing reward, sampling temperature, optimizer,
+validation isolation, retention, or the final hypothesis gate.
+
 ## What we learned
 
 ### From the current Equinox runs
