@@ -172,6 +172,8 @@ def lightweight_research_validation_history(value: Any) -> list[dict[str, Any]] 
         "curriculum_exact_successes",
         "curriculum_exact_rate",
         "curriculum_paired_change",
+        "fixed_guard_levels",
+        "fixed_guard_paired_change",
         "retention_guard_passed",
         "elapsed_seconds",
         "validation_elapsed_seconds",
@@ -226,9 +228,7 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "current_level": level,
         "promotion_count": result.get("promotion_count"),
         "frontier_probe_task_groups": result.get("frontier_probe_task_groups"),
-        "maximum_sampled_complexity_level": result.get(
-            "maximum_sampled_complexity_level"
-        ),
+        "maximum_sampled_complexity_level": result.get("maximum_sampled_complexity_level"),
         "sampled_completions": result.get("total_sampled_completions"),
         "exact_rate": exact_rate,
         "exact_rate_95ci": (
@@ -264,9 +264,7 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "informative_group_rate": result.get("informative_group_rate"),
         "policy_update_count": result.get("policy_update_count"),
         "optimizer_update_count": result.get("optimizer_update_count"),
-        "pending_informative_group_count": result.get(
-            "pending_informative_group_count"
-        ),
+        "pending_informative_group_count": result.get("pending_informative_group_count"),
         "pending_informative_group_ids": result.get("pending_informative_group_ids"),
         "pending_policy_example_count": result.get("pending_policy_example_count"),
         "pending_training_example_count": result.get("pending_training_example_count"),
@@ -399,9 +397,7 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "policy_update_count": result.get("policy_update_count"),
         "optimizer_update_count": result.get("optimizer_update_count"),
         "frontier_probe_task_groups": result.get("frontier_probe_task_groups"),
-        "pending_informative_group_count": result.get(
-            "pending_informative_group_count"
-        ),
+        "pending_informative_group_count": result.get("pending_informative_group_count"),
         "pending_informative_group_ids": result.get("pending_informative_group_ids"),
         "pending_policy_example_count": result.get("pending_policy_example_count"),
         "pending_training_example_count": result.get("pending_training_example_count"),

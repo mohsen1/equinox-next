@@ -255,6 +255,15 @@ export interface ResearchValidationSummary {
     net_improved: number;
     mcnemar_exact_p_value: number;
   };
+  fixed_guard_levels?: number[];
+  fixed_guard_paired_change?: {
+    examples: number;
+    improved: number;
+    regressed: number;
+    unchanged: number;
+    net_improved: number;
+    mcnemar_exact_p_value: number;
+  };
   retention_guard_passed?: boolean;
   elapsed_seconds?: number;
 }
@@ -351,6 +360,7 @@ export interface ResearchBranchSnapshot {
   task?: {
     description: string;
     known_failing_tests: string[];
+    family_ids?: string[];
     complexity: {
       level: number;
       file_count: number;
@@ -393,6 +403,8 @@ export interface ResearchBranchSnapshot {
     reference_kl?: number;
     reference_kl_coefficient?: number;
     reference_anchor_scope?: string;
+    policy_credit_scope?: string;
+    failed_sibling_policy_weight?: number;
     gradient_norm?: number;
     training_examples?: number;
     reference_examples?: number;

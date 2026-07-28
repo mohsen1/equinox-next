@@ -751,22 +751,24 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-loo-reinforce@20"
-    and .algorithm == "leave-one-out-group-normalized-reinforce"
-    and .objective_id == "leave-one-out-accumulated-retention-reinforce@10"
+    and .workload_revision == "runpod-repository-repair-verified-success@21"
+    and .algorithm == "verified-success-group-conditioned-policy-gradient"
+    and .objective_id == "verified-success-accumulated-retention-policy-gradient@11"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
     and .reward_contract.revision == "correctness-gated-efficiency@1"
     and .reward_contract.incorrect_terminal_reward == 0
     and .reward_contract.efficiency_adjustment_bounds == [-0.05, 0]
-    and .optimizer_contract.learning_rate == 0.00004
-    and .optimizer_contract.reference_kl_coefficient == 0.1
+    and .optimizer_contract.learning_rate == 0.00002
+    and .optimizer_contract.reference_kl_coefficient == 0.2
     and .optimizer_contract.reference_kl_estimator == "k3_log_ratio_penalty"
     and .optimizer_contract.reference_policy == "disabled_adapter_base"
     and .optimizer_contract.reference_anchor_scope == "all_accepted_actions_including_greedy_prefix"
+    and .optimizer_contract.policy_credit_scope == "accepted_actions_from_verified_successful_siblings"
+    and .optimizer_contract.failed_sibling_policy_weight == 0
     and .optimizer_contract.advantage_standard_deviation_floor == 0.1
     and .optimizer_contract.maximum_absolute_advantage == 1
     and .optimizer_contract.minimum_informative_groups_per_policy_update == 2
-    and .optimizer_contract.policy_batching == "durable_cross_update_accumulation"
+    and .optimizer_contract.policy_batching == "durable_cross_update_verified_success_accumulation"
     and .teacher_data_used == false
     and .branch_width == 4
     and .static_branch_width == 4
@@ -805,28 +807,38 @@ else
     and .training_configuration.maximum_final_evaluation_reserve_seconds == $expected_final_evaluation_reserve
     and .training_configuration.final_evaluation_reserve_source == "retained_checkpoint"
     and .training_configuration.maximum_consecutive_malformed_windows == 2
-    and .training_configuration.learning_rate == 0.00004
-    and .training_configuration.reference_kl_coefficient == 0.1
+    and .training_configuration.learning_rate == 0.00002
+    and .training_configuration.reference_kl_coefficient == 0.2
     and .training_configuration.reference_kl_estimator == "k3_log_ratio_penalty"
     and .training_configuration.reference_policy == "disabled_adapter_base"
     and .training_configuration.reference_anchor_scope == "all_accepted_actions_including_greedy_prefix"
+    and .training_configuration.policy_credit_scope == "accepted_actions_from_verified_successful_siblings"
+    and .training_configuration.failed_sibling_policy_weight == 0
     and .training_configuration.maximum_absolute_advantage == 1
     and .training_configuration.minimum_informative_groups_per_policy_update == 2
-    and .training_configuration.policy_batching == "durable_cross_update_accumulation"
+    and .training_configuration.policy_batching == "durable_cross_update_verified_success_accumulation"
     and .training_configuration.frontier_probe_offset == 2
     and .training_configuration.training_level_allocation == "frontier_majority_with_adjacent_probes"
-    and .training_configuration.checkpoint_retention_guard == "paired_rotating_zero_regressions"
+    and .training_configuration.checkpoint_retention_guard == "paired_active_adjacent_and_rotating_zero_regressions"
+    and .training_configuration.learning_signal == "verified_success_actions_from_mixed_correctness_sibling_group"
     and .training_configuration.sibling_sampling_temperature == 0.6
     and .training_configuration.sibling_sampling_top_p == 0.9
     and .evaluation_interval_method == "wilson-score-95"
     and (.attempt_count == 1 or .attempt_count == 2)
     and .resumed_from_checkpoint == (.attempt_count == 2)
     and (.paired_test_change.examples | type) == "number"
+    and (.paired_test_change_by_level | type) == "object"
+    and (.paired_test_transitions | type) == "array"
+    and ([.paired_test_transitions[]
+      | (.family_ids | type) == "array" and (.family_ids | length) >= 1
+    ] | all)
+    and (.best_validation.fixed_guard_levels | type) == "array"
     and (.final_evaluation_complete | type) == "boolean"
     and .final_evaluation_partial == (.final_evaluation_complete | not)
     and ([.initial_by_level[], .final_by_level[]
       | .examples == .distinct_semantic_examples
         and .semantic_universe_size >= $expected_test_examples
+        and ([.task_outcomes[].family_ids | type == "array" and length >= 1] | all)
     ] | all)
     and (
       (

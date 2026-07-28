@@ -128,6 +128,36 @@ creation request, and the bootstrap decodes it, enforces the same exact file all
 installs it durably, removes it from the child process environment, and starts the
 observable runner.
 
+The corrected seed `113` revision-20 run proved that sparse policy signal now survives
+update boundaries: eleven policy-bearing updates consumed distinct accumulated groups,
+and the retained update-15 adapter improved its rotating validation guard by one task
+without a paired regression. The recent malformed-action window then exceeded `5%`
+twice, so training stopped at update 17 and rolled back to that retained adapter. The
+48-task paired test did not validate the checkpoint: exact solves remained `17/48`,
+with two improvements and two regressions. One `is_empty` and one `square` task improved;
+a different `is_empty` task and one `middle` task regressed. The hypothesis gate failed,
+the adapter remains exploratory evidence rather than an accepted result, teardown was
+confirmed, and ongoing provider spend returned to zero.
+
+Objective v11, `verified-success-accumulated-retention-policy-gradient@11`, runs under
+workload revision `runpod-repository-repair-verified-success@21`. Mixed-correctness
+`K=4` groups remain the eligibility condition, but only accepted actions from verified
+successful siblings receive positive policy weight. Failed siblings remain contrast and
+failure evidence; they no longer apply negative gradients to otherwise valid JSON tool
+behavior. A successful trajectory contributes total weight one, divided first across
+successful siblings and then across its accepted actions. Two distinct informative
+groups are still accumulated durably before an optimizer step. The learning rate is
+`2e-5`, reference KL is `0.2`, and every accepted action remains base-policy anchored.
+
+Checkpoint retention is now task-paired across fixed validation suites for the active
+and adjacent complexity levels, plus the disjoint rotating active-level suite. Any
+paired regression rejects the candidate. A candidate must improve the fixed aggregate,
+or improve the rotating aggregate while tying the best fixed aggregate, before it can
+replace the retained adapter. Promotion evidence is also invalid when either guard
+regresses. Result evidence records repair-family identities, per-level paired change,
+and each changed held-out task so equivalent-semantic instability is directly
+observable.
+
 ## What we learned
 
 ### From the current Equinox runs

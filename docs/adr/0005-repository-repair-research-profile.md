@@ -389,6 +389,26 @@ allowlist, installs it durably, removes it from the child process environment, a
 executes the runner. The authenticated HTTP upload remains a fallback for operators,
 but paid automation no longer depends on proxy POST behavior.
 
+The completed seed `113` revision-20 run stopped safely at update 17 after two recent
+malformed-action windows exceeded `5%`. It rolled back to update 15, persisted a verified
+adapter, and completed all 48 paired held-out tasks. The result was neutral rather than
+successful: `17/48` solves before and after, two paired improvements, two paired
+regressions, and a failed hypothesis gate. RunPod teardown was confirmed and ongoing
+spend returned to zero.
+
+Objective v11 is `verified-success-accumulated-retention-policy-gradient@11` under
+workload revision `runpod-repository-repair-verified-success@21`. It replaces signed
+whole-trajectory credit with positive credit on accepted actions from successful
+siblings in a mixed-outcome group. Failed siblings remain recorded but receive zero
+policy weight. Two distinct informative groups remain the atomic on-policy batch, the
+learning rate is `2e-5`, and base-policy KL is `0.2`.
+
+The retained-checkpoint guard now evaluates fixed paired suites for the active and next
+complexity levels, as well as the disjoint rotating active-level suite. Any paired
+regression rejects the candidate; a retained candidate must improve one guard without
+losing on the other. Static `K=4`, adaptive complexity, durable pending groups, bounded
+resumption, final paired evaluation, and verified teardown remain unchanged.
+
 ## Non-goals
 
 - Dynamic branch width.

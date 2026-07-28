@@ -184,7 +184,7 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
     applied: true,
     policy_signal_applied: true,
     reference_anchor_applied: true,
-    objective_id: "leave-one-out-full-trajectory-anchor-reinforce@8",
+    objective_id: "verified-success-accumulated-retention-policy-gradient@11",
     adapter_revision: "update-5",
     learning_rate: 0.00004,
     policy_loss: 0.12,
@@ -192,6 +192,8 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
     reference_kl: 0.1,
     reference_kl_coefficient: 0.1,
     reference_anchor_scope: "all_accepted_actions_including_greedy_prefix",
+    policy_credit_scope: "accepted_actions_from_verified_successful_siblings",
+    failed_sibling_policy_weight: 0,
     gradient_norm: 0.34,
     training_examples: 8,
     reference_examples: 24,
@@ -204,11 +206,11 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
     passed: index === 0,
     return: index === 0 ? 0.94 : 0,
     advantage: index === 0 ? 1.5 : -0.5,
-    policy_signal: true,
+    policy_signal: index === 0,
     terminal_reason: index === 0 ? "solved" : "finished_with_failures",
     trajectory_digest: `sha256:sibling-${index}`,
     completion_tokens: 24,
-    effective_batch_weight: index === 0 ? 0.75 : -0.25,
+    effective_batch_weight: index === 0 ? 0.25 : 0,
     reward_components: {
       hidden_correctness: index === 0,
       public_verifier_progress: index === 0 ? 1 : 0,
@@ -338,7 +340,9 @@ describe("research trajectory", () => {
     expect(html).toContain("update-5");
     expect(html).toContain("Reference KL");
     expect(html).toContain("8 / 24");
+    expect(html).toContain("Verified successes only");
     expect(html).toContain("Batch weight");
+    expect(html).toContain("Policy signal</dt><dd>Eligible");
   });
 
   it("distinguishes a restorative anchor-only optimizer step", () => {

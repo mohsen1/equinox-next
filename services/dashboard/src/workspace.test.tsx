@@ -165,6 +165,15 @@ describe("Runs and Proofs workspaces", () => {
                 exact_rate: 0.75,
                 exact_rate_95ci: [0.40927, 0.928522],
                 mastery_streak: 0,
+                fixed_guard_levels: [0, 1],
+                fixed_guard_paired_change: {
+                  examples: 16,
+                  improved: 1,
+                  regressed: 0,
+                  unchanged: 15,
+                  net_improved: 1,
+                  mcnemar_exact_p_value: 1,
+                },
               },
             ],
           },
@@ -205,6 +214,7 @@ describe("Runs and Proofs workspaces", () => {
     expect(container.textContent).toContain("12m 30s training");
     expect(container.textContent).toContain("45m 0s evaluation");
     expect(container.textContent).toContain("Best retained");
+    expect(container.textContent).toContain("Levels 0, 1 · +1 / −0");
   });
 
   it("links each proof row to focused proof evidence", async () => {

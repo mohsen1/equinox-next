@@ -1,9 +1,10 @@
-"""Restored-continuation REINFORCE post-training for repository repair.
+"""Restored-continuation verified-success post-training for repository repair.
 
 This workload collects one policy-generated diagnostic prefix, snapshots the
 repository and transcript, restores four continuations, and applies
-sibling-relative credit only to post-snapshot action tokens. Candidate content
-is verified as inert simulator state and is never executed.
+reward-conditioned credit only to successful post-snapshot action tokens from
+mixed-outcome sibling groups. Candidate content is verified as inert simulator
+state and is never executed.
 """
 
 from __future__ import annotations
@@ -82,8 +83,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@20"
-OBJECTIVE_ID = "leave-one-out-accumulated-retention-reinforce@10"
+WORKLOAD_REVISION = "runpod-repository-repair-verified-success@21"
+OBJECTIVE_ID = "verified-success-accumulated-retention-policy-gradient@11"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -104,10 +105,11 @@ MAX_NEW_TOKENS = 192
 ACTION_RESPONSE_PREFIX = '{"tool":'
 SIBLING_SAMPLING_TEMPERATURE = 0.6
 SIBLING_SAMPLING_TOP_P = 0.9
-LEARNING_RATE = 4e-5
-REFERENCE_KL_COEFFICIENT = 0.1
+LEARNING_RATE = 2e-5
+REFERENCE_KL_COEFFICIENT = 0.2
 REFERENCE_KL_ESTIMATOR = "k3_log_ratio_penalty"
 REFERENCE_ANCHOR_SCOPE = "all_accepted_actions_including_greedy_prefix"
+POLICY_CREDIT_SCOPE = "accepted_actions_from_verified_successful_siblings"
 ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 MAXIMUM_ABSOLUTE_ADVANTAGE = 1.0
 MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE = 2
@@ -466,6 +468,8 @@ def lightweight_validation_history(history: list[dict[str, Any]]) -> list[dict[s
         "curriculum_exact_successes",
         "curriculum_exact_rate",
         "curriculum_paired_change",
+        "fixed_guard_levels",
+        "fixed_guard_paired_change",
         "retention_guard_passed",
         "elapsed_seconds",
         "validation_elapsed_seconds",
@@ -783,6 +787,44 @@ def retention_guard_decision(
         best_guard_net_improved,
         consecutive_regressions + 1 if regressed else 0,
     )
+
+
+def paired_retention_guard_decision(
+    *,
+    best_fixed_net_improved: int,
+    best_rotating_net_improved: int,
+    fixed_change: dict[str, Any],
+    rotating_change: dict[str, Any],
+    consecutive_regressions: int,
+) -> tuple[bool, int, int, int]:
+    fixed_net_improved = int(fixed_change["net_improved"])
+    rotating_net_improved = int(rotating_change["net_improved"])
+    regressed = int(fixed_change["regressed"]) > 0 or int(rotating_change["regressed"]) > 0
+    candidate_is_best = not regressed and (
+        fixed_net_improved > best_fixed_net_improved
+        or (
+            fixed_net_improved == best_fixed_net_improved
+            and rotating_net_improved > best_rotating_net_improved
+        )
+    )
+    if candidate_is_best:
+        return True, fixed_net_improved, rotating_net_improved, 0
+    return (
+        False,
+        best_fixed_net_improved,
+        best_rotating_net_improved,
+        consecutive_regressions + 1 if regressed else 0,
+    )
+
+
+def fixed_retention_guard_levels(
+    current_level: int,
+    *,
+    maximum_level: int = MAXIMUM_COMPLEXITY_LEVEL,
+) -> list[int]:
+    if not 0 <= current_level <= maximum_level:
+        raise ValueError("current level is outside the curriculum")
+    return list(range(min(maximum_level, current_level + 1) + 1))
 
 
 def sampled_reverse_kl_penalty(log_reference_over_policy: float) -> float:
@@ -1126,8 +1168,17 @@ def collect_greedy_trajectory(
 def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
     if collection.exclusion_reason or not collection.informative:
         return []
+    solved_sibling_indexes = [
+        index
+        for index, sibling in enumerate(collection.siblings)
+        if sibling.terminal_reason == "solved"
+    ]
+    if not solved_sibling_indexes:
+        return []
     examples: list[WeightedAction] = []
-    for sibling_index, generated_actions in enumerate(collection.generated_by_sibling):
+    per_solved_trajectory_weight = 1.0 / len(solved_sibling_indexes)
+    for sibling_index in solved_sibling_indexes:
+        generated_actions = collection.generated_by_sibling[sibling_index]
         post_branch_steps = collection.siblings[sibling_index].steps[len(collection.prefix.steps) :]
         accepted_actions = [
             generated
@@ -1140,7 +1191,7 @@ def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
         ]
         if not accepted_actions:
             continue
-        per_action_weight = collection.advantages[sibling_index] / len(accepted_actions)
+        per_action_weight = per_solved_trajectory_weight / len(accepted_actions)
         examples.extend(
             WeightedAction(generated=generated, weight=per_action_weight)
             for generated in accepted_actions
@@ -1360,13 +1411,21 @@ def serialize_branch_group(
                 strict=True,
             )
         )
+        solved_sibling_count = sum(
+            candidate.terminal_reason == "solved" for candidate in collection.siblings
+        )
+        policy_signal = (
+            collection.informative
+            and sibling.terminal_reason == "solved"
+            and accepted_training_actions > 0
+        )
         reward_components = sibling.reward_components()
         return {
             "index": index,
             "sampling_seed": collection.sampling_seeds[index],
             "return": sibling_return,
             "advantage": sibling_advantage,
-            "policy_signal": (sibling_advantage is not None and abs(sibling_advantage) > 1e-8),
+            "policy_signal": policy_signal,
             "passed": sibling.terminal_reason == "solved",
             "terminal_reason": sibling.terminal_reason,
             "trajectory_digest": sibling.trajectory_digest,
@@ -1376,8 +1435,8 @@ def serialize_branch_group(
             ),
             "failure_classification": sibling_failure_classification(sibling),
             "effective_batch_weight": (
-                round(sibling_advantage / accepted_training_actions, 8)
-                if sibling_advantage is not None and accepted_training_actions
+                round(1.0 / solved_sibling_count / accepted_training_actions, 8)
+                if policy_signal and solved_sibling_count
                 else 0.0
             ),
             "steps": [
@@ -1396,6 +1455,7 @@ def serialize_branch_group(
         "task": {
             "description": collection.task.description,
             "known_failing_tests": list(collection.task.failing_tests),
+            "family_ids": [fault.family_id for fault in collection.task.faults],
             "complexity": asdict(collection.task.complexity),
         },
         "checkpoint": (
@@ -1618,12 +1678,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "reference_kl_estimator": REFERENCE_KL_ESTIMATOR,
         "reference_policy": "disabled_adapter_base",
         "reference_anchor_scope": REFERENCE_ANCHOR_SCOPE,
+        "policy_credit_scope": POLICY_CREDIT_SCOPE,
+        "failed_sibling_policy_weight": 0.0,
         "advantage_standard_deviation_floor": ADVANTAGE_STANDARD_DEVIATION_FLOOR,
         "maximum_absolute_advantage": MAXIMUM_ABSOLUTE_ADVANTAGE,
         "minimum_informative_groups_per_policy_update": (
             MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
         ),
-        "policy_batching": "durable_cross_update_accumulation",
+        "policy_batching": "durable_cross_update_verified_success_accumulation",
         "frontier_probe_offset": MAXIMUM_FRONTIER_PROBE_OFFSET,
         "training_level_allocation": "frontier_majority_with_adjacent_probes",
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
@@ -1634,9 +1696,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "sibling_sampling_temperature": SIBLING_SAMPLING_TEMPERATURE,
         "sibling_sampling_top_p": SIBLING_SAMPLING_TOP_P,
         "policy_prompt_roles": ["system", "user"],
-        "learning_signal": "mixed_hidden_correctness_within_sibling_group",
+        "learning_signal": "verified_success_actions_from_mixed_correctness_sibling_group",
         "checkpoint_selection_window": "fixed_paired_validation",
-        "checkpoint_retention_guard": "paired_rotating_zero_regressions",
+        "checkpoint_retention_guard": "paired_active_adjacent_and_rotating_zero_regressions",
         "final_evaluation_reserve_source": "retained_checkpoint",
         "curriculum_validation_window": "rotating_disjoint",
         "reward_contract_revision": "correctness-gated-efficiency@1",
@@ -1872,6 +1934,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 {
                     "task_id": task.task_id,
                     "semantic_task_id": task.semantic_task_id,
+                    "family_ids": [fault.family_id for fault in task.faults],
                     **outcome,
                 }
             )
@@ -2268,6 +2331,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "exact_rate_95ci": last_observation["exact_rate_95ci"],
             "checkpoint_rate": last_observation["checkpoint_rate"],
             "checkpoint_rate_95ci": last_observation["checkpoint_rate_95ci"],
+            "fixed_guard_levels": [0],
+            "fixed_guard_net_improved": 0,
+            "fixed_guard_regressions": 0,
+            "rotating_guard_net_improved": 0,
+            "rotating_guard_regressions": 0,
             "guard_net_improved": 0,
             "guard_regressions": 0,
             "source": "active_level_baseline",
@@ -2493,7 +2561,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         optimizer.zero_grad(set_to_none=True)
         reinforce_loss, reference_kl, policy_loss = train_policy(
             anchored_training_examples,
-            max(1, len(policy_signal_group_ids) * BRANCH_WIDTH),
+            max(1, len(policy_signal_group_ids)),
         )
         if anchored_training_examples:
             gradient_norm = torch.nn.utils.clip_grad_norm_(
@@ -2563,6 +2631,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "reference_kl": round(reference_kl, 6),
             "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
             "reference_anchor_scope": REFERENCE_ANCHOR_SCOPE,
+            "policy_credit_scope": POLICY_CREDIT_SCOPE,
+            "failed_sibling_policy_weight": 0.0,
             "gradient_norm": round(float(gradient_norm), 6),
             "training_examples": policy_training_example_count,
             "reference_examples": len(anchored_training_examples),
@@ -2786,47 +2856,61 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 persist_training_checkpoint(update)
                 break
             validation_started = time.monotonic()
-            checkpoint_seed = checkpoint_validation_seed(level)
-            checkpoint_tasks = make_tasks(
-                level,
-                runtime.validation_examples,
-                checkpoint_seed,
-                split="validation",
-            )
-            level_key = str(level)
-            checkpoint_baseline_observation = validation_baseline_by_level.get(level_key)
-            if checkpoint_baseline_observation is None:
-                with model.disable_adapter():
-                    checkpoint_baseline_observation = evaluate_tasks(
-                        checkpoint_tasks,
-                        level=level,
-                        seed=checkpoint_seed,
-                        split="validation",
-                        deadline_seconds=training_deadline_seconds,
-                        progress_phase="checkpoint_baseline_evaluation",
-                    )
-                if not checkpoint_baseline_observation["complete"]:
-                    stop_reason = "final_evaluation_reserve"
-                    training_complete = True
-                    persist_training_checkpoint(update)
+            guard_levels = fixed_retention_guard_levels(level)
+            fixed_baseline_observations: dict[str, dict[str, Any]] = {}
+            fixed_candidate_observations: dict[str, dict[str, Any]] = {}
+            evaluations_performed: list[dict[str, Any]] = []
+            fixed_guard_complete = True
+            for guard_level in guard_levels:
+                guard_key = str(guard_level)
+                guard_seed = checkpoint_validation_seed(guard_level)
+                guard_tasks = make_tasks(
+                    guard_level,
+                    runtime.validation_examples,
+                    guard_seed,
+                    split="validation",
+                )
+                baseline_observation = validation_baseline_by_level.get(guard_key)
+                if baseline_observation is None:
+                    with model.disable_adapter():
+                        baseline_observation = evaluate_tasks(
+                            guard_tasks,
+                            level=guard_level,
+                            seed=guard_seed,
+                            split="validation",
+                            deadline_seconds=training_deadline_seconds,
+                            progress_phase="checkpoint_baseline_evaluation",
+                        )
+                    evaluations_performed.append(baseline_observation)
+                    if not baseline_observation["complete"]:
+                        fixed_guard_complete = False
+                        break
+                    validation_baseline_by_level[guard_key] = baseline_observation
+                fixed_baseline_observations[guard_key] = baseline_observation
+                candidate_observation = evaluate_tasks(
+                    guard_tasks,
+                    level=guard_level,
+                    seed=guard_seed,
+                    split="validation",
+                    deadline_seconds=training_deadline_seconds,
+                    progress_phase="checkpoint_validation_evaluation",
+                )
+                evaluations_performed.append(candidate_observation)
+                fixed_candidate_observations[guard_key] = candidate_observation
+                if not candidate_observation["complete"]:
+                    fixed_guard_complete = False
                     break
-                validation_baseline_by_level[level_key] = checkpoint_baseline_observation
-            checkpoint_observation = evaluate_tasks(
-                checkpoint_tasks,
-                level=level,
-                seed=checkpoint_seed,
-                split="validation",
-                deadline_seconds=training_deadline_seconds,
-                progress_phase="checkpoint_validation_evaluation",
-            )
-            if not checkpoint_observation["complete"]:
+            checkpoint_observation = fixed_candidate_observations.get(str(level))
+            if not fixed_guard_complete or checkpoint_observation is None:
                 history.append(
                     {
                         "update": update,
-                        **checkpoint_observation,
+                        **(checkpoint_observation or {}),
+                        "fixed_guard_levels": guard_levels,
+                        "fixed_guard_complete": False,
                         "mastery_streak": mastery_streak,
                         "mastered": False,
-                        "selection_window": "fixed_paired_checkpoint",
+                        "selection_window": "paired_active_adjacent_fixed_guard",
                         "validation_elapsed_seconds": round(
                             time.monotonic() - validation_started,
                             3,
@@ -2839,6 +2923,18 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 training_complete = True
                 persist_training_checkpoint(update)
                 break
+            fixed_guard_paired_change = paired_change_summary(
+                [
+                    outcome
+                    for guard_level in guard_levels
+                    for outcome in fixed_baseline_observations[str(guard_level)]["task_outcomes"]
+                ],
+                [
+                    outcome
+                    for guard_level in guard_levels
+                    for outcome in fixed_candidate_observations[str(guard_level)]["task_outcomes"]
+                ],
+            )
             with model.disable_adapter():
                 curriculum_baseline_observation = evaluate_tasks(
                     validation_tasks,
@@ -2848,6 +2944,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     deadline_seconds=training_deadline_seconds,
                     progress_phase="retention_guard_baseline_evaluation",
                 )
+            evaluations_performed.append(curriculum_baseline_observation)
             if not curriculum_baseline_observation["complete"]:
                 history.append(
                     {
@@ -2859,7 +2956,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         ),
                         "mastery_streak": mastery_streak,
                         "mastered": False,
-                        "selection_window": "fixed_checkpoint_with_paired_rotating_guard",
+                        "selection_window": "paired_active_adjacent_and_rotating_guard",
                         "validation_elapsed_seconds": round(
                             time.monotonic() - validation_started,
                             3,
@@ -2880,6 +2977,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 deadline_seconds=training_deadline_seconds,
                 progress_phase="validation_evaluation",
             )
+            evaluations_performed.append(curriculum_observation)
             validation_elapsed_seconds = time.monotonic() - validation_started
             if not curriculum_observation["complete"]:
                 history.append(
@@ -2890,7 +2988,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         "curriculum_examples": curriculum_observation["examples"],
                         "mastery_streak": mastery_streak,
                         "mastered": False,
-                        "selection_window": "fixed_checkpoint_with_paired_rotating_guard",
+                        "selection_window": "paired_active_adjacent_and_rotating_guard",
                         "validation_elapsed_seconds": round(
                             validation_elapsed_seconds,
                             3,
@@ -2910,11 +3008,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             )
             observed_validation_actions = sum(
                 outcome["actions"]
-                for evaluation in (
-                    checkpoint_observation,
-                    curriculum_baseline_observation,
-                    curriculum_observation,
-                )
+                for evaluation in evaluations_performed
                 for outcome in evaluation["task_outcomes"]
             )
             measured_trained_policy_reserve = math.ceil(
@@ -2930,27 +3024,31 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 measured_trained_policy_reserve,
                 runtime.maximum_final_evaluation_reserve_seconds,
             )
-            mastered = observation_mastered(curriculum_observation)
+            retention_guard_passed = (
+                fixed_guard_paired_change["regressed"] == 0
+                and curriculum_paired_change["regressed"] == 0
+            )
+            mastered = observation_mastered(curriculum_observation) and retention_guard_passed
             mastery_streak = mastery_streak + 1 if mastered else 0
-            previous_best_is_current_level = int(best_validation["level"]) == level
+            same_fixed_guard = best_validation.get("fixed_guard_levels", [0]) == guard_levels
             (
                 candidate_is_best,
-                best_exact_successes,
-                best_guard_net_improved,
+                best_fixed_guard_net_improved,
+                best_rotating_guard_net_improved,
                 consecutive_regression_windows,
-            ) = retention_guard_decision(
-                best_fixed_successes=int(
-                    best_validation["exact_successes"]
-                    if previous_best_is_current_level
-                    else checkpoint_baseline_observation["exact_successes"]
-                ),
-                best_guard_net_improved=int(
-                    best_validation.get("guard_net_improved", 0)
-                    if previous_best_is_current_level
+            ) = paired_retention_guard_decision(
+                best_fixed_net_improved=int(
+                    best_validation.get("fixed_guard_net_improved", 0)
+                    if same_fixed_guard
                     else 0
                 ),
-                observed_fixed_successes=int(checkpoint_observation["exact_successes"]),
-                guard_change=curriculum_paired_change,
+                best_rotating_net_improved=int(
+                    best_validation.get("rotating_guard_net_improved", 0)
+                    if same_fixed_guard
+                    else 0
+                ),
+                fixed_change=fixed_guard_paired_change,
+                rotating_change=curriculum_paired_change,
                 consecutive_regressions=consecutive_regression_windows,
             )
             (
@@ -2971,14 +3069,22 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 best_validation = {
                     "update": update,
                     "level": level,
-                    "exact_successes": best_exact_successes,
+                    "exact_successes": int(checkpoint_observation["exact_successes"]),
                     "exact_rate": checkpoint_observation["exact_rate"],
                     "exact_rate_95ci": checkpoint_observation["exact_rate_95ci"],
                     "checkpoint_rate": checkpoint_observation["checkpoint_rate"],
                     "checkpoint_rate_95ci": checkpoint_observation["checkpoint_rate_95ci"],
-                    "guard_net_improved": best_guard_net_improved,
-                    "guard_regressions": curriculum_paired_change["regressed"],
-                    "source": "fixed_checkpoint_with_paired_rotating_retention_guard",
+                    "fixed_guard_levels": guard_levels,
+                    "fixed_guard_net_improved": best_fixed_guard_net_improved,
+                    "fixed_guard_regressions": fixed_guard_paired_change["regressed"],
+                    "rotating_guard_net_improved": best_rotating_guard_net_improved,
+                    "rotating_guard_regressions": curriculum_paired_change["regressed"],
+                    "guard_net_improved": best_rotating_guard_net_improved,
+                    "guard_regressions": (
+                        fixed_guard_paired_change["regressed"]
+                        + curriculum_paired_change["regressed"]
+                    ),
+                    "source": "paired_active_adjacent_and_rotating_retention_guard",
                 }
                 best_trainable_state = capture_trainable_state()
                 if checkpoints_root:
@@ -2989,7 +3095,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                             "kind": "best_validation",
                             "update": update,
                             "level": level,
-                            "exact_successes": best_exact_successes,
+                            "exact_successes": checkpoint_observation["exact_successes"],
                         },
                         save_adapter=lambda target: model.save_pretrained(
                             target,
@@ -3000,7 +3106,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 {
                     "update": update,
                     **checkpoint_observation,
-                    "selection_window": "fixed_checkpoint_with_paired_rotating_guard",
+                    "selection_window": "paired_active_adjacent_and_rotating_guard",
+                    "fixed_guard_levels": guard_levels,
+                    "fixed_guard_paired_change": fixed_guard_paired_change,
                     "curriculum_seed": validation_seed,
                     "curriculum_baseline_exact_successes": (
                         curriculum_baseline_observation["exact_successes"]
@@ -3020,9 +3128,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         curriculum_observation["checkpoint_rate_95ci"]
                     ),
                     "curriculum_paired_change": curriculum_paired_change,
-                    "retention_guard_passed": (
-                        curriculum_paired_change["regressed"] == 0
-                    ),
+                    "retention_guard_passed": retention_guard_passed,
                     "policy_loss": round(policy_loss, 6),
                     "reinforce_loss": round(reinforce_loss, 6),
                     "reference_kl": round(reference_kl, 6),
@@ -3227,6 +3333,32 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "net_improved": 0,
             "mcnemar_exact_p_value": 1.0,
         }
+    paired_test_change_by_level = {
+        level_key: paired_change_summary(
+            initial_by_level[level_key]["task_outcomes"],
+            final_by_level[level_key]["task_outcomes"],
+        )
+        for level_key in initial_by_level
+        if initial_by_level[level_key]["task_outcomes"]
+        and {
+            outcome["task_id"] for outcome in initial_by_level[level_key]["task_outcomes"]
+        }
+        == {outcome["task_id"] for outcome in final_by_level[level_key]["task_outcomes"]}
+    }
+    initial_outcomes_by_id = {outcome["task_id"]: outcome for outcome in initial_outcomes}
+    final_outcomes_by_id = {outcome["task_id"]: outcome for outcome in final_outcomes}
+    paired_test_transitions = [
+        {
+            "task_id": task_id,
+            "semantic_task_id": initial_outcomes_by_id[task_id]["semantic_task_id"],
+            "family_ids": initial_outcomes_by_id[task_id]["family_ids"],
+            "initial_solved": bool(initial_outcomes_by_id[task_id]["solved"]),
+            "final_solved": bool(final_outcomes_by_id[task_id]["solved"]),
+        }
+        for task_id in sorted(paired_task_ids)
+        if bool(initial_outcomes_by_id[task_id]["solved"])
+        != bool(final_outcomes_by_id[task_id]["solved"])
+    ]
     mastered_level_count = level + int(stop_reason == "maximum_level_mastered")
     retention_passed = final_evaluation_complete and all(
         observation_mastered(final_by_level[str(candidate_level)])
@@ -3306,7 +3438,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "hypothesis_passed": hypothesis_passed,
         "workload": "repository-repair-restored-continuation-post-training",
         "workload_revision": WORKLOAD_REVISION,
-        "algorithm": "leave-one-out-group-normalized-reinforce",
+        "algorithm": "verified-success-group-conditioned-policy-gradient",
         "objective_id": OBJECTIVE_ID,
         "objective_sequence_reduction": "mean_completion_token_log_probabilities",
         "reward_contract": {
@@ -3323,12 +3455,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "reference_kl_estimator": REFERENCE_KL_ESTIMATOR,
             "reference_policy": "disabled_adapter_base",
             "reference_anchor_scope": REFERENCE_ANCHOR_SCOPE,
+            "policy_credit_scope": POLICY_CREDIT_SCOPE,
+            "failed_sibling_policy_weight": 0.0,
             "advantage_standard_deviation_floor": (ADVANTAGE_STANDARD_DEVIATION_FLOOR),
             "maximum_absolute_advantage": MAXIMUM_ABSOLUTE_ADVANTAGE,
             "minimum_informative_groups_per_policy_update": (
                 MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
             ),
-            "policy_batching": "durable_cross_update_accumulation",
+            "policy_batching": "durable_cross_update_verified_success_accumulation",
             "sequence_reduction": "mean_completion_token_log_probabilities",
         },
         "teacher_data_used": False,
@@ -3385,6 +3519,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "validation_baseline_by_level": validation_baseline_by_level,
         "final_by_level": final_by_level,
         "paired_test_change": paired_test_change,
+        "paired_test_change_by_level": paired_test_change_by_level,
+        "paired_test_transitions": paired_test_transitions,
         "history": history,
         "branch_snapshots": branch_snapshots,
         "updates_completed": updates_completed,

@@ -648,7 +648,7 @@ function BranchInspector({
               value={
                 sibling
                   ? sibling.policy_signal
-                    ? "Applied"
+                    ? "Eligible"
                     : "None"
                   : "Prefix masked"
               }
@@ -785,6 +785,19 @@ function BranchInspector({
                       snapshot.optimizer_update.reference_examples ?? 0
                     }`}
                   />
+                  {snapshot.optimizer_update.policy_credit_scope ? (
+                    <Fact
+                      label="Policy credit"
+                      value={
+                        snapshot.optimizer_update.policy_credit_scope ===
+                        "accepted_actions_from_verified_successful_siblings"
+                          ? "Verified successes only"
+                          : friendlyStatus(
+                              snapshot.optimizer_update.policy_credit_scope,
+                            )
+                      }
+                    />
+                  ) : null}
                   <Fact
                     label="Signal groups"
                     value={`${
@@ -860,7 +873,7 @@ function BranchInspector({
             <Fact label="Advantage" value={formatSigned(sibling.advantage)} />
             <Fact
               label="Policy signal"
-              value={sibling.policy_signal ? "Applied" : "None"}
+              value={sibling.policy_signal ? "Eligible" : "None"}
             />
           </dl>
           <div className="branch-evidence">

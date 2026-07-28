@@ -485,17 +485,27 @@ function ValidationHistory({
                 </td>
                 <td>{formatInterval(row.exact_rate_95ci)}</td>
                 <td>
-                  {isBest
-                    ? "Best retained"
-                    : row.retention_guard_passed === false
-                      ? "Guard rejected"
-                      : row.mastered
-                        ? `Mastery ${row.mastery_streak ?? 1}`
-                        : row.regression_streak
-                          ? `Regression ${row.regression_streak}`
-                          : isBaseline
-                            ? "Reference"
-                            : "Continue"}
+                  <span>
+                    {isBest
+                      ? "Best retained"
+                      : row.retention_guard_passed === false
+                        ? "Guard rejected"
+                        : row.mastered
+                          ? `Mastery ${row.mastery_streak ?? 1}`
+                          : row.regression_streak
+                            ? `Regression ${row.regression_streak}`
+                            : isBaseline
+                              ? "Reference"
+                              : "Continue"}
+                  </span>
+                  {row.fixed_guard_paired_change &&
+                  row.fixed_guard_levels?.length ? (
+                    <small>
+                      Levels {row.fixed_guard_levels.join(", ")} · +
+                      {row.fixed_guard_paired_change.improved} / −
+                      {row.fixed_guard_paired_change.regressed}
+                    </small>
+                  ) : null}
                 </td>
               </tr>
             );

@@ -36,11 +36,13 @@ from research.runpod.repository_repair_rl import (
     discarded_collection_accounting,
     emit_progress,
     evaluation_reward_summary,
+    fixed_retention_guard_levels,
     lightweight_validation_history,
     next_malformed_action_window_streak,
     next_uninformative_group_streak,
     observation_mastered,
     paired_change_summary,
+    paired_retention_guard_decision,
     persist_checkpoint,
     persist_named_adapter,
     policy_examples,
@@ -146,6 +148,32 @@ def test_retention_guard_requires_zero_paired_regressions() -> None:
         guard_change={"improved": 1, "regressed": 0, "net_improved": 1},
         consecutive_regressions=1,
     ) == (True, 5, 1, 0)
+
+
+def test_cross_level_retention_guard_is_paired_and_lexicographic() -> None:
+    assert fixed_retention_guard_levels(0) == [0, 1]
+    assert fixed_retention_guard_levels(2) == [0, 1, 2, 3]
+    assert paired_retention_guard_decision(
+        best_fixed_net_improved=0,
+        best_rotating_net_improved=0,
+        fixed_change={"improved": 1, "regressed": 0, "net_improved": 1},
+        rotating_change={"improved": 0, "regressed": 0, "net_improved": 0},
+        consecutive_regressions=1,
+    ) == (True, 1, 0, 0)
+    assert paired_retention_guard_decision(
+        best_fixed_net_improved=1,
+        best_rotating_net_improved=0,
+        fixed_change={"improved": 2, "regressed": 1, "net_improved": 1},
+        rotating_change={"improved": 1, "regressed": 0, "net_improved": 1},
+        consecutive_regressions=0,
+    ) == (False, 1, 0, 1)
+    assert paired_retention_guard_decision(
+        best_fixed_net_improved=1,
+        best_rotating_net_improved=0,
+        fixed_change={"improved": 1, "regressed": 0, "net_improved": 1},
+        rotating_change={"improved": 1, "regressed": 0, "net_improved": 1},
+        consecutive_regressions=1,
+    ) == (True, 1, 1, 0)
 
 
 def test_sampled_reverse_kl_penalty_is_zero_at_reference_and_nonnegative() -> None:
@@ -1060,7 +1088,7 @@ def test_training_prefix_is_greedy_while_siblings_remain_stochastic() -> None:
     assert all(calls[2:])
 
 
-def test_policy_examples_never_include_prefix_and_split_weight_by_branch_actions() -> None:
+def test_policy_examples_use_only_verified_success_actions() -> None:
     task = make_task(0, seed=8)
     generated = GeneratedAction(
         response='{"tool":"test"}',
@@ -1079,9 +1107,10 @@ def test_policy_examples_never_include_prefix_and_split_weight_by_branch_actions
                     object(),
                     SimpleNamespace(accepted=True),
                     SimpleNamespace(accepted=True),
-                ]
+                ],
+                terminal_reason="solved" if index == 0 else "horizon_exhausted",
             )
-            for _ in range(4)
+            for index in range(4)
         ],  # type: ignore[list-item]
         generated_by_sibling=[[generated, generated] for _ in range(4)],
         sampling_seeds=[1, 2, 3, 4],
@@ -1093,9 +1122,8 @@ def test_policy_examples_never_include_prefix_and_split_weight_by_branch_actions
 
     examples = policy_examples(collection)
 
-    assert len(examples) == 8
-    assert [example.weight for example in examples[:2]] == [1.5, 1.5]
-    assert all(example.weight == -0.5 for example in examples[2:])
+    assert len(examples) == 2
+    assert [example.weight for example in examples] == [0.5, 0.5]
 
 
 def test_policy_examples_exclude_rejected_post_branch_actions() -> None:
@@ -1123,9 +1151,10 @@ def test_policy_examples_exclude_rejected_post_branch_actions() -> None:
                     object(),
                     SimpleNamespace(accepted=True),
                     SimpleNamespace(accepted=False),
-                ]
+                ],
+                terminal_reason="solved" if index == 0 else "horizon_exhausted",
             )
-            for _ in range(4)
+            for index in range(4)
         ],  # type: ignore[list-item]
         generated_by_sibling=[[accepted, rejected] for _ in range(4)],
         sampling_seeds=[1, 2, 3, 4],
@@ -1137,9 +1166,9 @@ def test_policy_examples_exclude_rejected_post_branch_actions() -> None:
 
     examples = policy_examples(collection)
 
-    assert len(examples) == 4
+    assert len(examples) == 1
     assert all(example.generated is accepted for example in examples)
-    assert [example.weight for example in examples] == [3.0, -1.0, -1.0, -1.0]
+    assert [example.weight for example in examples] == [1.0]
 
 
 def test_reference_anchor_covers_prefix_and_all_accepted_continuations() -> None:
@@ -1171,9 +1200,10 @@ def test_reference_anchor_covers_prefix_and_all_accepted_continuations() -> None
                     object(),
                     SimpleNamespace(accepted=True),
                     SimpleNamespace(accepted=False),
-                ]
+                ],
+                terminal_reason="solved" if index == 0 else "horizon_exhausted",
             )
-            for _ in range(4)
+            for index in range(4)
         ],  # type: ignore[list-item]
         generated_by_sibling=sibling_actions,
         sampling_seeds=[1, 2, 3, 4],
@@ -1188,8 +1218,8 @@ def test_reference_anchor_covers_prefix_and_all_accepted_continuations() -> None
     anchored, policy_example_count = reference_anchored_examples([collection])
 
     assert reference_actions == [prefix_actions[0], *(actions[0] for actions in sibling_actions)]
-    assert policy_example_count == 4
-    assert [example.weight for example in anchored] == [0.0, 3.0, -1.0, -1.0, -1.0]
+    assert policy_example_count == 1
+    assert [example.weight for example in anchored] == [0.0, 1.0, 0.0, 0.0, 0.0]
     gated_anchor_only, gated_policy_examples = reference_anchored_examples(
         [collection],
         minimum_informative_groups=2,
@@ -1229,9 +1259,10 @@ def test_informative_groups_accumulate_across_anchor_only_updates() -> None:
                 steps=[
                     object(),
                     SimpleNamespace(accepted=True),
-                ]
+                ],
+                terminal_reason="solved" if index == 0 else "horizon_exhausted",
             )
-            for _ in range(4)
+            for index in range(4)
         ],  # type: ignore[list-item]
         generated_by_sibling=sibling_actions,
         sampling_seeds=[1, 2, 3, 4],
@@ -1260,7 +1291,7 @@ def test_informative_groups_accumulate_across_anchor_only_updates() -> None:
     assert first_policy_count == 0
     assert first_signal_groups == []
     assert pending_groups == [collection.task.task_id]
-    assert pending_policy_count == 4
+    assert pending_policy_count == 1
     assert len(pending_examples) == 5
     assert first_training == []
 
@@ -1287,12 +1318,12 @@ def test_informative_groups_accumulate_across_anchor_only_updates() -> None:
     ) = accumulated_reference_anchored_examples(
         [second_collection],
         pending_examples,
-        4,
+        1,
         pending_groups,
         minimum_informative_groups=2,
     )
 
-    assert second_policy_count == 8
+    assert second_policy_count == 2
     assert second_signal_groups == [
         collection.task.task_id,
         second_collection.task.task_id,
