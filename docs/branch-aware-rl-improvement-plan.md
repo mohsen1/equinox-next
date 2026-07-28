@@ -308,6 +308,26 @@ same rule. This tests whether branching after proportionate shared diagnosis cre
 learnable harder frontier without changing reward, sampling temperature, optimizer,
 validation isolation, retention, or the final hypothesis gate.
 
+The completed seed `113` revision-28 run rejected that hypothesis. Its three observed
+level-2 prefixes reached the required action count without reading the second faulty
+source: one searched unrelated text, one searched the already-read first fault, and one
+attempted a disallowed edit before testing. All three level-2 `K=4` groups remained
+`0/4`. The update-15 adapter was safely retained at `+2/−0` on both validation guards,
+but training stopped at update 19 without a promotion. Paired test completion moved
+from `17/48` to `20/48`, with three improvements, zero regressions, and exact McNemar
+`p=0.25`. The failed proof assertion left the result and adapter as exploratory
+artifacts rather than an ingested proof. Estimated cost was `$0.564266`; fail-safe
+teardown, zero pods, and zero ongoing spend were verified.
+
+Revision 29 replaces the action-count checkpoint with evidence coverage. The shared
+prefix must read every generated faulty source, in addition to meeting its
+complexity-scaled minimum diagnostic count, before K=4 restoration is allowed. The
+prompt states that each relevant implementation must be inspected, and the canonical
+diagnostic trace follows the same rule. A bounded eight-attempt limit excludes a group
+that cannot reach the checkpoint. Result evidence records required and observed source
+coverage. Action schemas, static K, terminal-success-only edit credit, optimizer,
+validation isolation, retention, and the final paired gate remain unchanged.
+
 ## What we learned
 
 ### From the current Equinox runs

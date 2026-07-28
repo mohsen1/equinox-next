@@ -512,6 +512,24 @@ faults. The paired disabled-adapter baseline uses the identical checkpoint rule.
 Sampling, reward, optimization, validation isolation, retention, and the final
 zero-regression significance gate remain unchanged.
 
+The seed `113` revision-28 run showed that a diagnostic-action count is not a sufficient
+branch condition. Across its three level-2 probes, the extra action searched unrelated
+or already-observed content, or attempted a disallowed edit before testing. None read
+the second faulty source, and all three K=4 groups remained `0/4`. Update 15 was retained
+at `+2/−0` on both guards, but the run stopped at update 19 without a promotion. Paired
+testing improved three of 48 tasks with zero regressions (`p=0.25`), below the proof
+contract. The result and adapter were preserved as exploratory artifacts; fail-safe
+teardown returned RunPod to zero pods and zero ongoing spend. Estimated cost was
+`$0.564266`.
+
+Revision 29 requires evidence coverage rather than an action count alone. The policy
+must read every generated faulty source before the shared state can become a branch
+checkpoint. The prompt makes that diagnostic goal explicit, the attempt budget is
+bounded at eight, and incomplete groups are excluded. Branch evidence reports required
+and observed source reads. Static `K=4`, environment semantics, terminal-success-only
+edit credit, sampling, optimization, validation isolation, retention, and final
+hypothesis rules do not change.
+
 ## Non-goals
 
 - Dynamic branch width.
