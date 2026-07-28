@@ -85,7 +85,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@27"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@28"
 OBJECTIVE_ID = "verified-fix-priority-target-retention-policy-gradient@14"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -96,7 +96,7 @@ DEPENDENCY_VERSIONS = {
     requirement.split("==", 1)[0]: requirement.split("==", 1)[1] for requirement in DEPENDENCIES
 }
 MAXIMUM_COMPLEXITY_LEVEL = len(COMPLEXITY_LEVELS) - 1
-PREFIX_ACCEPTED_ACTIONS = 2
+MINIMUM_PREFIX_ACCEPTED_ACTIONS = 2
 PREFIX_MAX_ATTEMPTS = 5
 EVALUATION_INTERVAL = 5
 VALIDATION_SEED_BASE = 40_000
@@ -342,6 +342,14 @@ class BranchCollection:
 
 
 SampleOne = Callable[[str, bool, int], GeneratedAction]
+
+
+def branch_checkpoint_diagnostic_actions(task: RepairTask) -> int:
+    """Keep harder tasks shared until the policy has gathered proportionate evidence."""
+    return min(
+        PREFIX_MAX_ATTEMPTS,
+        max(MINIMUM_PREFIX_ACCEPTED_ACTIONS, len(task.faults) + 1),
+    )
 
 
 def sampled_action_count(collections: list[BranchCollection]) -> int:
@@ -1227,6 +1235,7 @@ def collect_branch_group(
     prefix = RepositoryRepairEnvironment(task)
     generated_prefix: list[GeneratedAction] = []
     accepted_diagnostics = 0
+    checkpoint_diagnostic_actions = branch_checkpoint_diagnostic_actions(task)
     for attempt in range(PREFIX_MAX_ATTEMPTS):
         if deadline_reached is not None and deadline_reached():
             return BranchCollection(
@@ -1252,10 +1261,10 @@ def collect_branch_group(
         step = prefix.step(generated.response, allowed_tools=DIAGNOSTIC_TOOLS)
         if step.accepted:
             accepted_diagnostics += 1
-        if accepted_diagnostics >= PREFIX_ACCEPTED_ACTIONS:
+        if accepted_diagnostics >= checkpoint_diagnostic_actions:
             break
 
-    if accepted_diagnostics < PREFIX_ACCEPTED_ACTIONS:
+    if accepted_diagnostics < checkpoint_diagnostic_actions:
         return BranchCollection(
             task=task,
             snapshot=None,
@@ -1329,6 +1338,7 @@ def collect_greedy_trajectory(
 ) -> dict[str, Any] | None:
     prefix = RepositoryRepairEnvironment(task)
     accepted_diagnostics = 0
+    checkpoint_diagnostic_actions = branch_checkpoint_diagnostic_actions(task)
     for attempt in range(PREFIX_MAX_ATTEMPTS):
         if deadline_reached is not None and deadline_reached():
             return None
@@ -1340,9 +1350,9 @@ def collect_greedy_trajectory(
         step = prefix.step(generated.response, allowed_tools=DIAGNOSTIC_TOOLS)
         if step.accepted:
             accepted_diagnostics += 1
-        if accepted_diagnostics >= PREFIX_ACCEPTED_ACTIONS:
+        if accepted_diagnostics >= checkpoint_diagnostic_actions:
             break
-    if accepted_diagnostics < PREFIX_ACCEPTED_ACTIONS:
+    if accepted_diagnostics < checkpoint_diagnostic_actions:
         return {
             "solved": False,
             "checkpoint_reached": False,
@@ -1703,6 +1713,8 @@ def serialize_branch_group(
         ),
         "shared_prefix": {
             "policy_generated": True,
+            "checkpoint_strategy": "fault_count_plus_one_accepted_diagnostics",
+            "required_diagnostic_actions": branch_checkpoint_diagnostic_actions(collection.task),
             "accepted_diagnostic_actions": sum(
                 step.accepted and step.tool in DIAGNOSTIC_TOOLS for step in collection.prefix.steps
             ),
@@ -1830,7 +1842,8 @@ def self_test() -> dict[str, Any]:
     if collection.advantages != [0.0] * BRANCH_WIDTH:
         raise AssertionError("identical sibling outcomes produced a policy signal")
     serialized = serialize_branch_group(collection, update=1)
-    if len(serialized["shared_prefix"]["steps"]) != PREFIX_ACCEPTED_ACTIONS or any(
+    expected_prefix_actions = branch_checkpoint_diagnostic_actions(task)
+    if len(serialized["shared_prefix"]["steps"]) != expected_prefix_actions or any(
         not sibling["steps"] for sibling in serialized["siblings"]
     ):
         raise AssertionError("serialized lineage omitted multi-step trajectory evidence")
@@ -1838,7 +1851,8 @@ def self_test() -> dict[str, Any]:
         "self_test_passed": True,
         "workload_revision": WORKLOAD_REVISION,
         "branch_width": BRANCH_WIDTH,
-        "shared_prefix_actions": PREFIX_ACCEPTED_ACTIONS,
+        "shared_prefix_actions": expected_prefix_actions,
+        "shared_prefix_strategy": "fault_count_plus_one_accepted_diagnostics",
         "sibling_steps": [len(sibling.steps) for sibling in collection.siblings],
         "environment_revision": ENVIRONMENT_REVISION,
         "structural_mirror_disclosures": STRUCTURAL_MIRROR_DISCLOSURES,
@@ -1929,6 +1943,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
         "maximum_consecutive_malformed_windows": (MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS),
         "shared_prefix_sampling": "greedy",
+        "shared_prefix_checkpoint": "fault_count_plus_one_accepted_diagnostics",
+        "minimum_shared_prefix_actions": MINIMUM_PREFIX_ACCEPTED_ACTIONS,
+        "maximum_shared_prefix_actions": PREFIX_MAX_ATTEMPTS,
         "sibling_sampling_temperature": SIBLING_SAMPLING_TEMPERATURE,
         "sibling_sampling_top_p": SIBLING_SAMPLING_TOP_P,
         "policy_prompt_roles": ["system", "user"],

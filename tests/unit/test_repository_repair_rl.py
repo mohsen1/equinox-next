@@ -27,6 +27,7 @@ from research.runpod.repository_repair_rl import (
     action_protocol_counts,
     adaptive_frontier_probe_decision,
     bounded_final_evaluation_reserve,
+    branch_checkpoint_diagnostic_actions,
     checkpoint_target_disposition,
     checkpoint_validation_seed,
     collect_branch_group,
@@ -134,6 +135,13 @@ def test_training_allocation_evenly_splits_current_and_adaptive_probe_levels() -
         training_level_allocation(4, 4)
     with pytest.raises(ValueError, match="adaptive probe range"):
         training_level_allocation(0, 4, probe_level=3)
+
+
+def test_branch_checkpoint_gathers_more_shared_evidence_as_fault_count_grows() -> None:
+    assert branch_checkpoint_diagnostic_actions(make_task(0, seed=31)) == 2
+    assert branch_checkpoint_diagnostic_actions(make_task(1, seed=31)) == 2
+    assert branch_checkpoint_diagnostic_actions(make_task(2, seed=31)) == 3
+    assert branch_checkpoint_diagnostic_actions(make_task(3, seed=31)) == 4
 
 
 def test_frontier_probe_follows_static_k_branch_contrast() -> None:
@@ -1243,6 +1251,10 @@ def test_serialized_branch_has_one_prefix_checkpoint_and_four_step_lanes() -> No
 
     assert serialized["checkpoint"]["fidelity"] == "logical_restore"
     assert serialized["checkpoint"]["static_branch_width"] == 4
+    assert serialized["shared_prefix"]["checkpoint_strategy"] == (
+        "fault_count_plus_one_accepted_diagnostics"
+    )
+    assert serialized["shared_prefix"]["required_diagnostic_actions"] == 2
     assert len(serialized["shared_prefix"]["steps"]) == 2
     assert len(serialized["siblings"]) == 4
     assert all(len(sibling["steps"]) == 4 for sibling in serialized["siblings"])
