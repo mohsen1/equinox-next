@@ -18,7 +18,7 @@ def configure(
     monkeypatch.setenv("EQUINOX_STUDY_COMPLETION_BUDGET", "320")
     monkeypatch.setenv(
         "EQUINOX_RL_TRAINING_TASKS_PER_UPDATE",
-        "16" if condition.startswith("k1_") else "4",
+        "12" if condition.startswith("k1_") else "3",
     )
     return study.study_configuration_from_environment()
 
@@ -26,10 +26,10 @@ def configure(
 @pytest.mark.parametrize(
     ("condition", "branch_width", "curriculum_policy", "tasks_per_update"),
     [
-        ("k1_scheduled_dynamic", 1, "scheduled_dynamic", 16),
-        ("k4_scheduled_dynamic", 4, "scheduled_dynamic", 4),
-        ("k1_adaptive", 1, "adaptive", 16),
-        ("k4_adaptive", 4, "adaptive", 4),
+        ("k1_scheduled_dynamic", 1, "scheduled_dynamic", 12),
+        ("k4_scheduled_dynamic", 4, "scheduled_dynamic", 3),
+        ("k1_adaptive", 1, "adaptive", 12),
+        ("k4_adaptive", 4, "adaptive", 3),
     ],
 )
 def test_preregistered_condition_configuration(
@@ -94,7 +94,7 @@ def test_result_records_factorial_condition() -> None:
         branch_width=4,
         curriculum_policy="scheduled_dynamic",
         completion_budget=320,
-        training_tasks_per_update=4,
+        training_tasks_per_update=3,
     )
     evidence = SimpleNamespace(sampled_completions=320)
     result = {
@@ -134,13 +134,33 @@ def test_install_uses_revision31_environment(
     )
     monkeypatch.setattr(frozen, "emit_progress", lambda *args, **kwargs: None)
     monkeypatch.setattr(study.revision30_study, "install_collection_budget", lambda *args: None)
-
-    study.install_revision31_condition(
-        configuration,
-        evidence,
-        tmp_path / "evidence.json",
+    frozen_names = (
+        "WORKLOAD_REVISION",
+        "OBJECTIVE_ID",
+        "SYSTEM_PROMPT",
+        "ACTION_PROTOCOL_REVISION",
+        "ENVIRONMENT_REVISION",
+        "RepositoryRepairEnvironment",
+        "VALIDATION_SEED_BASE",
+        "TEST_SEED_BASE",
+        "BRANCH_WIDTH",
+        "training_stop_decision",
+        "MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS",
+        "MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS",
     )
+    previous = {name: getattr(frozen, name) for name in frozen_names}
+    previous_environment_branch_width = study.frozen_environment.BRANCH_WIDTH
+    try:
+        study.install_revision31_condition(
+            configuration,
+            evidence,
+            tmp_path / "evidence.json",
+        )
 
-    assert frozen.RepositoryRepairEnvironment is study.interface.RepositoryRepairEnvironment
-    assert frozen.ACTION_PROTOCOL_REVISION == "repository-repair-json-tools@4"
-    assert frozen.ENVIRONMENT_REVISION == "repository-repair-simulator@5"
+        assert frozen.RepositoryRepairEnvironment is study.interface.RepositoryRepairEnvironment
+        assert frozen.ACTION_PROTOCOL_REVISION == "repository-repair-json-tools@4"
+        assert frozen.ENVIRONMENT_REVISION == "repository-repair-simulator@5"
+    finally:
+        for name, value in previous.items():
+            setattr(frozen, name, value)
+        study.frozen_environment.BRANCH_WIDTH = previous_environment_branch_width

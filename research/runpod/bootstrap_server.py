@@ -22,6 +22,14 @@ WORKLOAD_SUPPORT_FILES = {
     "repository_repair_study.py": frozenset(
         {"repository_repair_env.py", "repository_repair_rl.py"}
     ),
+    "repository_repair_study_v31.py": frozenset(
+        {
+            "repository_repair_env.py",
+            "repository_repair_env_v31.py",
+            "repository_repair_rl.py",
+            "repository_repair_study.py",
+        }
+    ),
     "repository_repair_eligibility.py": frozenset(
         {
             "repository_repair_env.py",

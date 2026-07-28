@@ -18,7 +18,7 @@ study_validation_seed_base="${EQUINOX_STUDY_VALIDATION_SEED_BASE:-}"
 study_test_seed_base="${EQUINOX_STUDY_TEST_SEED_BASE:-}"
 study_completion_budget="${EQUINOX_STUDY_COMPLETION_BUDGET:-}"
 branch_width=4
-if [[ "$study_condition" == "k1_train" ]]; then
+if [[ "$study_condition" == "k1_train" || "$study_condition" == k1_* ]]; then
   branch_width=1
 fi
 work_directory="${EQUINOX_REMOTE_WORKDIR:-/tmp}"
@@ -208,7 +208,7 @@ serve_boot_failure() {
 }
 
 case "$workload_file" in
-  repository_repair_rl.py | repository_repair_study.py | repository_repair_eligibility.py)
+  repository_repair_rl.py | repository_repair_study.py | repository_repair_study_v31.py | repository_repair_eligibility.py)
     progress_schema_version=2
     repository_workload=true
     ;;
@@ -261,6 +261,7 @@ if [[ "$repository_workload" == "true" ]]; then
   done
 fi
 if [[ "$workload_file" == "repository_repair_study.py" ||
+  "$workload_file" == "repository_repair_study_v31.py" ||
   "$workload_file" == "repository_repair_eligibility.py" ]]; then
   for study_configuration_value in \
     "$study_condition" \
@@ -273,7 +274,16 @@ if [[ "$workload_file" == "repository_repair_study.py" ||
         "The confirmatory study is missing its condition or fresh split seeds."
     fi
   done
-  if [[ "$study_condition" != "k4_train" && -z "$study_completion_budget" ]]; then
+  if [[ "$workload_file" == "repository_repair_study_v31.py" &&
+    -z "$study_completion_budget" ]]; then
+    serve_boot_failure \
+      "$progress_schema_version" \
+      "STUDY_CONFIGURATION_MISSING" \
+      "The revision-31 condition is missing its fixed completion budget."
+  fi
+  if [[ "$workload_file" != "repository_repair_study_v31.py" &&
+    "$study_condition" != "k4_train" &&
+    -z "$study_completion_budget" ]]; then
     serve_boot_failure \
       "$progress_schema_version" \
       "STUDY_CONFIGURATION_MISSING" \
@@ -319,7 +329,11 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     result = json.load(handle)
 if not isinstance(result, dict):
     raise SystemExit(1)
-if sys.argv[2] in {"repository_repair_rl.py", "repository_repair_study.py"}:
+if sys.argv[2] in {
+    "repository_repair_rl.py",
+    "repository_repair_study.py",
+    "repository_repair_study_v31.py",
+}:
     if result.get("experiment_completed") is not True:
         raise SystemExit(1)
 if sys.argv[2] == "repository_repair_eligibility.py":

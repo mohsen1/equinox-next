@@ -13,10 +13,16 @@ fi
 experiment="${EQUINOX_RUNPOD_EXPERIMENT:-repository-repair}"
 support_files=()
 study_condition="${EQUINOX_STUDY_CONDITION:-}"
+study_revision="${EQUINOX_STUDY_REVISION:-30}"
 study_validation_seed_base="${EQUINOX_STUDY_VALIDATION_SEED_BASE:-}"
 study_test_seed_base="${EQUINOX_STUDY_TEST_SEED_BASE:-}"
 study_completion_budget="${EQUINOX_STUDY_COMPLETION_BUDGET:-}"
 study_eligibility_only="${EQUINOX_STUDY_ELIGIBILITY_ONLY:-}"
+expected_study_id="repository-repair-confirmatory-study@1"
+expected_complexity_strategy="adaptive"
+expected_mastery_window_basis="retained_zero_regression_checkpoints"
+expected_frontier_probe_routing="mixed_correctness_branch_contrast_feedback"
+expected_training_level_allocation="current_and_adaptive_probe_even_split"
 expected_branch_width=4
 expected_algorithm="verified-fix-group-conditioned-policy-gradient"
 case "$experiment" in
@@ -45,7 +51,40 @@ case "$experiment" in
       workload_file="$contract_workload_file"
       support_files=("$environment_file")
     else
-      if [[ "$study_eligibility_only" == "1" ]]; then
+      if [[ "$study_revision" == "31" ]]; then
+        if [[ "$study_eligibility_only" == "1" ]]; then
+          echo "Revision 31 does not use the revision-30 eligibility screen." >&2
+          exit 1
+        fi
+        workload_file="repository_repair_study_v31.py"
+        contract_workload_file="$workload_file"
+        environment_file="repository_repair_env_v31.py"
+        support_files=(
+          "repository_repair_study.py"
+          "repository_repair_rl.py"
+          "repository_repair_env.py"
+          "$environment_file"
+        )
+        expected_study_id="repository-repair-causal-factorial-study@2"
+        case "$study_condition" in
+          k1_adaptive | k4_adaptive)
+            expected_complexity_strategy="adaptive"
+            ;;
+          k1_scheduled_dynamic | k4_scheduled_dynamic)
+            expected_complexity_strategy="scheduled_dynamic"
+            expected_mastery_window_basis="scheduled_completed_validation_windows"
+            expected_frontier_probe_routing="scheduled_nearest_harder_probe"
+            expected_training_level_allocation="current_and_scheduled_probe_even_split"
+            ;;
+          *)
+            echo "Revision-31 conditions must name a preregistered factorial cell." >&2
+            exit 1
+            ;;
+        esac
+      elif [[ "$study_revision" != "30" ]]; then
+        echo "EQUINOX_STUDY_REVISION must be 30 or 31." >&2
+        exit 1
+      elif [[ "$study_eligibility_only" == "1" ]]; then
         workload_file="repository_repair_eligibility.py"
         support_files=(
           "repository_repair_study.py"
@@ -72,8 +111,24 @@ case "$experiment" in
           expected_branch_width=1
           expected_algorithm="verified-fix-positive-only-policy-gradient-k1"
           ;;
+        k4_adaptive)
+          execution_name="K=4 · adaptive complexity · seed ${EQUINOX_RL_SEED:-unset}"
+          ;;
+        k4_scheduled_dynamic)
+          execution_name="K=4 · scheduled complexity · seed ${EQUINOX_RL_SEED:-unset}"
+          ;;
+        k1_adaptive)
+          execution_name="K=1 · adaptive complexity · seed ${EQUINOX_RL_SEED:-unset}"
+          expected_branch_width=1
+          expected_algorithm="verified-fix-positive-only-policy-gradient-k1"
+          ;;
+        k1_scheduled_dynamic)
+          execution_name="K=1 · scheduled complexity · seed ${EQUINOX_RL_SEED:-unset}"
+          expected_branch_width=1
+          expected_algorithm="verified-fix-positive-only-policy-gradient-k1"
+          ;;
         *)
-          echo "EQUINOX_STUDY_CONDITION must be k4_train, k4_no_update, or k1_train." >&2
+          echo "EQUINOX_STUDY_CONDITION does not name a supported study condition." >&2
           exit 1
           ;;
       esac
@@ -103,6 +158,10 @@ case "$experiment" in
       default_test_examples="12"
       if [[ "$study_condition" == "k1_train" ]]; then
         default_training_tasks_per_update="12"
+      elif [[ "$study_revision" == "31" && "$study_condition" == k1_* ]]; then
+        default_training_tasks_per_update="12"
+      elif [[ "$study_revision" == "31" && "$study_condition" == k4_* ]]; then
+        default_training_tasks_per_update="3"
       fi
     fi
     ;;
@@ -204,6 +263,7 @@ PY
 }
 expected_workload_revision=""
 expected_objective_id=""
+expected_environment_revision=""
 expected_action_protocol_revision=""
 expected_shared_prefix_checkpoint=""
 if [[ "$experiment" == "repository-repair" ]]; then
@@ -215,6 +275,9 @@ if [[ "$experiment" == "repository-repair" ]]; then
   )"
   expected_action_protocol_revision="$(
     read_python_string_constant "$environment_path" ACTION_PROTOCOL_REVISION
+  )"
+  expected_environment_revision="$(
+    read_python_string_constant "$environment_path" ENVIRONMENT_REVISION
   )"
   expected_shared_prefix_checkpoint="$(
     read_python_string_constant "$contract_workload_path" SHARED_PREFIX_CHECKPOINT_STRATEGY
@@ -974,8 +1037,8 @@ else
     and .multi_step == true
     and .restored_continuations == true
     and .prefix_gradient == false
-    and .complexity_strategy == "adaptive"
-    and .environment_revision == "repository-repair-simulator@4"
+    and .complexity_strategy == $expected_complexity_strategy
+    and .environment_revision == $expected_environment_revision
     and .action_protocol_revision == $expected_action_protocol_revision
     and .replay_enabled == true
     and .snapshot_fidelity == "logical_restore"
@@ -1004,7 +1067,7 @@ else
     and .training_tasks_per_update == $expected_training_tasks_per_update
     and .replay_tasks_per_level == $expected_replay_tasks_per_level
     and .training_configuration.maximum_updates == $expected_maximum_updates
-    and .training_configuration.mastery_window_basis == "retained_zero_regression_checkpoints"
+    and .training_configuration.mastery_window_basis == $expected_mastery_window_basis
     and .training_configuration.maximum_final_evaluation_reserve_seconds == $expected_final_evaluation_reserve
     and .training_configuration.final_evaluation_reserve_source == "retained_checkpoint"
     and .training_configuration.maximum_consecutive_malformed_windows == 2
@@ -1019,8 +1082,8 @@ else
     and .training_configuration.minimum_informative_groups_per_policy_update == 2
     and .training_configuration.policy_batching == "durable_cross_update_verified_fix_accumulation"
     and .training_configuration.frontier_probe_offset == 2
-    and .training_configuration.frontier_probe_routing == "mixed_correctness_branch_contrast_feedback"
-    and .training_configuration.training_level_allocation == "current_and_adaptive_probe_even_split"
+    and .training_configuration.frontier_probe_routing == $expected_frontier_probe_routing
+    and .training_configuration.training_level_allocation == $expected_training_level_allocation
     and .training_configuration.task_sampling == "cumulative_validation_failure_structural_analogues"
     and .training_configuration.curriculum_feedback_source == "disabled_adapter_fixed_and_disjoint_rotating_validation"
     and .training_configuration.contrast_streak_reset == "new_validation_supported_training_family"
@@ -1036,9 +1099,17 @@ else
       if $expected_study_condition == "" then
         (.study // null) == null
       else
-        .study.study_id == "repository-repair-confirmatory-study@1"
+        .study.study_id == $expected_study_id
         and .study.condition == $expected_study_condition
-        and .study.frozen_source_commit == "e6a139375a4e6ec92df362873237b398aa0041c0"
+        and (
+          if $expected_study_revision == "31" then
+            .study.frozen_base_source_commit == "e6a139375a4e6ec92df362873237b398aa0041c0"
+            and .study.curriculum_policy == $expected_complexity_strategy
+            and .study.static_branch_width == true
+          else
+            .study.frozen_source_commit == "e6a139375a4e6ec92df362873237b398aa0041c0"
+          end
+        )
         and .study.optimization_seed == $expected_optimization_seed
         and .study.validation_seed_base == $expected_validation_seed_base
         and .study.test_seed_base == $expected_test_seed_base
@@ -1046,7 +1117,7 @@ else
         and .study.completion_budget == $expected_completion_budget
         and .study.sampled_completions == .total_sampled_completions
         and .study.training_tasks_per_update == $expected_training_tasks_per_update
-        and .training_configuration.study_id == "repository-repair-confirmatory-study@1"
+        and .training_configuration.study_id == $expected_study_id
         and .training_configuration.study_condition == $expected_study_condition
       end
     )
@@ -1242,8 +1313,15 @@ if ! jq -e \
   --arg expected_model "$model_id" \
   --arg expected_workload_revision "$expected_workload_revision" \
   --arg expected_objective_id "$expected_objective_id" \
+  --arg expected_environment_revision "$expected_environment_revision" \
   --arg expected_algorithm "$expected_algorithm" \
   --arg expected_study_condition "$study_condition" \
+  --arg expected_study_revision "$study_revision" \
+  --arg expected_study_id "$expected_study_id" \
+  --arg expected_complexity_strategy "$expected_complexity_strategy" \
+  --arg expected_mastery_window_basis "$expected_mastery_window_basis" \
+  --arg expected_frontier_probe_routing "$expected_frontier_probe_routing" \
+  --arg expected_training_level_allocation "$expected_training_level_allocation" \
   --arg expected_action_protocol_revision "$expected_action_protocol_revision" \
   --arg expected_shared_prefix_checkpoint "$expected_shared_prefix_checkpoint" \
   --argjson expected_branch_width "$expected_branch_width" \

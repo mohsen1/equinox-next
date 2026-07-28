@@ -24,6 +24,7 @@ except ModuleNotFoundError:
 
 WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@31"
 OBJECTIVE_ID = "verified-fix-coverage-retention-policy-gradient@15"
+SHARED_PREFIX_CHECKPOINT_STRATEGY = "all_fault_sources_observed"
 STUDY_ID = "repository-repair-causal-factorial-study@2"
 FROZEN_BASE_SOURCE_COMMIT = "e6a139375a4e6ec92df362873237b398aa0041c0"
 FROZEN_INTERFACE_SHA256 = "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657"
@@ -70,7 +71,7 @@ def study_configuration_from_environment() -> StudyConfiguration:
     if curriculum_policy not in CURRICULUM_POLICIES:
         raise ValueError("the study condition has an unknown curriculum policy")
     training_tasks_per_update = positive_environment_integer("EQUINOX_RL_TRAINING_TASKS_PER_UPDATE")
-    expected_tasks_per_update = 16 if branch_width == 1 else 4
+    expected_tasks_per_update = 12 if branch_width == 1 else 3
     if training_tasks_per_update != expected_tasks_per_update:
         raise ValueError(
             f"K={branch_width} requires {expected_tasks_per_update} training tasks per update"

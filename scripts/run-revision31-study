@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$repository_root/scripts/ensure-local-env"
+exec "$repository_root/.venv/bin/python" -m research.runpod.revision31_study_operator "$@"

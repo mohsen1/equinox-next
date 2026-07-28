@@ -31,7 +31,7 @@ The four cells are:
 
 The scheduled treatment is still dynamically complex: it traverses the same ordered complexity levels and uses the nearest harder level as its probe. It is outcome-blinded, so the comparison separates static branch width from outcome-driven complexity adaptation.
 
-Each cell uses seeds 137, 269, 443, 617, and 887. Conditions sharing a seed also share the validation and test split bases. Every condition receives exactly 320 sampled completions. `K=4` collects four tasks per update and `K=1` collects sixteen so that both attempt sixteen new continuations per update before replay.
+Each cell uses seeds 137, 269, 443, 617, and 887. Conditions sharing a seed also share the validation and test split bases. Every condition receives exactly 320 sampled completions. `K=4` collects three tasks per update and `K=1` collects twelve so that both attempt twelve new continuations per update before replay. This correction was made after preflight showed that the training split contains only thirteen distinct semantics per level; no GPU condition had been launched.
 
 Outcome-triggered early stops for regression, uninformative groups, and maximum-level mastery are disabled in every cell so they cannot break completion-budget matching. Provider deadlines, final-evaluation reserve, action-protocol failure, and the exact 320-completion stop remain binding.
 
