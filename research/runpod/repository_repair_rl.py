@@ -85,8 +85,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@29"
-OBJECTIVE_ID = "verified-fix-priority-target-retention-policy-gradient@14"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@30"
+OBJECTIVE_ID = "verified-fix-coverage-retention-policy-gradient@15"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -101,7 +101,8 @@ PREFIX_MAX_ATTEMPTS = 8
 EVALUATION_INTERVAL = 5
 VALIDATION_SEED_BASE = 40_000
 VALIDATION_WINDOW_SEED_STRIDE = 1_000_003
-TEST_SEED_BASE = 90_000
+TEST_SEED_BASE = 190_000
+FIXED_RETENTION_GUARD_MULTIPLIER = 2
 MAX_INPUT_TOKENS = 4_096
 MAX_NEW_TOKENS = 192
 ACTION_RESPONSE_PREFIX = '{"tool":'
@@ -1072,6 +1073,59 @@ def fixed_retention_guard_levels(
     return list(range(min(maximum_level, current_level + 1) + 1))
 
 
+def fixed_retention_guard_example_count(level: int, validation_examples: int) -> int:
+    if validation_examples < 1:
+        raise ValueError("validation examples must be positive")
+    return min(
+        semantic_task_universe_size(level, "validation"),
+        validation_examples * FIXED_RETENTION_GUARD_MULTIPLIER,
+    )
+
+
+def family_balanced_validation_tasks(
+    level: int,
+    count: int,
+    seed: int,
+) -> list[RepairTask]:
+    """Select a deterministic validation suite with balanced family coverage."""
+    candidates = make_tasks(
+        level,
+        semantic_task_universe_size(level, "validation"),
+        seed,
+        split="validation",
+    )
+    if not 1 <= count <= len(candidates):
+        raise ValueError("validation task count is outside the semantic universe")
+
+    family_counts = {template[0]: 0 for template in TEMPLATE_SPLITS["validation"]}
+    selected: list[RepairTask] = []
+    remaining = list(candidates)
+    while len(selected) < count:
+        candidate_index = max(
+            range(len(remaining)),
+            key=lambda index: (
+                sum(
+                    family_counts[fault.family_id] == 0
+                    for fault in remaining[index].faults
+                ),
+                -sum(
+                    family_counts[fault.family_id]
+                    for fault in remaining[index].faults
+                ),
+                -max(
+                    family_counts[fault.family_id]
+                    for fault in remaining[index].faults
+                ),
+                -index,
+            ),
+        )
+        task = remaining.pop(candidate_index)
+        selected.append(task)
+        for fault in task.faults:
+            family_counts[fault.family_id] += 1
+    return selected
+
+
 def sampled_reverse_kl_penalty(log_reference_over_policy: float) -> float:
     return math.expm1(log_reference_over_policy) - log_reference_over_policy
 
@@ -1964,6 +2018,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "curriculum_feedback_source": ("disabled_adapter_fixed_and_disjoint_rotating_validation"),
         "contrast_streak_reset": "new_validation_supported_training_family",
         "new_target_scheduling": "priority_active_frontier_before_rotation",
+        "fixed_retention_guard_sampling": "deterministic_family_balanced_validation",
+        "fixed_retention_guard_multiplier": FIXED_RETENTION_GUARD_MULTIPLIER,
+        "test_seed_base": TEST_SEED_BASE,
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
@@ -2432,10 +2489,17 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         resume_state["validation_baseline_by_level"]
         if resume_state
         else {
-            "0": evaluate(
-                0,
-                runtime.validation_examples,
-                VALIDATION_SEED_BASE,
+            "0": evaluate_tasks(
+                family_balanced_validation_tasks(
+                    0,
+                    fixed_retention_guard_example_count(
+                        0,
+                        runtime.validation_examples,
+                    ),
+                    checkpoint_validation_seed(0),
+                ),
+                level=0,
+                seed=checkpoint_validation_seed(0),
                 split="validation",
                 progress_phase="baseline_evaluation",
             )
@@ -3235,11 +3299,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             for guard_level in guard_levels:
                 guard_key = str(guard_level)
                 guard_seed = checkpoint_validation_seed(guard_level)
-                guard_tasks = make_tasks(
+                guard_examples = fixed_retention_guard_example_count(
                     guard_level,
                     runtime.validation_examples,
+                )
+                guard_tasks = family_balanced_validation_tasks(
+                    guard_level,
+                    guard_examples,
                     guard_seed,
-                    split="validation",
                 )
                 baseline_observation = validation_baseline_by_level.get(guard_key)
                 if baseline_observation is None:
@@ -3463,6 +3530,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     "checkpoint_rate": checkpoint_observation["checkpoint_rate"],
                     "checkpoint_rate_95ci": checkpoint_observation["checkpoint_rate_95ci"],
                     "fixed_guard_levels": guard_levels,
+                    "fixed_guard_examples_by_level": {
+                        str(guard_level): fixed_retention_guard_example_count(
+                            guard_level,
+                            runtime.validation_examples,
+                        )
+                        for guard_level in guard_levels
+                    },
                     "fixed_guard_net_improved": best_fixed_guard_net_improved,
                     "fixed_guard_regressions": fixed_guard_paired_change["regressed"],
                     "rotating_guard_net_improved": best_rotating_guard_net_improved,
@@ -3496,6 +3570,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     **checkpoint_observation,
                     "selection_window": "paired_active_adjacent_and_rotating_guard",
                     "fixed_guard_levels": guard_levels,
+                    "fixed_guard_examples_by_level": {
+                        str(guard_level): fixed_retention_guard_example_count(
+                            guard_level,
+                            runtime.validation_examples,
+                        )
+                        for guard_level in guard_levels
+                    },
                     "fixed_guard_paired_change": fixed_guard_paired_change,
                     "curriculum_seed": validation_seed,
                     "curriculum_baseline_exact_successes": (
@@ -3904,6 +3985,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "complexity_levels": [asdict(item) for item in COMPLEXITY_LEVELS],
         "validation_examples": runtime.validation_examples,
         "test_examples": runtime.test_examples,
+        "test_seed_base": TEST_SEED_BASE,
         "evaluation_interval": EVALUATION_INTERVAL,
         "evaluation_interval_method": "wilson-score-95",
         "training_tasks_per_update": runtime.training_tasks_per_update,

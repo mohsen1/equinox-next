@@ -46,7 +46,9 @@ from research.runpod.repository_repair_rl import (
     evaluation_reward_summary,
     expanded_validation_training_targets,
     failure_directed_training_tasks,
+    family_balanced_validation_tasks,
     fault_fixing_edit_actions,
+    fixed_retention_guard_example_count,
     fixed_retention_guard_levels,
     lightweight_validation_history,
     next_malformed_action_window_streak,
@@ -372,6 +374,23 @@ def test_cross_level_retention_guard_is_paired_and_lexicographic() -> None:
         rotating_change={"improved": 1, "regressed": 0, "net_improved": 1},
         consecutive_regressions=1,
     ) == (True, 1, 1, 0)
+
+
+def test_fixed_retention_guard_doubles_and_balances_validation_coverage() -> None:
+    assert fixed_retention_guard_example_count(0, 8) == 16
+    assert fixed_retention_guard_example_count(2, 8) == 16
+
+    first = family_balanced_validation_tasks(2, 16, 40_000)
+    repeated = family_balanced_validation_tasks(2, 16, 40_000)
+    family_counts = {
+        family_id: sum(fault.family_id == family_id for task in first for fault in task.faults)
+        for family_id in {fault.family_id for task in first for fault in task.faults}
+    }
+
+    assert [task.task_id for task in first] == [task.task_id for task in repeated]
+    assert len({task.semantic_task_id for task in first}) == 16
+    assert len(family_counts) == len(repository_repair_rl.TEMPLATE_SPLITS["validation"])
+    assert min(family_counts.values()) >= 2
 
 
 def test_mastery_counts_retained_safe_checkpoints_not_rejected_candidates() -> None:

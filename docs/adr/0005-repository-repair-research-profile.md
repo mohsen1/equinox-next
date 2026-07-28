@@ -530,6 +530,24 @@ and observed source reads. Static `K=4`, environment semantics, terminal-success
 edit credit, sampling, optimization, validation isolation, retention, and final
 hypothesis rules do not change.
 
+The seed `113` revision-29 run confirmed that source-complete branching unlocks harder
+learning. It promoted to level 1, sampled through level 3, and retained update 25 after
+23 policy updates. Paired held-out completion improved from `16/48` to `27/48`, with 12
+improvements, one regression, and exact McNemar `p=0.00341796875`. The gain is
+statistically significant, but the regression correctly failed the hypothesis gate.
+Proof `research_proof_ccc4df24e5ad436bb0caf9e3f58a68b9`, artifacts, teardown, zero
+pods, and zero ongoing spend were verified; estimated cost was `$1.490278`.
+
+Revision 30 addresses the retention-coverage defect without using final-test examples
+for training or checkpoint selection. Its fixed guard is a deterministic,
+family-balanced validation suite containing twice as many examples as a rotating
+window. This covers every validation family, including repeated multi-fault coverage at
+levels 2 and 3. Objective v15 is
+`verified-fix-coverage-retention-policy-gradient@15`. Since the revision-29 test
+outcomes have been inspected, revision 30 also freezes a fresh test seed base of
+`190000`. Test families, counts, baseline/final pairing, static `K=4`, dynamic
+complexity, and the zero-regression significance gate remain unchanged.
+
 ## Non-goals
 
 - Dynamic branch width.

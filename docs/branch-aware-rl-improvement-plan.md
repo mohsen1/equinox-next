@@ -328,6 +328,36 @@ that cannot reach the checkpoint. Result evidence records required and observed 
 coverage. Action schemas, static K, terminal-success-only edit credit, optimizer,
 validation isolation, retention, and the final paired gate remain unchanged.
 
+The completed seed `113` revision-29 run produced the first statistically significant
+held-out improvement. It promoted from level 0 to level 1, sampled through level 3, and
+completed 23 policy updates across 160 K=4 groups. The retained update-25 adapter moved
+paired test completion from `16/48` to `27/48`: 12 improvements, one regression, and
+exact McNemar `p=0.00341796875`. This is meaningful post-training evidence, but the one
+regression correctly failed the zero-regression hypothesis gate. Later candidates at
+updates 30 and 35 also regressed and were rejected; training stopped and restored
+update 25. Proof `research_proof_ccc4df24e5ad436bb0caf9e3f58a68b9`, the adapter,
+receipt, provider teardown, zero pods, and zero ongoing spend were verified. Estimated
+cost was `$1.490278`.
+
+Revision 29 also exposed a retention-coverage gap. Its fixed guard evaluated eight
+repairs per level. At level 1 this produced a clean 24-example cross-level guard, but it
+did not cover every validation family or enough multi-fault interactions to predict the
+single final-test regression. Objective v15,
+`verified-fix-coverage-retention-policy-gradient@15`, runs under workload revision
+`runpod-repository-repair-causal-credit@30`. The fixed guard now evaluates a
+deterministic, family-balanced validation suite at twice the rotating-window size. With
+eight rotating examples, this covers all 16 validation families at levels 0 and 1,
+each family twice at level 2, and each family three times at level 3. Rotating
+validation remains disjoint between consecutive windows, and validation actions never
+become optimizer examples.
+
+Because revision-29 final-test outcomes have now been inspected, revision 30
+precommits a fresh test seed base of `190000` and records it in the training
+configuration and result. The change is distribution-preserving: test families,
+generator, counts, pairing, zero-regression rule, and exact McNemar threshold do not
+change. It prevents iterative checkpoint work from being evaluated only against the
+already-observed multi-fault combinations.
+
 ## What we learned
 
 ### From the current Equinox runs
