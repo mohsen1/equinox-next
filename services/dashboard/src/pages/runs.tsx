@@ -501,9 +501,12 @@ function ValidationHistory({
                   {row.fixed_guard_paired_change &&
                   row.fixed_guard_levels?.length ? (
                     <small>
-                      Levels {row.fixed_guard_levels.join(", ")} · +
+                      Fixed {row.fixed_guard_levels.join(", ")} · +
                       {row.fixed_guard_paired_change.improved} / −
                       {row.fixed_guard_paired_change.regressed}
+                      {row.curriculum_paired_change
+                        ? ` · rotating +${row.curriculum_paired_change.improved} / −${row.curriculum_paired_change.regressed}`
+                        : ""}
                     </small>
                   ) : null}
                 </td>

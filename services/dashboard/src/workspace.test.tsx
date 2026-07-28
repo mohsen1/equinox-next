@@ -174,6 +174,14 @@ describe("Runs and Proofs workspaces", () => {
                   net_improved: 1,
                   mcnemar_exact_p_value: 1,
                 },
+                curriculum_paired_change: {
+                  examples: 8,
+                  improved: 0,
+                  regressed: 1,
+                  unchanged: 7,
+                  net_improved: -1,
+                  mcnemar_exact_p_value: 1,
+                },
               },
             ],
           },
@@ -213,8 +221,10 @@ describe("Runs and Proofs workspaces", () => {
     expect(container.textContent).toContain("1.0% malformed recent");
     expect(container.textContent).toContain("12m 30s training");
     expect(container.textContent).toContain("45m 0s evaluation");
+    expect(container.textContent).toContain(
+      "Fixed 0, 1 · +1 / −0 · rotating +0 / −1",
+    );
     expect(container.textContent).toContain("Best retained");
-    expect(container.textContent).toContain("Levels 0, 1 · +1 / −0");
   });
 
   it("links each proof row to focused proof evidence", async () => {

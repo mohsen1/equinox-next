@@ -158,6 +158,24 @@ regresses. Result evidence records repair-family identities, per-level paired ch
 and each changed held-out task so equivalent-semantic instability is directly
 observable.
 
+The seed `113` revision-21 run showed that this change is safer but still not a useful
+learning objective. Seven policy-bearing updates consumed verified successful actions
+from mixed-correctness groups, aggregate action validity remained `98.0583%`, and the
+recent eight-group window ended at `100%` validity. The fixed level-0 and level-1 guard
+remained unchanged at both checkpoints. Each disjoint rotating level-0 guard nevertheless
+regressed by one task with no improvement, so the run stopped at update 10 and restored
+the baseline adapter. All 48 paired test outcomes were unchanged at `17/48`; the
+hypothesis failed. The run cost an estimated `$0.501807`, teardown was confirmed, and
+ongoing provider spend returned to zero.
+
+The branch evidence explains the remaining credit-assignment problem. Successful
+trajectories spread equal positive weight across repair, test, and finish actions even
+though only the fault-fixing edit changes task correctness. The next objective should
+place policy credit only on causally productive edits from verified successful siblings,
+keep every accepted action under the base-policy reference anchor, and direct training
+toward declared train-split analogues of the active validation failure families. Final
+test tasks remain isolated from this curriculum feedback.
+
 ## What we learned
 
 ### From the current Equinox runs
