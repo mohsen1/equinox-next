@@ -751,7 +751,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-causal-credit@23"
+    and .workload_revision == "runpod-repository-repair-causal-credit@24"
     and .algorithm == "verified-fix-group-conditioned-policy-gradient"
     and .objective_id == "verified-fix-accumulated-retention-policy-gradient@12"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
@@ -804,6 +804,7 @@ else
     and .training_tasks_per_update == $expected_training_tasks_per_update
     and .replay_tasks_per_level == $expected_replay_tasks_per_level
     and .training_configuration.maximum_updates == $expected_maximum_updates
+    and .training_configuration.mastery_window_basis == "retained_zero_regression_checkpoints"
     and .training_configuration.maximum_final_evaluation_reserve_seconds == $expected_final_evaluation_reserve
     and .training_configuration.final_evaluation_reserve_source == "retained_checkpoint"
     and .training_configuration.maximum_consecutive_malformed_windows == 2

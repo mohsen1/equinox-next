@@ -416,7 +416,7 @@ credit-assignment defect: positive weight was divided across successful repair, 
 and finish actions even though only fault-fixing edits caused the verified state change.
 
 Objective v12 is `verified-fix-accumulated-retention-policy-gradient@12` under workload
-revision `runpod-repository-repair-causal-credit@23`. A mixed-correctness group is still
+revision `runpod-repository-repair-causal-credit@24`. A mixed-correctness group is still
 required, but positive policy credit is limited to accepted edits that increase the
 verified fixed-fault count on a sibling that ultimately solves the task. All accepted
 actions—including diagnostics, tests, finishes, failed-sibling actions, and no-signal
@@ -434,6 +434,13 @@ weights still used all accepted continuation actions even though optimization us
 fault-fixing edits. Revision 23 removes that independent calculation. Optimizer inputs,
 sibling eligibility, step-level policy signal, and effective weights now share the same
 causal-credit function.
+
+Revision 23 retained update 15 with two fixed-guard improvements, two rotating-guard
+improvements, and zero regressions. Final paired test completion improved from `17/48`
+to `21/48` with zero regressions, but four discordant improvements yield `p=0.125` and
+do not pass the hypothesis gate. Revision 24 changes only dynamic-complexity accounting:
+mastery is accumulated across retained zero-regression checkpoints. A rejected
+transient candidate does not reset evidence attached to the still-retained policy.
 
 ## Non-goals
 

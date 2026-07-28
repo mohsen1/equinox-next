@@ -177,7 +177,7 @@ toward declared train-split analogues of the active validation failure families.
 test tasks remain isolated from this curriculum feedback.
 
 Objective v12, `verified-fix-accumulated-retention-policy-gradient@12`, implements that
-change under workload revision `runpod-repository-repair-causal-credit@23`. Positive
+change under workload revision `runpod-repository-repair-causal-credit@24`. Positive
 policy credit is limited to accepted edits that increase the verified fixed-fault count
 on a sibling that ultimately solves the task. Successful tests and finishes no longer
 dilute the learning signal. Failed siblings still receive zero policy weight, while all
@@ -198,6 +198,26 @@ continuation action. That would make the proof disagree with the optimizer. The 
 was terminated at an estimated `$0.043085`; teardown and zero ongoing spend were
 confirmed. Revision 23 derives optimizer examples, sibling eligibility, per-action
 credit, and displayed weights from one shared causal-credit function.
+
+The completed seed `113` revision-23 run produced the first zero-regression held-out
+gain. Update 15 was retained with `+2/−0` on the 16-task fixed level-0/1 guard and
+`+2/−0` on its rotating level-0 guard. Training stopped at update 20 after 12
+uninformative groups and restored that adapter. Paired test solves rose from `17/48` to
+`21/48`: four improvements, zero regressions, an `8.3333`-point gain, and exact McNemar
+`p=0.125`. Improvements covered `is_empty`, `safe_head` at two levels, and `square`.
+The result is meaningful exploratory post-training but does not pass the predefined
+`p<0.05` hypothesis gate. The run cost an estimated `$0.644652`; proof ingestion,
+artifact verification, teardown, and zero ongoing spend all succeeded.
+
+Revision 23 also exposed a dynamic-complexity accounting defect. Update 5 was a retained
+mastery checkpoint. An unsafe update-10 candidate was rejected, but it reset the mastery
+counter even though the exported policy remained update 5. Update 15 then became a
+second retained mastery checkpoint without triggering promotion, and level-0 branch
+contrast disappeared before another checkpoint. Revision 24 counts mastery windows only
+when a zero-regression candidate is retained. Rejected transient candidates neither
+advance nor erase retained mastery. This should promote the update-15 policy to level 1
+and direct subsequent branch learning toward the higher levels where revision 23 made
+no test gains.
 
 ## What we learned
 

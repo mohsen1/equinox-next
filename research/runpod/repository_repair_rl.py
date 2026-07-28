@@ -85,7 +85,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@23"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@24"
 OBJECTIVE_ID = "verified-fix-accumulated-retention-policy-gradient@12"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -886,6 +886,19 @@ def paired_retention_guard_decision(
         best_rotating_net_improved,
         consecutive_regressions + 1 if regressed else 0,
     )
+
+
+def next_retained_mastery_windows(
+    current: int,
+    *,
+    candidate_retained: bool,
+    candidate_mastered: bool,
+) -> int:
+    if current < 0:
+        raise ValueError("retained mastery windows cannot be negative")
+    if not candidate_retained:
+        return current
+    return current + 1 if candidate_mastered else 0
 
 
 def fixed_retention_guard_levels(
@@ -1766,6 +1779,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "evaluation_interval": EVALUATION_INTERVAL,
         "mastery_threshold": MASTERY_THRESHOLD,
         "mastery_windows": runtime.mastery_windows,
+        "mastery_window_basis": "retained_zero_regression_checkpoints",
         "minimum_protocol_validity_rate": MINIMUM_PROTOCOL_VALIDITY_RATE,
         "learning_rate": LEARNING_RATE,
         "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
@@ -3122,7 +3136,6 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 and curriculum_paired_change["regressed"] == 0
             )
             mastered = observation_mastered(curriculum_observation) and retention_guard_passed
-            mastery_streak = mastery_streak + 1 if mastered else 0
             same_fixed_guard = best_validation.get("fixed_guard_levels", [0]) == guard_levels
             (
                 candidate_is_best,
@@ -3139,6 +3152,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 fixed_change=fixed_guard_paired_change,
                 rotating_change=curriculum_paired_change,
                 consecutive_regressions=consecutive_regression_windows,
+            )
+            mastery_streak = next_retained_mastery_windows(
+                mastery_streak,
+                candidate_retained=candidate_is_best,
+                candidate_mastered=mastered,
             )
             (
                 final_evaluation_reserve_seconds,
@@ -3253,7 +3271,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         "update": update,
                         "from_level": level,
                         "to_level": level + 1,
-                        "reason": "two_disjoint_mastery_windows",
+                        "reason": "two_retained_zero_regression_mastery_windows",
                         "from_complexity": current_complexity,
                         "to_complexity": next_complexity,
                         "changed_dimensions": {

@@ -41,6 +41,7 @@ from research.runpod.repository_repair_rl import (
     fixed_retention_guard_levels,
     lightweight_validation_history,
     next_malformed_action_window_streak,
+    next_retained_mastery_windows,
     next_uninformative_group_streak,
     observation_mastered,
     paired_change_summary,
@@ -202,6 +203,41 @@ def test_cross_level_retention_guard_is_paired_and_lexicographic() -> None:
         rotating_change={"improved": 1, "regressed": 0, "net_improved": 1},
         consecutive_regressions=1,
     ) == (True, 1, 1, 0)
+
+
+def test_mastery_counts_retained_safe_checkpoints_not_rejected_candidates() -> None:
+    assert (
+        next_retained_mastery_windows(
+            0,
+            candidate_retained=True,
+            candidate_mastered=True,
+        )
+        == 1
+    )
+    assert (
+        next_retained_mastery_windows(
+            1,
+            candidate_retained=False,
+            candidate_mastered=False,
+        )
+        == 1
+    )
+    assert (
+        next_retained_mastery_windows(
+            1,
+            candidate_retained=True,
+            candidate_mastered=True,
+        )
+        == 2
+    )
+    assert (
+        next_retained_mastery_windows(
+            1,
+            candidate_retained=True,
+            candidate_mastered=False,
+        )
+        == 0
+    )
 
 
 def test_sampled_reverse_kl_penalty_is_zero_at_reference_and_nonnegative() -> None:
