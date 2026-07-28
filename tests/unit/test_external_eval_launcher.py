@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from research.runpod.external_eval_launcher import (
     build_bundle,
     load_frozen_pack,
     paired_change_summary,
+    proxy_put_file,
     verify_result_contract,
 )
 from research.runpod.revision30_external_eval import (
@@ -152,3 +155,72 @@ def test_external_result_contract_requires_every_policy_and_task() -> None:
     incomplete["result_digest"] = "sha256:" + hashlib.sha256(canonical_json(content)).hexdigest()
     with pytest.raises(LaunchFailure, match="proof contract"):
         verify_result_contract(incomplete, input_manifest, frozen_pack)
+
+
+def test_proxy_upload_reports_remote_http_error_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "manifest.json"
+    source.write_text("{}", encoding="utf-8")
+
+    def failed_upload(*_arguments: object, **_keywords: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=["curl"],
+            returncode=0,
+            stdout=b'{"error":"NOT_FOUND"}\n404',
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        "research.runpod.external_eval_launcher.run_command",
+        failed_upload,
+    )
+
+    with pytest.raises(
+        LaunchFailure,
+        match=r'HTTP 404: /inputs/manifest.json: \{"error":"NOT_FOUND"\}',
+    ):
+        proxy_put_file(
+            "https://example.test",
+            "/inputs/manifest.json",
+            "token",
+            source,
+            timeout=10,
+        )
+
+
+def test_proxy_upload_parses_success_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "manifest.json"
+    source.write_text("{}", encoding="utf-8")
+    response = {"stored": "manifest.json", "size_bytes": 2, "sha256": "digest"}
+
+    def successful_upload(
+        *_arguments: object,
+        **_keywords: object,
+    ) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=["curl"],
+            returncode=0,
+            stdout=json.dumps(response).encode() + b"\n201",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        "research.runpod.external_eval_launcher.run_command",
+        successful_upload,
+    )
+
+    assert (
+        proxy_put_file(
+            "https://example.test",
+            "/inputs/manifest.json",
+            "token",
+            source,
+            timeout=10,
+        )
+        == response
+    )

@@ -202,9 +202,9 @@ def proxy_put_file(
     completed = run_command(
         [
             "curl",
-            "--fail",
             "--silent",
             "--show-error",
+            "--http1.1",
             "--max-time",
             str(timeout),
             "-X",
@@ -213,8 +213,12 @@ def proxy_put_file(
             f"Authorization: Bearer {token}",
             "-H",
             "Content-Type: application/octet-stream",
+            "-H",
+            "Expect:",
             "--data-binary",
             f"@{source}",
+            "--write-out",
+            "\n%{http_code}",
             f"{proxy_root}{path}",
         ],
         timeout=timeout + 5,
@@ -224,7 +228,18 @@ def proxy_put_file(
             completed.stderr.decode(errors="replace").strip() or f"proxy upload failed: {path}"
         )
     try:
-        return json.loads(completed.stdout)
+        payload, status_bytes = completed.stdout.rsplit(b"\n", 1)
+        status = int(status_bytes)
+    except (ValueError, TypeError) as error:
+        raise LaunchFailure(f"proxy upload returned no HTTP status: {path}") from error
+    if not 200 <= status < 300:
+        response = payload.decode(errors="replace").strip()
+        raise LaunchFailure(
+            f"proxy upload returned HTTP {status}: {path}"
+            + (f": {response[:500]}" if response else "")
+        )
+    try:
+        return json.loads(payload)
     except json.JSONDecodeError as error:
         raise LaunchFailure(f"proxy upload returned invalid JSON: {path}") from error
 
@@ -809,6 +824,22 @@ class ExternalEvaluationLaunch:
 
     def upload_inputs(self) -> None:
         total = len(self.manifest["adapters"])
+        status_payload = proxy_get(
+            self.proxy_root(),
+            "/input-status",
+            self.transport_token,
+            timeout=15,
+        )
+        try:
+            status = json.loads(status_payload or b"")
+        except json.JSONDecodeError as error:
+            raise LaunchFailure("remote input transport returned invalid status") from error
+        if status != {
+            "manifest_received": False,
+            "ready": False,
+            "adapter_archives_received": 0,
+        }:
+            raise LaunchFailure("remote input transport did not start from an empty state")
         manifest_response = proxy_put_file(
             self.proxy_root(),
             "/inputs/manifest.json",
