@@ -267,6 +267,8 @@ def test_failure_complete_report_passes_only_verified_causal_contracts() -> None
     assert no_update["evidence"]["paired_trained_vs_control"]["net_improved"] == 1
     assert no_update["evidence"]["mutation_contract_verified"] is True
     assert report["conditions"]["k4_train_seed307"]["gain"] == 4
+    assert len(report["conditions"]) == 5
+    assert report["conditions"]["k4_no_update_seed307"]["status"] == "SUCCEEDED"
     assert report["external_evaluation"]["base"]["exact_successes"] == 1
     assert len(report["external_evaluation"]["task_transitions"]) == 10
     assert report["external_evaluation"]["task_transitions"][2]["transition"] == "improved"
@@ -312,6 +314,7 @@ def test_incomplete_evidence_takes_precedence_over_an_observed_failure() -> None
 
     assert report["decisions"]["gains_repeat_across_fresh_seeds"]["status"] == "FAIL"
     assert report["decisions"]["k4_training_beats_frozen_policy_k4"]["status"] == "INCOMPLETE"
+    assert report["conditions"]["k4_no_update_seed307"]["status"] == "PENDING"
     assert report["overall_status"] == "INCOMPLETE"
 
 

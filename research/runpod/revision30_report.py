@@ -412,6 +412,74 @@ def result_by_condition(
     return observed
 
 
+def condition_summaries(
+    manifest: dict[str, Any],
+    observed_results: dict[str, dict[str, Any]],
+    executions: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    summaries = {}
+    active_outcomes = {"PROVISIONING", "RUNNING", "FINALIZING"}
+    for condition in manifest["conditions"]:
+        condition_id = str(condition["condition_id"])
+        result = observed_results.get(condition_id)
+        condition_executions = [
+            execution for execution in executions if execution.get("condition_id") == condition_id
+        ]
+        outcomes = [execution.get("outcome") for execution in condition_executions]
+        if result is not None:
+            status = "SUCCEEDED"
+        elif any(outcome in active_outcomes for outcome in outcomes):
+            status = "RUNNING"
+        elif condition.get("status") == "failed_before_training" or "FAILED" in outcomes:
+            status = "FAILED"
+        elif "ELIGIBLE" in outcomes:
+            status = "READY"
+        else:
+            status = "PENDING"
+        metrics = (
+            result_metrics(result)
+            if result is not None
+            else {
+                key: None
+                for key in (
+                    "initial_successes",
+                    "final_successes",
+                    "gain",
+                    "paired_improved",
+                    "paired_regressed",
+                    "paired_net_improved",
+                    "paired_p_value",
+                    "policy_updates",
+                    "optimizer_updates",
+                    "sampled_completions",
+                    "reached_complexity_level",
+                    "maximum_sampled_complexity_level",
+                    "retention_passed",
+                    "final_evaluation_complete",
+                    "adapter_persisted",
+                    "stop_reason",
+                )
+            }
+        )
+        summaries[condition_id] = {
+            "role": condition.get("role"),
+            "status": status,
+            "seed": metrics.get("seed", condition.get("optimization_seed")),
+            "branch_width": metrics.get(
+                "branch_width",
+                condition.get("branch_width"),
+            ),
+            "policy_mutation_enabled": metrics.get(
+                "policy_mutation_enabled",
+                condition.get("policy_mutation_enabled"),
+            ),
+            "declared_completion_budget": condition.get("completion_budget"),
+            "execution_ids": [execution["execution_id"] for execution in condition_executions],
+            **metrics,
+        }
+    return summaries
+
+
 def decision(
     *,
     complete: bool,
@@ -802,6 +870,7 @@ def assemble_report(
     }
     attempts = operator_attempt_rows(operator_events or [])
     rows = execution_rows(executions, results, manifest, attempts)
+    conditions = condition_summaries(manifest, by_condition, rows)
     provider_failures = [
         row for row in rows if row["outcome"] == "FAILED" or row.get("error") is not None
     ]
@@ -841,10 +910,7 @@ def assemble_report(
             "no mean replaces per-seed outcomes."
         ),
         "overall_status": overall_status,
-        "conditions": {
-            condition_id: result_metrics(result)
-            for condition_id, result in sorted(by_condition.items())
-        },
+        "conditions": conditions,
         "executions": rows,
         "operator_attempts": attempts,
         "external_evaluation": external_metrics,
@@ -896,8 +962,8 @@ def render_markdown(report: dict[str, Any]) -> str:
             "",
             "## Optimization conditions",
             "",
-            "| Condition | Seed | K | Updates | Completions | Initial | Final | Gain | + | − |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| Condition | Status | Seed | K | Updates | Completions | Initial | Final | Gain | + | − |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for condition_id, metrics in report["conditions"].items():
@@ -906,6 +972,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             + " | ".join(
                 [
                     condition_id,
+                    format_value(metrics["status"]),
                     format_value(metrics["seed"]),
                     format_value(metrics["branch_width"]),
                     format_value(metrics["policy_updates"]),
