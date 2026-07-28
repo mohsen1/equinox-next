@@ -646,8 +646,7 @@ def compare_matched_conditions(
     trained_final = trained.get("final_reward")
     control_final = control.get("final_reward")
     numerical = all(
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
+        isinstance(value, (int, float)) and not isinstance(value, bool)
         for value in (trained_net, control_net, trained_final, control_final)
     )
     control_mutation = control_study.get("policy_mutation_enabled")
