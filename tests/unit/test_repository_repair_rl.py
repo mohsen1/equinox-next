@@ -247,6 +247,28 @@ def test_failure_directed_tasks_cover_weak_analogues_without_reusing_semantics()
     assert all(task.split == "train" for task in tasks)
 
 
+def test_new_validation_target_is_scheduled_at_the_active_frontier_first() -> None:
+    tasks = failure_directed_training_tasks(
+        1,
+        2,
+        113,
+        target_family_ids=["fallback", "has_items", "head_or", "second"],
+        priority_family_ids=["fallback"],
+    )
+
+    assert [fault.family_id for fault in tasks[0].faults] == ["fallback"]
+    assert len({task.semantic_task_id for task in tasks}) == 2
+
+    with pytest.raises(ValueError, match="active training targets"):
+        failure_directed_training_tasks(
+            1,
+            2,
+            113,
+            target_family_ids=["has_items"],
+            priority_family_ids=["fallback"],
+        )
+
+
 def test_retention_guard_requires_zero_paired_regressions() -> None:
     assert retention_guard_decision(
         best_fixed_successes=5,

@@ -266,6 +266,27 @@ as run evidence. Static `K=4`, adaptive probe routing, causal edit credit, base-
 anchoring, paired retention, and the final zero-regression significance gate remain
 unchanged.
 
+The completed seed `113` revision-26 run proved both new curriculum mechanisms. The
+first validation expansion added `all_true`; checkpoints 10 and 15 were retained without
+regression, and update 15 promoted the policy from complexity level 0 to level 1. At
+checkpoint 20, fixed validation across levels 0–2 improved `+4/−0` and the cumulative
+validation graph added `fallback`. The run stopped at update 23 with 11 policy updates
+and 19 optimizer steps. The final paired test nevertheless remained `17/48` to `21/48`,
+four improvements, zero regressions, and `p=0.125`. Estimated cost was `$1.058910`;
+proof `research_proof_1b176e9a040c4ae3bdf44cc916da899b`, artifacts, promotion evidence,
+teardown, zero pods, and zero ongoing spend were verified.
+
+Revision 26 exposed a scheduling defect after the second expansion. The new `fallback`
+target was assigned only to level-2 probe groups, where all four siblings failed. The
+active level-1 slots continued sampling saturated `second` and `head_or` tasks, so the
+contrast gate stopped before `fallback` received an active-frontier branch group.
+Objective v14, `verified-fix-priority-target-retention-policy-gradient@14`, runs under
+workload revision `runpod-repository-repair-causal-credit@27`. Newly validation-supported
+train families now enter a durable priority queue. Before ordinary target rotation, the
+next active-level update must sample queued families; a family leaves the queue only
+after its active-frontier K=4 group is collected. Probe allocation, branch width,
+optimizer eligibility, regression protection, and final-test isolation are unchanged.
+
 ## What we learned
 
 ### From the current Equinox runs

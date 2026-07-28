@@ -751,9 +751,9 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-causal-credit@26"
+    and .workload_revision == "runpod-repository-repair-causal-credit@27"
     and .algorithm == "verified-fix-group-conditioned-policy-gradient"
-    and .objective_id == "verified-fix-dynamic-target-retention-policy-gradient@13"
+    and .objective_id == "verified-fix-priority-target-retention-policy-gradient@14"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
     and .reward_contract.revision == "correctness-gated-efficiency@1"
     and .reward_contract.incorrect_terminal_reward == 0
@@ -824,6 +824,7 @@ else
     and .training_configuration.task_sampling == "cumulative_validation_failure_structural_analogues"
     and .training_configuration.curriculum_feedback_source == "disabled_adapter_fixed_and_disjoint_rotating_validation"
     and .training_configuration.contrast_streak_reset == "new_validation_supported_training_family"
+    and .training_configuration.new_target_scheduling == "priority_active_frontier_before_rotation"
     and .training_configuration.checkpoint_retention_guard == "paired_active_adjacent_and_rotating_zero_regressions"
     and .training_configuration.learning_signal == "verified_fault_fixing_edits_from_mixed_correctness_sibling_group"
     and .training_configuration.sibling_sampling_temperature == 0.6
@@ -838,6 +839,7 @@ else
     and (.curriculum_failure_family_ids | type) == "array"
     and (.targeted_training_family_ids | type) == "array"
     and (.curriculum_target_expansion_count | type) == "number"
+    and (.priority_training_family_ids | type) == "array"
     and ([.paired_test_transitions[]
       | (.family_ids | type) == "array" and (.family_ids | length) >= 1
     ] | all)

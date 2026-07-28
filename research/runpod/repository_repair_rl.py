@@ -85,8 +85,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@26"
-OBJECTIVE_ID = "verified-fix-dynamic-target-retention-policy-gradient@13"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@27"
+OBJECTIVE_ID = "verified-fix-priority-target-retention-policy-gradient@14"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -485,6 +485,7 @@ def lightweight_validation_history(history: list[dict[str, Any]]) -> list[dict[s
         "targeted_training_family_ids",
         "newly_targeted_training_family_ids",
         "curriculum_target_expansion_count",
+        "priority_training_family_ids",
         "fixed_guard_levels",
         "fixed_guard_paired_change",
         "retention_guard_passed",
@@ -891,17 +892,29 @@ def failure_directed_training_tasks(
     seed: int,
     *,
     target_family_ids: list[str] | tuple[str, ...],
+    priority_family_ids: list[str] | tuple[str, ...] = (),
 ) -> list[RepairTask]:
     """Sample distinct train semantics that cover declared weak-family analogues."""
     if count < 1:
         raise ValueError("training task count must be positive")
     targets = sorted(set(target_family_ids))
     if not targets:
+        if priority_family_ids:
+            raise ValueError("priority families require a non-empty target set")
         return make_tasks(level, count, seed, split="train")
 
-    target_count = min(count, len(targets))
-    rotation = seed % len(targets)
-    selected_targets = [targets[(rotation + index) % len(targets)] for index in range(target_count)]
+    priorities = sorted(set(priority_family_ids))
+    if not set(priorities).issubset(targets):
+        raise ValueError("priority families must be active training targets")
+    selected_targets = priorities[:count]
+    remaining_targets = [target for target in targets if target not in priorities]
+    remaining_count = min(count - len(selected_targets), len(remaining_targets))
+    if remaining_count:
+        rotation = seed % len(remaining_targets)
+        selected_targets.extend(
+            remaining_targets[(rotation + index) % len(remaining_targets)]
+            for index in range(remaining_count)
+        )
     tasks: list[RepairTask] = []
     selected_semantics: set[str] = set()
     for target_index, target in enumerate(selected_targets):
@@ -1910,6 +1923,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "task_sampling": "cumulative_validation_failure_structural_analogues",
         "curriculum_feedback_source": ("disabled_adapter_fixed_and_disjoint_rotating_validation"),
         "contrast_streak_reset": "new_validation_supported_training_family",
+        "new_target_scheduling": "priority_active_frontier_before_rotation",
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
         "maximum_recent_malformed_action_rate": (MAXIMUM_RECENT_MALFORMED_ACTION_RATE),
@@ -2408,6 +2422,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     curriculum_target_expansion_count = (
         int(resume_state["curriculum_target_expansion_count"]) if resume_state else 0
     )
+    priority_training_family_ids = (
+        list(resume_state["priority_training_family_ids"]) if resume_state else []
+    )
+    if len(set(priority_training_family_ids)) != len(priority_training_family_ids) or not set(
+        priority_training_family_ids
+    ).issubset(targeted_training_family_ids):
+        raise RuntimeError("training checkpoint priority target queue is invalid")
     emit_progress(
         "protocol_evaluation",
         "Action protocol evaluated on the held-out active-level baseline.",
@@ -2424,6 +2445,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         curriculum_failure_family_ids=curriculum_failure_family_ids,
         targeted_training_family_ids=targeted_training_family_ids,
         curriculum_target_expansion_count=curriculum_target_expansion_count,
+        priority_training_family_ids=priority_training_family_ids,
     )
     if (
         baseline_protocol_validity is None
@@ -2681,6 +2703,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "curriculum_failure_family_ids": curriculum_failure_family_ids,
             "targeted_training_family_ids": targeted_training_family_ids,
             "curriculum_target_expansion_count": curriculum_target_expansion_count,
+            "priority_training_family_ids": priority_training_family_ids,
             "maximum_sampled_complexity_level": maximum_sampled_complexity_level,
             "informative_task_groups": informative_task_groups,
             "excluded_task_groups": excluded_task_groups,
@@ -2744,6 +2767,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 training_allocation.count(task_level),
                 experiment_seed * 100_000 + update * 17 + task_level * 10_000_019,
                 target_family_ids=targeted_training_family_ids,
+                priority_family_ids=(priority_training_family_ids if task_level == level else ()),
             )
         current_tasks = [
             (
@@ -2805,6 +2829,18 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             training_complete = True
             persist_training_checkpoint(updates_completed)
             break
+        attempted_priority_training_family_ids = sorted(
+            set(priority_training_family_ids)
+            & {
+                fault.family_id
+                for collection in collections
+                if collection.curriculum_role == "active_frontier"
+                for fault in collection.task.faults
+            }
+        )
+        priority_training_family_ids = sorted(
+            set(priority_training_family_ids) - set(attempted_priority_training_family_ids)
+        )
         (
             anchored_training_examples,
             policy_training_example_count,
@@ -2988,6 +3024,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 "curriculum_failure_family_ids": curriculum_failure_family_ids,
                 "targeted_training_family_ids": targeted_training_family_ids,
                 "curriculum_target_expansion_count": curriculum_target_expansion_count,
+                "attempted_priority_training_family_ids": (attempted_priority_training_family_ids),
+                "priority_training_family_ids": priority_training_family_ids,
                 "replay_probability": round(
                     len(replay_tasks) / max(1, len(task_specs)),
                     6,
@@ -3011,6 +3049,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             curriculum_failure_family_ids=curriculum_failure_family_ids,
             targeted_training_family_ids=targeted_training_family_ids,
             curriculum_target_expansion_count=curriculum_target_expansion_count,
+            attempted_priority_training_family_ids=attempted_priority_training_family_ids,
+            priority_training_family_ids=priority_training_family_ids,
             informative_group_rate=round(
                 informative_task_groups / total_task_groups,
                 6,
@@ -3271,6 +3311,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             if newly_targeted_training_family_ids:
                 consecutive_uninformative_groups = 0
                 curriculum_target_expansion_count += 1
+                priority_training_family_ids = sorted(
+                    set(priority_training_family_ids) | set(newly_targeted_training_family_ids)
+                )
             curriculum_observation = evaluate_tasks(
                 validation_tasks,
                 level=level,
@@ -3434,6 +3477,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     "targeted_training_family_ids": targeted_training_family_ids,
                     "newly_targeted_training_family_ids": (newly_targeted_training_family_ids),
                     "curriculum_target_expansion_count": (curriculum_target_expansion_count),
+                    "priority_training_family_ids": priority_training_family_ids,
                     "retention_guard_passed": retention_guard_passed,
                     "policy_loss": round(policy_loss, 6),
                     "reinforce_loss": round(reinforce_loss, 6),
@@ -3841,6 +3885,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "curriculum_failure_family_ids": curriculum_failure_family_ids,
         "targeted_training_family_ids": targeted_training_family_ids,
         "curriculum_target_expansion_count": curriculum_target_expansion_count,
+        "priority_training_family_ids": priority_training_family_ids,
         "final_by_level": final_by_level,
         "paired_test_change": paired_test_change,
         "paired_test_change_by_level": paired_test_change_by_level,
@@ -3972,6 +4017,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         curriculum_failure_family_ids=curriculum_failure_family_ids,
         targeted_training_family_ids=targeted_training_family_ids,
         curriculum_target_expansion_count=curriculum_target_expansion_count,
+        priority_training_family_ids=priority_training_family_ids,
         hypothesis_passed=hypothesis_passed,
         paired_test_change=paired_test_change,
         claim_strength=result["claim_strength"],

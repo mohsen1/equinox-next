@@ -10,8 +10,8 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-EXPECTED_WORKLOAD = "runpod-repository-repair-causal-credit@26"
-EXPECTED_OBJECTIVE = "verified-fix-dynamic-target-retention-policy-gradient@13"
+EXPECTED_WORKLOAD = "runpod-repository-repair-causal-credit@27"
+EXPECTED_OBJECTIVE = "verified-fix-priority-target-retention-policy-gradient@14"
 NUMBER_TYPES = (int, float)
 
 

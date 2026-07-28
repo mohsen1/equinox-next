@@ -478,6 +478,22 @@ families with no declared train analogue do not. This feedback state is durable 
 observable. Static `K=4`, the adaptive difficulty probe, causal edit credit, reference
 anchor, retention guard, and final paired gate do not change.
 
+Revision 26 produced the first repository-repair curriculum promotion. Validation
+feedback expanded twice, checkpoints 10 and 15 supplied two retained mastery windows,
+and update 15 moved from level 0 to level 1. Update 20 retained `+4/−0` across fixed
+levels 0–2 and discovered the train family `fallback`. Final paired testing still
+remained `17/48` to `21/48`, with four improvements, zero regressions, and `p=0.125`.
+The run cost an estimated `$1.058910`; proof, adapter, promotion lineage, teardown, and
+zero ongoing spend were verified.
+
+The branch schedule showed that discovery did not guarantee active-frontier sampling.
+After update 20, `fallback` appeared only in level-2 probe groups with `0/4` solved
+siblings, while level-1 slots repeated saturated families. Revision 27 gives every newly
+reachable training family a durable active-frontier priority. The priority is consumed
+only after a K=4 group for that family is collected at the current level. This is a
+sampling-order correction; it does not change target provenance, reward, optimization,
+retention, or the held-out gate.
+
 ## Non-goals
 
 - Dynamic branch width.
