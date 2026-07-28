@@ -66,6 +66,68 @@ def test_seeded_algorithms_commit_exact_inputs(
 
 @pytest.mark.integration
 @pytest.mark.acceptance
+def test_study_protocol_lineage_and_proof_workspace(
+    completed_runs: dict[str, dict[str, Any]],
+) -> None:
+    branch = completed_runs["bpo_local_metric"]
+    baseline = completed_runs["independent_rollout_baseline"]
+    assert branch["study"]["study_id"] == baseline["study"]["study_id"]
+    assert branch["study"]["condition"] == "BRANCH_AWARE"
+    assert baseline["study"]["condition"] == "INDEPENDENT_CONTROL"
+
+    study = api(f"/v1/studies/{branch['study']['study_id']}")
+    assert study["comparison"]["status"] == "MATCHED"
+    assert study["comparison"]["paired_seeds"]
+    assert "no held-out test pack" in study["comparison"]["learning_claim"]
+
+    detail = api(f"/v1/runs/{branch['run_id']}")
+    protocol = detail["data_protocol"]
+    assert protocol["source"] == "generated"
+    assert protocol["splits"]["training"]["candidate_trajectories"] == 4
+    assert protocol["splits"]["test"]["task_groups"] == 0
+    assert protocol["gradient_lineage"]["status"] == "MATERIALIZED"
+    assert protocol["gradient_lineage"]["contributing_rollout_trees"] == 1
+    assert protocol["gradient_lineage"]["contributing_proofs"] > 0
+    assert detail["outcome"]["learning_outcome"] == "INCONCLUSIVE"
+    assert detail["outcome"]["evidence_strength"] == "CONTRACT_ONLY"
+
+    iteration = api(f"/v1/runs/{branch['run_id']}/iterations")["items"][0]
+    tree = api(f"/v1/iterations/{iteration['training_iteration_id']}/rollout-trees")["items"][0]
+    index = api(f"/v1/rollout-trees/{tree['rollout_tree_id']}/index")
+    assert index["transitions"]
+    assert all(transition["local_step"] >= 1 for transition in index["transitions"])
+    branch_transition = next(
+        transition
+        for transition in index["transitions"]
+        if transition["branch_member_id"] is not None
+    )
+    explanation = api(f"/v1/transitions/{branch_transition['id']}/explanation")
+    assert explanation["task"]["title"]
+    assert explanation["action"]["label"]
+    assert explanation["verifier"]["deterministic_facts"]
+    assert explanation["learning"]["eligibility"] in {"ADMITTED", "EXCLUDED"}
+    assert explanation["learning"]["optimizer_status"]
+
+    proofs = api(f"/v1/proofs?q={branch['run_id']}&limit=1")
+    assert proofs["total"] == detail["proof_count"]
+    proof_id = proofs["items"][0]["proof_bundle_id"]
+    proof = api(f"/v1/proofs/{proof_id}")
+    assert proof["proof"]["manifest"]
+    assert proof["proof"]["digest"]
+    assert proof["downloads"]
+    response = httpx.get(
+        f"{BASE}/v1/proofs/{proof_id}/download",
+        params={"item": "data-manifest"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    assert response.headers["content-disposition"].endswith('data-manifest.json"')
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.json()["digest"] == protocol["digest"]
+
+
+@pytest.mark.integration
+@pytest.mark.acceptance
 def test_branch_shape_retry_negative_and_abstention(
     completed_runs: dict[str, dict[str, Any]],
 ) -> None:

@@ -43,7 +43,7 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "127.0.0.1:9001:9001"
+      - "127.0.0.1:${EQUINOX_MINIO_PORT:-9001}:9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 3s

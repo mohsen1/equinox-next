@@ -5,8 +5,8 @@ import type { ArtifactRef } from "./types";
 
 const NAV_ITEMS = [
   { to: "/runs", label: "Runs", glyph: "⌁" },
-  { to: "/runs/new", label: "Launch", glyph: "+" },
-  { to: "/resources", label: "Resources", glyph: "◇" },
+  { to: "/environments", label: "Environments", glyph: "◇" },
+  { to: "/proofs", label: "Proofs", glyph: "⌗" },
 ];
 
 export function AppShell({ children }: PropsWithChildren) {
@@ -30,9 +30,11 @@ export function AppShell({ children }: PropsWithChildren) {
             const isActive =
               item.to === "/runs"
                 ? location.pathname === "/runs" ||
+                  location.pathname.startsWith("/studies/") ||
                   (location.pathname.startsWith("/runs/") &&
                     location.pathname !== "/runs/new")
-                : location.pathname === item.to;
+                : location.pathname === item.to ||
+                  location.pathname.startsWith(`${item.to}/`);
             return (
               <Link
                 key={item.to}
@@ -89,7 +91,16 @@ export function StatusBadge({ status }: { status: string }) {
 
 function statusTone(status: string): string {
   if (
-    ["SUCCEEDED", "ACCEPTED", "ADMITTED", "READY", "CONTINUED"].includes(status)
+    [
+      "SUCCEEDED",
+      "ACCEPTED",
+      "ADMITTED",
+      "READY",
+      "CONTINUED",
+      "MATCHED",
+      "USED_IN_TRAINING",
+      "MATERIALIZED",
+    ].includes(status)
   )
     return "positive";
   if (
@@ -105,10 +116,58 @@ function statusTone(status: string): string {
       "RETRYING",
       "INFRA_FAILED",
       "CANCEL_REQUESTED",
+      "INCONCLUSIVE",
+      "NO_UPDATE",
+      "INCOMPLETE",
+      "CONTRACT_ONLY",
     ].includes(status)
   )
     return "warning";
   return "neutral";
+}
+
+export function ExecutionBadge({ status }: { status: string }) {
+  const label: Record<string, string> = {
+    SUCCEEDED: "Completed",
+    FAILED: "Failed",
+    CANCELED: "Canceled",
+    CANCEL_REQUESTED: "Cancel requested",
+  };
+  return (
+    <span className={`status ${statusTone(status)}`}>
+      {label[status] ?? friendlyStatus(status)}
+    </span>
+  );
+}
+
+export function LearningOutcomeBadge({ outcome }: { outcome: string }) {
+  const label: Record<string, string> = {
+    INCONCLUSIVE: "Inconclusive",
+    NOT_EVALUATED: "Not evaluated",
+    NO_UPDATE: "No policy update",
+    IMPROVED: "Improved",
+    REGRESSED_ROLLED_BACK: "Regressed · rolled back",
+  };
+  return (
+    <span className={`status ${statusTone(outcome)}`}>
+      {label[outcome] ?? friendlyStatus(outcome)}
+    </span>
+  );
+}
+
+export function EvidenceStrengthBadge({ strength }: { strength: string }) {
+  const label: Record<string, string> = {
+    CONTRACT_ONLY: "Contract evidence only",
+    EXPLORATORY_SINGLE_SEED: "Exploratory · single seed",
+    MATCHED_CONTROL: "Matched control",
+    REPLICATED: "Replicated",
+    EXTERNALLY_VALIDATED: "Externally validated",
+  };
+  return (
+    <span className={`status ${statusTone(strength)}`}>
+      {label[strength] ?? friendlyStatus(strength)}
+    </span>
+  );
 }
 
 export function friendlyStatus(value: string): string {
@@ -214,13 +273,15 @@ export function Section({
   aside,
   children,
   className = "",
+  id,
 }: PropsWithChildren<{
   title: ReactNode;
   aside?: ReactNode;
   className?: string;
+  id?: string;
 }>) {
   return (
-    <section className={`section ${className}`}>
+    <section className={`section ${className}`} id={id}>
       <div className="section-heading">
         <h2>{title}</h2>
         {aside}

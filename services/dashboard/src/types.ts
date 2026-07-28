@@ -19,14 +19,18 @@ export interface RunSummary {
   desired_state: string;
   manifest: {
     environment?: { snapshot_fidelity?: string };
+    task_revision?: string;
+    seed?: number;
     [key: string]: unknown;
   };
   manifest_digest: string;
   cleanup_status: string;
   collection_batch_count: number;
   iteration_count: number;
+  committed_iteration_count: number;
   rollout_tree_count: number;
   verification_run_count: number;
+  proof_count: number;
   abstention_count: number;
   retry_count: number;
   created_at: string;
@@ -37,6 +41,43 @@ export interface RunSummary {
     execution: string;
   };
   cost: { execution_credits: number; judge_credits: number };
+  study: {
+    study_id: string;
+    condition: string;
+    protocol_revision: string;
+    research_question: string;
+  };
+  learning_outcome: string;
+  evidence_strength: string;
+  summary: string;
+}
+
+export interface StudyCondition {
+  condition: string;
+  seeds: number[];
+  run_count: number;
+  completed_count: number;
+  learning_outcomes: string[];
+  test_result: number | null;
+  test_result_label: string;
+  execution_credits: number;
+}
+
+export interface StudySummary {
+  study_id: string;
+  research_question: string;
+  protocol_revision: string;
+  run_count: number;
+  conditions: StudyCondition[];
+  comparison: {
+    status: "MATCHED" | "INCOMPLETE";
+    paired_seeds: number[];
+    protocol_digest: string | null;
+    constraints: string[];
+    learning_claim: string;
+  };
+  updated_at: string;
+  runs?: RunSummary[];
 }
 
 export interface ArtifactRef {
@@ -74,8 +115,11 @@ export interface GraphEdge {
   source: string;
   target: string;
   branch_member_id: string | null;
+  lane: string;
+  local_step: number;
   outcome: string;
   action: { kind: string };
+  action_label: string;
   verification_run_id: string;
   proof_bundle_id: string;
 }

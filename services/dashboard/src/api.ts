@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const API_ROOT = "/api";
 
@@ -29,35 +29,52 @@ export function useApi<T>(path: string | null, pollIntervalMs = 0) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(Boolean(path));
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const hasData = useRef(false);
+  const refresh = useCallback(
+    () => setRefreshVersion((value) => value + 1),
+    [],
+  );
 
   useEffect(() => {
     if (!path) {
       setLoading(false);
       return;
     }
-    const controller = new AbortController();
+    let disposed = false;
+    let timeout: number | null = null;
+    let controller: AbortController | null = null;
     async function load(initial: boolean) {
-      if (initial) setLoading(true);
+      controller = new AbortController();
+      if (initial && !hasData.current) setLoading(true);
       setError(null);
       try {
-        setData(await api<T>(path!, { signal: controller.signal }));
+        const next = await api<T>(path!, { signal: controller.signal });
+        if (!disposed) {
+          hasData.current = true;
+          setData(next);
+        }
       } catch (cause) {
-        if (cause instanceof Error && cause.name !== "AbortError")
+        if (!disposed && cause instanceof Error && cause.name !== "AbortError")
           setError(cause);
       } finally {
-        if (initial) setLoading(false);
+        if (!disposed && initial) setLoading(false);
       }
     }
-    void load(true);
-    const interval =
-      pollIntervalMs > 0
-        ? window.setInterval(() => void load(false), pollIntervalMs)
-        : null;
+    function schedule() {
+      if (pollIntervalMs <= 0 || disposed) return;
+      timeout = window.setTimeout(async () => {
+        if (!document.hidden) await load(false);
+        schedule();
+      }, pollIntervalMs);
+    }
+    void load(true).then(schedule);
     return () => {
-      controller.abort();
-      if (interval !== null) window.clearInterval(interval);
+      disposed = true;
+      controller?.abort();
+      if (timeout !== null) window.clearTimeout(timeout);
     };
-  }, [path, pollIntervalMs]);
+  }, [path, pollIntervalMs, refreshVersion]);
 
-  return { data, error, loading, setData };
+  return { data, error, loading, setData, refresh };
 }

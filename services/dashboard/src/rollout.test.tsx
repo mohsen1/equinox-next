@@ -30,8 +30,11 @@ const graph: RolloutGraph = {
       source: "state_root",
       target: "state_child",
       branch_member_id: "member_1",
+      lane: "member_1",
+      local_step: 1,
       outcome: "CONTINUED",
       action: { kind: "create_base" },
+      action_label: "create base",
       verification_run_id: "verification_1",
       proof_bundle_id: "proof_1",
     },
@@ -82,7 +85,9 @@ describe("rollout accessibility contracts", () => {
     expect(container.querySelector("caption")?.textContent).toContain(
       "Keyboard-navigable equivalent",
     );
-    const buttons = container.querySelectorAll("button");
+    const buttons = container.querySelectorAll<HTMLButtonElement>(
+      ".outline-table button",
+    );
     expect(buttons).toHaveLength(2);
     buttons[1].focus();
     expect(document.activeElement).toBe(buttons[1]);

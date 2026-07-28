@@ -11,9 +11,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@tanstack/react-table": "8.21.3",
     "@xyflow/react": "12.8.2",
+    "date-fns": "4.4.0",
+    "lucide-react": "1.27.0",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "recharts": "3.10.1"
   },
   "devDependencies": {
     "@types/react": "19.1.8",

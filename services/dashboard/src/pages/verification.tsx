@@ -51,18 +51,30 @@ export function VerificationPage() {
     `/v1/verification-runs/${verificationRunId}/graph`,
   );
   const selectedStepId = params.get("step");
-  const view = params.get("view") ?? "dag";
+  const requestedView = params.get("view");
+  const view = requestedView === "outline" ? "outline" : "dag";
 
   useEffect(() => {
-    if (!data || selectedStepId) return;
-    const next = new URLSearchParams(params);
-    next.set(
-      "step",
-      data.steps.find((step) => step.step_id === "pointwise-judge")?.step_id ??
-        data.steps[0]?.step_id,
+    if (!data) return;
+    const selectedStepExists = data.steps.some(
+      (step) => step.step_id === selectedStepId,
     );
-    setParams(next, { replace: true });
-  }, [data, params, selectedStepId, setParams]);
+    const viewExists =
+      requestedView === null ||
+      requestedView === "dag" ||
+      requestedView === "outline";
+    if (selectedStepExists && viewExists) return;
+    const next = new URLSearchParams(params);
+    if (!selectedStepExists) {
+      const defaultStep =
+        data.steps.find((step) => step.step_id === "pointwise-judge")
+          ?.step_id ?? data.steps[0]?.step_id;
+      if (defaultStep) next.set("step", defaultStep);
+    }
+    if (!viewExists) next.set("view", "dag");
+    if (next.toString() !== params.toString())
+      setParams(next, { replace: true });
+  }, [data, params, requestedView, selectedStepId, setParams]);
 
   const selectedStep =
     data?.steps.find((step) => step.step_id === selectedStepId) ??
@@ -343,28 +355,39 @@ function JudgeAssessment({ detail }: { detail: VerificationGraphResponse }) {
       }
     >
       <div className="judge-grid">
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Criterion</th>
-                <th>Score</th>
-                <th>Confidence</th>
-                <th>Evidence roles</th>
-              </tr>
-            </thead>
-            <tbody>
-              {judge.result.assessments.map((assessment) => (
-                <tr key={assessment.criterion}>
-                  <td>{assessment.criterion.replaceAll("_", " ")}</td>
-                  <td>{assessment.score.toFixed(2)}</td>
-                  <td>{Math.round(assessment.confidence * 100)}%</td>
-                  <td>{assessment.evidence_roles.join(", ")}</td>
+        {judge.result.assessments.length ? (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Criterion</th>
+                  <th>Score</th>
+                  <th>Confidence</th>
+                  <th>Evidence roles</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {judge.result.assessments.map((assessment) => (
+                  <tr key={assessment.criterion}>
+                    <td>{assessment.criterion.replaceAll("_", " ")}</td>
+                    <td>{assessment.score.toFixed(2)}</td>
+                    <td>{Math.round(assessment.confidence * 100)}%</td>
+                    <td>{assessment.evidence_roles.join(", ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="assessment-empty">
+            <strong>No criterion scores</strong>
+            <p>
+              {judge.result.abstained
+                ? "The model assessor abstained, so no criterion-level scores were accepted."
+                : "This model assessment did not produce criterion-level scores."}
+            </p>
+          </div>
+        )}
         <div>
           <KeyValue
             items={[

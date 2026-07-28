@@ -195,7 +195,18 @@
         "judge_result_ids": {"type": "array", "items": {"type": "string"}},
         "reward_signal_ids": {"type": "array", "items": {"type": "string"}},
         "materializer_version": {"const": "branch-jsonl@1"},
-        "weights": {"type": "object", "additionalProperties": {"type": "number"}}
+        "weights": {"type": "object", "additionalProperties": {"type": "number"}},
+        "data_protocol_digest": {"$ref": "#/$defs/Digest"},
+        "gradient_contributors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rollout_tree_ids", "proof_bundle_ids", "reward_signal_ids"],
+          "properties": {
+            "rollout_tree_ids": {"type": "array", "items": {"type": "string"}},
+            "proof_bundle_ids": {"type": "array", "items": {"type": "string"}},
+            "reward_signal_ids": {"type": "array", "items": {"type": "string"}}
+          }
+        }
       }
     },
     "VerificationStep": {

@@ -1,23 +1,34 @@
-import { FormEvent, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "../router";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "../router";
 import { api, useApi } from "../api";
 import {
   AsyncState,
+  EvidenceStrengthBadge,
+  ExecutionBadge,
   formatDate,
   KeyValue,
+  LearningOutcomeBadge,
   MachineId,
   Notice,
   PageHeader,
   Section,
   StatusBadge,
 } from "../components";
-import type { RunSummary } from "../types";
+import type { RunSummary, StudySummary } from "../types";
 
 export function RunsPage() {
-  const { data, error, loading, setData } = useApi<{ items: RunSummary[] }>(
-    "/v1/runs",
-    2_000,
-  );
+  const [params, setParams] = useSearchParams();
+  const [query, setQuery] = useState(params.get("q") ?? "");
+  const requestParams = new URLSearchParams({ limit: "50" });
+  for (const key of ["q", "status", "sort"]) {
+    const value = params.get(key);
+    if (value) requestParams.set(key, value);
+  }
+  const { data, error, loading, setData, refresh } = useApi<{
+    items: RunSummary[];
+    total: number;
+  }>(`/v1/runs?${requestParams.toString()}`, 10_000);
+  const studies = useApi<{ items: StudySummary[] }>("/v1/studies", 10_000);
   const [seeding, setSeeding] = useState(false);
   const [seedError, setSeedError] = useState<string | null>(null);
 
@@ -26,8 +37,11 @@ export function RunsPage() {
     setSeedError(null);
     try {
       await api("/internal/seed", { method: "POST" });
-      const runs = await api<{ items: RunSummary[] }>("/v1/runs");
+      const runs = await api<{ items: RunSummary[]; total: number }>(
+        `/v1/runs?${requestParams.toString()}`,
+      );
       setData(runs);
+      studies.refresh();
     } catch (cause) {
       setSeedError(
         cause instanceof Error
@@ -39,12 +53,20 @@ export function RunsPage() {
     }
   }
 
+  function applyFilters(event: FormEvent) {
+    event.preventDefault();
+    const next = new URLSearchParams(params);
+    if (query.trim()) next.set("q", query.trim());
+    else next.delete("q");
+    setParams(next);
+  }
+
   return (
     <>
       <PageHeader
         eyebrow="Research operations"
         title="Runs"
-        description="Persisted local experiments, exact provider boundaries, and evidence health."
+        description="Studies, matched conditions, and the individual executions that produced immutable evidence."
         actions={
           <>
             <button
@@ -62,30 +84,122 @@ export function RunsPage() {
         }
       />
       <div className="content">
-        <Notice title="Local provider boundary">
-          Policy compute resolves <code>MockRunPodProvider</code>; model
-          assessments resolve <code>MockJudgeProvider</code>. External capacity
-          is disabled.
-        </Notice>
         {seedError ? (
           <Notice tone="negative" title="Seed failed">
             {seedError}
           </Notice>
         ) : null}
+        <AsyncState loading={studies.loading} error={studies.error}>
+          {studies.data?.items.length ? (
+            <Section
+              title="Studies"
+              aside={<span>{studies.data.items.length} defined</span>}
+            >
+              <div className="study-index">
+                {studies.data.items.map((study) => (
+                  <Link
+                    key={study.study_id}
+                    to={`/studies/${study.study_id}`}
+                    className="study-row"
+                  >
+                    <span className="study-identity">
+                      <strong>{study.research_question}</strong>
+                      <span>
+                        <code>{study.protocol_revision}</code> ·{" "}
+                        {study.run_count} run{study.run_count === 1 ? "" : "s"}
+                      </span>
+                    </span>
+                    <span className="study-condition-summary">
+                      {study.conditions.map((condition) => (
+                        <span key={condition.condition}>
+                          {condition.condition
+                            .toLowerCase()
+                            .replaceAll("_", " ")}
+                          <small>
+                            {condition.completed_count}/{condition.run_count}
+                          </small>
+                        </span>
+                      ))}
+                    </span>
+                    <span className="study-match">
+                      <StatusBadge status={study.comparison.status} />
+                      <small>
+                        {study.comparison.paired_seeds.length
+                          ? `Seed ${study.comparison.paired_seeds.join(", ")}`
+                          : "Awaiting paired seed"}
+                      </small>
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </Section>
+          ) : null}
+        </AsyncState>
+        <form className="index-controls" onSubmit={applyFilters}>
+          <label className="search-field">
+            <span>Search runs</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Name or run ID"
+            />
+          </label>
+          <label>
+            <span>Execution</span>
+            <select
+              value={params.get("status") ?? ""}
+              onChange={(event) => {
+                const next = new URLSearchParams(params);
+                if (event.target.value) next.set("status", event.target.value);
+                else next.delete("status");
+                setParams(next);
+              }}
+            >
+              <option value="">All states</option>
+              <option value="RUNNING">Running</option>
+              <option value="SUCCEEDED">Completed</option>
+              <option value="FAILED">Failed</option>
+              <option value="CANCELED">Canceled</option>
+            </select>
+          </label>
+          <label>
+            <span>Sort</span>
+            <select
+              value={params.get("sort") ?? "updated_desc"}
+              onChange={(event) => {
+                const next = new URLSearchParams(params);
+                next.set("sort", event.target.value);
+                setParams(next);
+              }}
+            >
+              <option value="updated_desc">Recently updated</option>
+              <option value="created_desc">Recently created</option>
+              <option value="name_asc">Name A–Z</option>
+            </select>
+          </label>
+          <button className="button secondary" type="submit">
+            Apply
+          </button>
+          <button className="text-button" type="button" onClick={refresh}>
+            Refresh
+          </button>
+          <span className="index-count">{data?.total ?? 0} runs</span>
+        </form>
         <AsyncState loading={loading} error={error} empty={!data?.items.length}>
           <Section
-            title="Active and recent runs"
-            aside={<span>{data?.items.length ?? 0} persisted</span>}
+            title="Individual runs"
+            aside={<span>{data?.items.length ?? 0} shown</span>}
           >
-            <div className="table-wrap">
+            <div className="table-wrap desktop-index">
               <table className="data-table runs-table">
                 <thead>
                   <tr>
                     <th>Run</th>
-                    <th>Lifecycle</th>
-                    <th>Algorithm</th>
+                    <th>Condition</th>
+                    <th>Execution</th>
+                    <th>Learning</th>
                     <th>Evidence</th>
-                    <th>Exceptions</th>
                     <th>Local cost</th>
                     <th>Updated</th>
                   </tr>
@@ -100,28 +214,32 @@ export function RunsPage() {
                         </Link>
                       </td>
                       <td>
-                        <StatusBadge status={run.status} />
+                        <span>
+                          {run.study.condition
+                            .toLowerCase()
+                            .replaceAll("_", " ")}
+                        </span>
+                        <small>seed {run.manifest.seed ?? "—"}</small>
                       </td>
                       <td>
-                        <span>{algorithmLabel(run.algorithm)}</span>
+                        <ExecutionBadge status={run.status} />
+                      </td>
+                      <td>
+                        <LearningOutcomeBadge outcome={run.learning_outcome} />
                         <small>
-                          {run.manifest.environment?.snapshot_fidelity ??
-                            "not recorded"}
+                          {run.committed_iteration_count} committed update
+                          {run.committed_iteration_count === 1 ? "" : "s"}
                         </small>
                       </td>
                       <td>
                         <span>
-                          {run.rollout_tree_count} trees ·{" "}
-                          {run.verification_run_count} verifications
+                          {run.proof_count} proofs · {run.rollout_tree_count}{" "}
+                          trees
                         </span>
-                        <small>{run.iteration_count} iteration</small>
-                      </td>
-                      <td>
-                        <span>
+                        <small>
                           {run.retry_count} retries · {run.abstention_count}{" "}
                           abstentions
-                        </span>
-                        <small>typed outcomes</small>
+                        </small>
                       </td>
                       <td>
                         <span>
@@ -135,8 +253,34 @@ export function RunsPage() {
                 </tbody>
               </table>
             </div>
+            <ul className="mobile-index run-cards">
+              {data?.items.map((run) => (
+                <li key={run.run_id}>
+                  <Link to={`/runs/${run.run_id}`}>
+                    <span className="mobile-card-title">
+                      <strong>{run.name}</strong>
+                      <small>
+                        {run.study.condition.toLowerCase().replaceAll("_", " ")}{" "}
+                        · seed {run.manifest.seed ?? "—"}
+                      </small>
+                    </span>
+                    <ExecutionBadge status={run.status} />
+                    <span className="mobile-card-summary">{run.summary}</span>
+                    <span className="mobile-card-footer">
+                      <LearningOutcomeBadge outcome={run.learning_outcome} />
+                      <small>{run.proof_count} proofs</small>
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
           </Section>
         </AsyncState>
+        <Notice title="Local provider boundary">
+          Policy compute resolves <code>MockRunPodProvider</code>; model
+          assessments resolve <code>MockJudgeProvider</code>. External capacity
+          and held-out evaluation are disabled.
+        </Notice>
       </div>
     </>
   );
@@ -157,9 +301,26 @@ export function NewRunPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const branchWidth = algorithm === "bpo_local_metric" ? 4 : 1;
+  const studyId = "study_cad_branching_contract_v1";
+  const studyCondition =
+    algorithm === "bpo_local_metric" ? "BRANCH_AWARE" : "INDEPENDENT_CONTROL";
+  const researchQuestion =
+    "Does a shared decision checkpoint produce more useful CAD continuations than independent rollouts under a matched protocol?";
   const preview = useMemo(
     () => ({
       profile: "local-contract-proof",
+      study: {
+        study_id: studyId,
+        condition: studyCondition,
+        research_question: researchQuestion,
+        protocol_revision: "cad-contract-protocol@1",
+      },
+      data_protocol: {
+        source: "generated",
+        generator_revision: "cad-fixture-generator@1",
+        split_policy: "training fixture only; no held-out evaluation",
+        sampling: "paired deterministic seed",
+      },
       environment: "cad.reconstruction@1.0.0",
       task_revision: "mounting-plate@sha256:fixture-v1",
       algorithm,
@@ -176,7 +337,7 @@ export function NewRunPage() {
       seed,
       credentials_required: [],
     }),
-    [algorithm, branchWidth, seed],
+    [algorithm, branchWidth, researchQuestion, seed, studyCondition, studyId],
   );
 
   async function submit(event: FormEvent) {
@@ -189,6 +350,10 @@ export function NewRunPage() {
         body: JSON.stringify({
           name,
           algorithm,
+          study_id: studyId,
+          study_condition: studyCondition,
+          research_question: researchQuestion,
+          protocol_revision: "cad-contract-protocol@1",
           policy_compute_provider: "MockRunPodProvider",
           judge_provider: "MockJudgeProvider",
           task_revision: "mounting-plate@sha256:fixture-v1",
@@ -232,6 +397,14 @@ export function NewRunPage() {
             </Notice>
           ) : null}
           <Section title="Scientific intent">
+            <div className="research-question">
+              <span>Study question</span>
+              <strong>{researchQuestion}</strong>
+              <small>
+                Conditions are compared only when task, model, evaluation pack,
+                budget, and paired-seed policy match.
+              </small>
+            </div>
             <label className="field">
               <span>Run name</span>
               <input
@@ -365,6 +538,59 @@ interface RunDetailResponse {
   failures: Array<Record<string, any>>;
   providers: Record<string, string>;
   calibration: { status: string; message: string };
+  study: {
+    study_id: string;
+    condition: string;
+    research_question: string;
+    protocol_revision: string;
+    match_contract_digest: string;
+  };
+  data_protocol: {
+    source: string;
+    digest: string;
+    generator: {
+      id: string;
+      revision: string;
+      digest: string;
+      task_revision: string;
+      seed: number;
+      sampling: string;
+    };
+    splits: Record<
+      string,
+      {
+        task_groups: number;
+        candidate_trajectories?: number;
+        reason?: string;
+      }
+    >;
+    sampling_policy: {
+      strategy: string;
+      seed: number;
+      temperature: number;
+    };
+    quality_checks: Record<string, string>;
+    gradient_lineage: {
+      status: string;
+      contributing_rollout_trees: number;
+      contributing_proofs: number;
+      contributing_reward_signals: number;
+      eligibility_decisions_recorded: number;
+      consumed_by_policy_version: string | null;
+      iteration_input_digest: string | null;
+    };
+  };
+  outcome: {
+    learning_outcome: string;
+    evidence_strength: string;
+    summary: string;
+  };
+  proof_count: number;
+  evaluation: {
+    held_out_examples: number;
+    test_result: number | null;
+    claim: string;
+  };
 }
 
 interface MetricObservation {
@@ -428,16 +654,18 @@ function observationValue(value: unknown): string {
 export function RunDetailPage() {
   const { runId = "" } = useParams();
   const navigate = useNavigate();
-  const detail = useApi<RunDetailResponse>(`/v1/runs/${runId}`, 1_000);
+  const detail = useApi<RunDetailResponse>(`/v1/runs/${runId}`);
+  const live = useApi<RunSummary>(`/v1/runs/${runId}/summary`, 3_000);
   const batches = useApi<{ items: Array<Record<string, any>> }>(
     `/v1/runs/${runId}/collection-batches`,
-    1_000,
   );
   const iterations = useApi<{ items: Array<Record<string, any>> }>(
     `/v1/runs/${runId}/iterations`,
-    1_000,
   );
-  const events = useApi<RunEventsResponse>(`/v1/runs/${runId}/events`, 1_000);
+  const events = useApi<RunEventsResponse>(
+    `/v1/runs/${runId}/events?limit=50`,
+    10_000,
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const metricRows = useMemo(
     () =>
@@ -465,6 +693,24 @@ export function RunDetailPage() {
           total + (typeof metric.value === "number" ? metric.value : 0),
         0,
       ) ?? 0;
+
+  useEffect(() => {
+    if (!detail.data || !live.data) return;
+    if (
+      detail.data.run.status !== live.data.status ||
+      detail.data.run.updated_at !== live.data.updated_at
+    ) {
+      detail.refresh();
+      batches.refresh();
+      iterations.refresh();
+    }
+  }, [
+    batches.refresh,
+    detail.data,
+    detail.refresh,
+    iterations.refresh,
+    live.data,
+  ]);
 
   async function reproduce() {
     try {
@@ -499,6 +745,7 @@ export function RunDetailPage() {
   }
 
   const run = detail.data?.run;
+  const liveStatus = live.data?.status ?? run?.status;
   return (
     <>
       <PageHeader
@@ -516,7 +763,7 @@ export function RunDetailPage() {
         actions={
           run ? (
             <>
-              <StatusBadge status={run.status} />
+              {liveStatus ? <ExecutionBadge status={liveStatus} /> : null}
               <button
                 className="button secondary"
                 type="button"
@@ -524,7 +771,8 @@ export function RunDetailPage() {
               >
                 Reproduce
               </button>
-              {!["SUCCEEDED", "FAILED", "CANCELED"].includes(run.status) ? (
+              {liveStatus &&
+              !["SUCCEEDED", "FAILED", "CANCELED"].includes(liveStatus) ? (
                 <button
                   className="button danger"
                   type="button"
@@ -546,17 +794,45 @@ export function RunDetailPage() {
           ) : null}
           {detail.data ? (
             <>
-              <div className="run-overview">
-                <Section title="Lifecycle">
+              <section className="decision-statement">
+                <span>Run conclusion</span>
+                <h2>{detail.data.outcome.summary}</h2>
+                <div className="decision-badges">
+                  <ExecutionBadge
+                    status={liveStatus ?? detail.data.run.status}
+                  />
+                  <LearningOutcomeBadge
+                    outcome={detail.data.outcome.learning_outcome}
+                  />
+                  <EvidenceStrengthBadge
+                    strength={detail.data.outcome.evidence_strength}
+                  />
+                </div>
+              </section>
+              <nav className="run-local-nav" aria-label="Run sections">
+                <a href="#overview">Overview</a>
+                <a href="#trajectory">Trajectory</a>
+                <a href="#evidence">Evidence</a>
+                <a href="#technical-details">Technical details</a>
+              </nav>
+              <div className="run-overview" id="overview">
+                <Section title="Execution">
                   <KeyValue
                     items={[
                       {
                         label: "Observed",
-                        value: <StatusBadge status={detail.data.run.status} />,
+                        value: (
+                          <ExecutionBadge
+                            status={liveStatus ?? detail.data.run.status}
+                          />
+                        ),
                       },
                       {
-                        label: "Desired",
-                        value: detail.data.run.desired_state,
+                        label: "Control intent",
+                        value:
+                          detail.data.run.desired_state === "RUNNING"
+                            ? "Allow completion"
+                            : "Cancel requested",
                       },
                       { label: "Attempts", value: detail.data.attempts.length },
                       {
@@ -570,19 +846,49 @@ export function RunDetailPage() {
                     ]}
                   />
                 </Section>
-                <Section title="Provider boundary">
+                <Section title="Learning outcome">
                   <KeyValue
-                    items={Object.entries(detail.data.providers).map(
-                      ([label, value]) => ({
-                        label: label.replace("_", " "),
-                        value: <code>{value}</code>,
-                      }),
-                    )}
+                    items={[
+                      {
+                        label: "Result",
+                        value: (
+                          <LearningOutcomeBadge
+                            outcome={detail.data.outcome.learning_outcome}
+                          />
+                        ),
+                      },
+                      {
+                        label: "Held-out examples",
+                        value: detail.data.evaluation.held_out_examples,
+                      },
+                      {
+                        label: "Policy versions",
+                        value: detail.data.policy_versions.length,
+                      },
+                      {
+                        label: "Evidence strength",
+                        value: (
+                          <EvidenceStrengthBadge
+                            strength={detail.data.outcome.evidence_strength}
+                          />
+                        ),
+                      },
+                    ]}
                   />
                 </Section>
                 <Section title="Evidence">
                   <KeyValue
                     items={[
+                      {
+                        label: "Proof bundles",
+                        value: (
+                          <Link
+                            to={`/proofs?q=${encodeURIComponent(detail.data.run.run_id)}`}
+                          >
+                            {detail.data.proof_count}
+                          </Link>
+                        ),
+                      },
                       { label: "Metrics", value: detail.data.metrics.length },
                       {
                         label: "Named rewards",
@@ -604,115 +910,154 @@ export function RunDetailPage() {
                   />
                 </Section>
               </div>
+              <div className="protocol-overview">
+                <Section
+                  title="Research question"
+                  aside={
+                    <Link to={`/studies/${detail.data.study.study_id}`}>
+                      Compare study
+                    </Link>
+                  }
+                >
+                  <div className="research-brief">
+                    <p>{detail.data.study.research_question}</p>
+                    <dl>
+                      <div>
+                        <dt>Condition</dt>
+                        <dd>
+                          {detail.data.study.condition
+                            .toLowerCase()
+                            .replaceAll("_", " ")}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Protocol</dt>
+                        <dd>
+                          <code>{detail.data.study.protocol_revision}</code>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Seed</dt>
+                        <dd>
+                          {detail.data.data_protocol.sampling_policy.seed}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                </Section>
+                <Section
+                  title="Data and protocol"
+                  aside={
+                    <StatusBadge
+                      status={detail.data.data_protocol.gradient_lineage.status}
+                    />
+                  }
+                >
+                  <KeyValue
+                    items={[
+                      {
+                        label: "Training source",
+                        value: detail.data.data_protocol.source,
+                      },
+                      {
+                        label: "Generator",
+                        value: (
+                          <code>
+                            {detail.data.data_protocol.generator.revision}
+                          </code>
+                        ),
+                      },
+                      {
+                        label: "Training groups",
+                        value:
+                          detail.data.data_protocol.splits.training.task_groups,
+                      },
+                      {
+                        label: "Candidate trajectories",
+                        value:
+                          detail.data.data_protocol.splits.training
+                            .candidate_trajectories ?? 0,
+                      },
+                      {
+                        label: "Held-out splits",
+                        value: "0 validation · 0 guard · 0 test",
+                      },
+                      {
+                        label: "Protocol digest",
+                        value: (
+                          <MachineId value={detail.data.data_protocol.digest} />
+                        ),
+                        span: true,
+                      },
+                    ]}
+                  />
+                </Section>
+              </div>
+              <Section
+                title="Gradient contribution lineage"
+                aside={
+                  detail.data.data_protocol.gradient_lineage
+                    .consumed_by_policy_version ? (
+                    <MachineId
+                      value={
+                        detail.data.data_protocol.gradient_lineage
+                          .consumed_by_policy_version
+                      }
+                      copy={false}
+                    />
+                  ) : (
+                    <span>Awaiting materialization</span>
+                  )
+                }
+              >
+                <div className="lineage-strip">
+                  <span>
+                    <strong>
+                      {
+                        detail.data.data_protocol.gradient_lineage
+                          .contributing_rollout_trees
+                      }
+                    </strong>
+                    eligible rollout trees
+                  </span>
+                  <span>
+                    <strong>
+                      {
+                        detail.data.data_protocol.gradient_lineage
+                          .contributing_proofs
+                      }
+                    </strong>
+                    proof bundles
+                  </span>
+                  <span>
+                    <strong>
+                      {
+                        detail.data.data_protocol.gradient_lineage
+                          .contributing_reward_signals
+                      }
+                    </strong>
+                    named reward signals
+                  </span>
+                  <span>
+                    <strong>
+                      {
+                        detail.data.data_protocol.gradient_lineage
+                          .eligibility_decisions_recorded
+                      }
+                    </strong>
+                    eligibility decisions
+                  </span>
+                </div>
+              </Section>
               <Notice tone="warning" title="Model assessment boundary">
-                {detail.data.calibration.message}
+                {detail.data.calibration.message} {detail.data.evaluation.claim}
               </Notice>
               {detail.data.failures.length ? (
                 <Notice tone="negative" title="Run failure">
                   <pre>{JSON.stringify(detail.data.failures, null, 2)}</pre>
                 </Notice>
               ) : null}
-              <Section
-                title="Metric observations"
-                aside={
-                  <span>
-                    Latest of {detail.data.metrics.length} persisted ·{" "}
-                    {metricRows.length} descriptors
-                  </span>
-                }
-              >
-                <AsyncState empty={!metricRows.length}>
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Authority</th>
-                          <th>Descriptor</th>
-                          <th>Value</th>
-                          <th>Subject</th>
-                          <th>Recorded</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {metricRows.map((metric) => (
-                          <tr key={metric.descriptor}>
-                            <td>
-                              <StatusBadge
-                                status={
-                                  metric.descriptor.startsWith("judge.")
-                                    ? "JUDGE"
-                                    : "DETERMINISTIC"
-                                }
-                              />
-                            </td>
-                            <td>
-                              <code>{metric.descriptor}</code>
-                            </td>
-                            <td>
-                              {observationValue(metric.value)}{" "}
-                              <small>{metric.unit}</small>
-                            </td>
-                            <td>
-                              <MachineId
-                                value={metric.subject_id}
-                                copy={false}
-                              />
-                            </td>
-                            <td>{formatDate(metric.created_at)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </AsyncState>
-              </Section>
-              <Section
-                title="Named reward signals"
-                aside={
-                  <span>
-                    Latest of {detail.data.reward_signals.length} persisted ·{" "}
-                    {rewardRows.length} names
-                  </span>
-                }
-              >
-                <AsyncState empty={!rewardRows.length}>
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Signal</th>
-                          <th>Value</th>
-                          <th>Pipeline</th>
-                          <th>Subject</th>
-                          <th>Metric facts</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rewardRows.map((reward) => (
-                          <tr key={reward.name}>
-                            <td>{reward.name.replaceAll("_", " ")}</td>
-                            <td>
-                              <strong>{reward.value.toFixed(4)}</strong>
-                            </td>
-                            <td>
-                              <code>{reward.reward_pipeline_id}</code>
-                            </td>
-                            <td>
-                              <span>{reward.subject_type.toLowerCase()}</span>
-                              <MachineId
-                                value={reward.subject_id}
-                                copy={false}
-                              />
-                            </td>
-                            <td>{reward.metric_observation_ids.length}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </AsyncState>
-              </Section>
-              <Section title="Collection batches">
+              <Section id="trajectory" title="Collection batches">
                 <AsyncState
                   loading={batches.loading}
                   error={batches.error}
@@ -823,7 +1168,108 @@ export function RunDetailPage() {
                   </div>
                 </AsyncState>
               </Section>
-              <Section title="Attempts and resources">
+              <Section
+                id="evidence"
+                title="Metric observations"
+                aside={
+                  <span>
+                    Latest of {detail.data.metrics.length} persisted ·{" "}
+                    {metricRows.length} descriptors
+                  </span>
+                }
+              >
+                <AsyncState empty={!metricRows.length}>
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Authority</th>
+                          <th>Descriptor</th>
+                          <th>Value</th>
+                          <th>Subject</th>
+                          <th>Recorded</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {metricRows.map((metric) => (
+                          <tr key={metric.descriptor}>
+                            <td>
+                              <StatusBadge
+                                status={
+                                  metric.descriptor.startsWith("judge.")
+                                    ? "JUDGE"
+                                    : "DETERMINISTIC"
+                                }
+                              />
+                            </td>
+                            <td>
+                              <code>{metric.descriptor}</code>
+                            </td>
+                            <td>
+                              {observationValue(metric.value)}{" "}
+                              <small>{metric.unit}</small>
+                            </td>
+                            <td>
+                              <MachineId
+                                value={metric.subject_id}
+                                copy={false}
+                              />
+                            </td>
+                            <td>{formatDate(metric.created_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </AsyncState>
+              </Section>
+              <Section
+                title="Named reward signals"
+                aside={
+                  <span>
+                    Latest of {detail.data.reward_signals.length} persisted ·{" "}
+                    {rewardRows.length} names
+                  </span>
+                }
+              >
+                <AsyncState empty={!rewardRows.length}>
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Signal</th>
+                          <th>Value</th>
+                          <th>Pipeline</th>
+                          <th>Subject</th>
+                          <th>Metric facts</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rewardRows.map((reward) => (
+                          <tr key={reward.name}>
+                            <td>{reward.name.replaceAll("_", " ")}</td>
+                            <td>
+                              <strong>{reward.value.toFixed(4)}</strong>
+                            </td>
+                            <td>
+                              <code>{reward.reward_pipeline_id}</code>
+                            </td>
+                            <td>
+                              <span>{reward.subject_type.toLowerCase()}</span>
+                              <MachineId
+                                value={reward.subject_id}
+                                copy={false}
+                              />
+                            </td>
+                            <td>{reward.metric_observation_ids.length}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </AsyncState>
+              </Section>
+              <Section id="technical-details" title="Attempts and resources">
                 <AsyncState empty={!detail.data.attempts.length}>
                   <div className="table-wrap">
                     <table className="data-table">
@@ -1008,7 +1454,7 @@ export function IterationPage() {
         <AsyncState loading={loading} error={error}>
           {data ? (
             <>
-              <div className="run-overview">
+              <div className="run-overview iteration-overview">
                 <Section title="Policy advance">
                   <KeyValue
                     items={[

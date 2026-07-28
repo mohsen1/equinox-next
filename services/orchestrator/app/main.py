@@ -38,6 +38,22 @@ class BudgetConfig(StrictModel):
 class LaunchRunRequest(StrictModel):
     name: str = Field(min_length=3, max_length=80)
     algorithm: Literal["independent_rollout_baseline", "bpo_local_metric"]
+    study_id: str = Field(
+        default="study_cad_branching_contract_v1",
+        min_length=3,
+        max_length=96,
+        pattern=r"^[a-z0-9][a-z0-9_-]+$",
+    )
+    study_condition: Literal["BRANCH_AWARE", "INDEPENDENT_CONTROL"] | None = None
+    research_question: str = Field(
+        default=(
+            "Does a shared decision checkpoint produce more useful CAD "
+            "continuations than independent rollouts under a matched protocol?"
+        ),
+        min_length=12,
+        max_length=240,
+    )
+    protocol_revision: str = Field(default="cad-contract-protocol@1", min_length=3, max_length=96)
     policy_compute_provider: Literal["MockRunPodProvider"] = "MockRunPodProvider"
     judge_provider: Literal["MockJudgeProvider"] = "MockJudgeProvider"
     task_revision: Literal["mounting-plate@sha256:fixture-v1"] = "mounting-plate@sha256:fixture-v1"
@@ -57,6 +73,154 @@ class RejudgeApiRequest(StrictModel):
     fixture_scenario: Literal[
         "valid", "low", "tie", "abstain", "malformed", "retry", "disagreement", "integrity"
     ] = "valid"
+
+
+def _study_condition(algorithm: str, requested: str | None = None) -> str:
+    if requested:
+        return requested
+    return "BRANCH_AWARE" if algorithm == "bpo_local_metric" else "INDEPENDENT_CONTROL"
+
+
+def _data_protocol(
+    *,
+    task_revision: str,
+    seed: int,
+    verification_plan_id: str = "cad.transition-composite@1",
+) -> dict[str, Any]:
+    generator = {
+        "id": "cad-fixture-generator",
+        "revision": "cad-fixture-generator@1",
+        "task_revision": task_revision,
+        "seed": seed,
+        "sampling": "paired deterministic fixture",
+    }
+    manifest = {
+        "schema_version": 1,
+        "source": "generated",
+        "generator": {**generator, "digest": canonical_digest(generator)},
+        "splits": {
+            "training": {
+                "task_groups": 1,
+                "candidate_trajectories": 4,
+                "task_families": {"cad_reconstruction": 1},
+                "complexity_levels": {"bounded_fixture": 1},
+            },
+            "validation": {"task_groups": 0, "reason": "not part of the contract-proof milestone"},
+            "fixed_guard": {"task_groups": 0, "reason": "not part of the contract-proof milestone"},
+            "test": {"task_groups": 0, "reason": "not part of the contract-proof milestone"},
+        },
+        "sampling_policy": {
+            "strategy": "paired_by_seed",
+            "seed": seed,
+            "temperature": 0,
+        },
+        "quality_checks": {
+            "deduplication": "single canonical task revision",
+            "leakage": "not measurable without held-out splits",
+            "evaluation_pack": verification_plan_id,
+        },
+    }
+    return {**manifest, "digest": canonical_digest(manifest)}
+
+
+def _study_manifest(request: LaunchRunRequest) -> dict[str, Any]:
+    condition = _study_condition(request.algorithm, request.study_condition)
+    match_contract = {
+        "protocol_revision": request.protocol_revision,
+        "task_revision": request.task_revision,
+        "model_revision": "deterministic-cad-policy@1",
+        "evaluation_pack": "cad.transition-composite@1",
+        "budgets": request.budgets.model_dump(),
+        "data_generator_revision": "cad-fixture-generator@1",
+        "seed_policy": "paired_by_seed",
+    }
+    return {
+        "study_id": request.study_id,
+        "condition": condition,
+        "research_question": request.research_question,
+        "protocol_revision": request.protocol_revision,
+        "match_contract": match_contract,
+        "match_contract_digest": canonical_digest(match_contract),
+    }
+
+
+def _study_from_manifest(manifest: dict[str, Any], algorithm: str) -> dict[str, Any]:
+    study = manifest.get("study")
+    if isinstance(study, dict):
+        return study
+    task_revision = str(manifest.get("task_revision", "unknown-task"))
+    fallback_contract = {
+        "protocol_revision": "legacy-contract-protocol@1",
+        "task_revision": task_revision,
+        "model_revision": "deterministic-cad-policy@1",
+        "evaluation_pack": "cad.transition-composite@1",
+        "budgets": manifest.get("budgets", {}),
+        "data_generator_revision": "cad-fixture-generator@1",
+        "seed_policy": "paired_by_seed",
+    }
+    return {
+        "study_id": "study_cad_branching_contract_v1",
+        "condition": _study_condition(algorithm),
+        "research_question": (
+            "Does a shared decision checkpoint produce more useful CAD continuations "
+            "than independent rollouts under a matched protocol?"
+        ),
+        "protocol_revision": "legacy-contract-protocol@1",
+        "match_contract": fallback_contract,
+        "match_contract_digest": canonical_digest(fallback_contract),
+        "derived_for_legacy_run": True,
+    }
+
+
+def _data_protocol_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    protocol = manifest.get("data_protocol")
+    if isinstance(protocol, dict):
+        return protocol
+    return {
+        **_data_protocol(
+            task_revision=str(manifest.get("task_revision", "mounting-plate@sha256:fixture-v1")),
+            seed=int(manifest.get("seed", 17)),
+            verification_plan_id=str(
+                manifest.get("verification", {}).get("plan_id", "cad.transition-composite@1")
+            ),
+        ),
+        "derived_for_legacy_run": True,
+    }
+
+
+def _learning_semantics(status: str, committed_iterations: int) -> dict[str, str]:
+    if status in {"QUEUED", "PROVISIONING", "PREPARING", "RUNNING", "FINALIZING"}:
+        return {
+            "learning_outcome": "NOT_EVALUATED",
+            "evidence_strength": "CONTRACT_ONLY",
+            "summary": "Execution is in progress. No learning conclusion is available yet.",
+        }
+    if status == "SUCCEEDED" and committed_iterations:
+        return {
+            "learning_outcome": "INCONCLUSIVE",
+            "evidence_strength": "CONTRACT_ONLY",
+            "summary": (
+                "Execution completed and a policy update was committed. "
+                "This contract fixture has no held-out evaluation, so improvement is not claimed."
+            ),
+        }
+    if status == "SUCCEEDED":
+        return {
+            "learning_outcome": "NO_UPDATE",
+            "evidence_strength": "CONTRACT_ONLY",
+            "summary": "Execution completed without a committed policy update.",
+        }
+    if status == "CANCELED":
+        return {
+            "learning_outcome": "NOT_EVALUATED",
+            "evidence_strength": "CONTRACT_ONLY",
+            "summary": "Execution was canceled before a learning conclusion could be measured.",
+        }
+    return {
+        "learning_outcome": "INCONCLUSIVE",
+        "evidence_strength": "CONTRACT_ONLY",
+        "summary": "Execution failed. No learning conclusion is available.",
+    }
 
 
 def _wait_for_dependencies() -> None:
@@ -127,9 +291,42 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
                 "message": "Independent rollout baseline uses width one.",
             },
         )
+    study = _study_manifest(request)
+    with connection() as conn:
+        existing_study = conn.execute(
+            """
+            SELECT manifest->'study'->>'match_contract_digest' AS match_contract_digest
+            FROM runs
+            WHERE manifest->'study'->>'study_id' = %s
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (request.study_id,),
+        ).fetchone()
+    if (
+        existing_study
+        and existing_study["match_contract_digest"]
+        and existing_study["match_contract_digest"] != study["match_contract_digest"]
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "STUDY_PROTOCOL_MISMATCH",
+                "message": (
+                    "This study already pins a different task, model, evaluation pack, "
+                    "budget, data generator, or seed policy. Start a new study instead."
+                ),
+            },
+        )
+    data_protocol = _data_protocol(
+        task_revision=request.task_revision,
+        seed=request.seed,
+    )
     normalized = {
         "schema_version": 1,
         "profile": "local-contract-proof",
+        "study": study,
+        "data_protocol": data_protocol,
         "environment": {
             "id": "cad.reconstruction",
             "version": "1.0.0",
@@ -227,6 +424,9 @@ def _launch(request: LaunchRunRequest, *, source_run_id: str | None = None) -> d
                 "manifest_digest": canonical_digest(normalized),
                 "providers": ["MockRunPodProvider", "MockJudgeProvider"],
                 "source_run_id": source_run_id,
+                "study_id": study["study_id"],
+                "study_condition": study["condition"],
+                "data_protocol_digest": data_protocol["digest"],
             },
         )
     return {
@@ -324,24 +524,109 @@ def seed_demo() -> dict[str, Any]:
     return {"runs": [baseline, branch], "existing": False}
 
 
+def _run_summary(run: dict[str, Any]) -> dict[str, Any]:
+    manifest = run["manifest"]
+    study = _study_from_manifest(manifest, run["algorithm"])
+    semantics = _learning_semantics(run["status"], int(run.get("committed_iteration_count", 0)))
+    return {
+        "run_id": run["run_id"],
+        "source_run_id": run["source_run_id"],
+        "name": run["name"],
+        "algorithm": run["algorithm"],
+        "status": run["status"],
+        "desired_state": run["desired_state"],
+        "manifest": {
+            "environment": manifest.get("environment", {}),
+            "task_revision": manifest.get("task_revision"),
+            "seed": manifest.get("seed"),
+        },
+        "manifest_digest": run["manifest_digest"],
+        "cleanup_status": run["cleanup_status"],
+        "collection_batch_count": int(run["collection_batch_count"]),
+        "iteration_count": int(run["iteration_count"]),
+        "committed_iteration_count": int(run.get("committed_iteration_count", 0)),
+        "rollout_tree_count": int(run["rollout_tree_count"]),
+        "verification_run_count": int(run["verification_run_count"]),
+        "proof_count": int(run.get("proof_count", run["verification_run_count"])),
+        "abstention_count": int(run["abstention_count"]),
+        "retry_count": int(run["retry_count"]),
+        "created_at": run["created_at"],
+        "updated_at": run["updated_at"],
+        "providers": {
+            "policy_compute": "MockRunPodProvider",
+            "judge": "MockJudgeProvider",
+            "execution": "ComposeExecutionProvider",
+        },
+        "cost": {
+            "execution_credits": round(float(run["verification_run_count"]) * 0.0142, 4),
+            "judge_credits": 0,
+        },
+        "study": {
+            "study_id": study["study_id"],
+            "condition": study["condition"],
+            "protocol_revision": study["protocol_revision"],
+            "research_question": study["research_question"],
+        },
+        **semantics,
+    }
+
+
 @app.get("/v1/runs")
-def list_runs() -> dict[str, Any]:
+def list_runs(
+    q: str | None = Query(default=None, max_length=120),
+    status: str | None = Query(default=None, max_length=32),
+    study_id: str | None = Query(default=None, max_length=96),
+    sort: Literal["updated_desc", "created_desc", "name_asc"] = "updated_desc",
+    cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict[str, Any]:
+    where = ["1 = 1"]
+    params: list[Any] = []
+    if q:
+        where.append("(r.name ILIKE %s OR r.run_id ILIKE %s)")
+        needle = f"%{q.strip()}%"
+        params.extend([needle, needle])
+    if status:
+        where.append("r.status = %s")
+        params.append(status)
+    if study_id:
+        where.append(
+            "COALESCE(r.manifest->'study'->>'study_id', 'study_cad_branching_contract_v1') = %s"
+        )
+        params.append(study_id)
+    where_sql = " AND ".join(where)
+    order_by = {
+        "updated_desc": "r.updated_at DESC, r.run_id",
+        "created_desc": "r.created_at DESC, r.run_id",
+        "name_asc": "lower(r.name), r.run_id",
+    }[sort]
     with connection() as conn:
+        total = conn.execute(
+            f"SELECT count(*) AS count FROM runs r WHERE {where_sql}",
+            params,
+        ).fetchone()["count"]
         data = list(
             conn.execute(
-                """
+                f"""
                 SELECT r.*,
                   (SELECT count(*) FROM collection_batches cb
                    JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
                    WHERE ra.run_id = r.run_id) AS collection_batch_count,
                   (SELECT count(*) FROM training_iterations ti
                    WHERE ti.run_id = r.run_id) AS iteration_count,
+                  (SELECT count(*) FROM training_iterations ti
+                   WHERE ti.run_id = r.run_id
+                     AND ti.output_policy_version_id IS NOT NULL)
+                    AS committed_iteration_count,
                   (SELECT count(*) FROM rollout_trees rt
                    JOIN collection_batches cb ON cb.collection_batch_id = rt.collection_batch_id
                    JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
                    WHERE ra.run_id = r.run_id) AS rollout_tree_count,
                   (SELECT count(*) FROM verification_runs vr
                    WHERE vr.run_id = r.run_id) AS verification_run_count,
+                  (SELECT count(*) FROM evidence_bundles eb
+                   JOIN verification_runs vr ON vr.verification_run_id = eb.verification_run_id
+                   WHERE vr.run_id = r.run_id) AS proof_count,
                   (SELECT count(*) FROM judge_results jr
                    JOIN judge_invocations ji ON ji.judge_invocation_id = jr.judge_invocation_id
                    JOIN verification_runs vr ON vr.verification_run_id = ji.verification_run_id
@@ -349,21 +634,141 @@ def list_runs() -> dict[str, Any]:
                   (SELECT count(*) FROM verifier_step_runs vsr
                    JOIN verification_runs vr ON vr.verification_run_id = vsr.verification_run_id
                    WHERE vr.run_id = r.run_id AND vsr.attempt_count > 1) AS retry_count
-                FROM runs r ORDER BY r.created_at DESC
-                """
+                FROM runs r
+                WHERE {where_sql}
+                ORDER BY {order_by}
+                OFFSET %s LIMIT %s
+                """,
+                [*params, cursor, limit],
             )
         )
-    for run in data:
-        run["providers"] = {
-            "policy_compute": "MockRunPodProvider",
-            "judge": "MockJudgeProvider",
-            "execution": "ComposeExecutionProvider",
+    next_cursor = cursor + len(data) if cursor + len(data) < total else None
+    return {
+        "items": [_run_summary(run) for run in data],
+        "next_cursor": next_cursor,
+        "total": total,
+    }
+
+
+def _study_payload(study_id: str, *, include_runs: bool = False) -> dict[str, Any]:
+    page = list_runs(
+        q=None,
+        status=None,
+        study_id=study_id,
+        sort="created_desc",
+        cursor=0,
+        limit=100,
+    )
+    runs = page["items"]
+    if not runs:
+        raise HTTPException(status_code=404, detail={"code": "STUDY_NOT_FOUND"})
+    with connection() as conn:
+        manifests = list(
+            conn.execute(
+                """
+                SELECT algorithm, manifest
+                FROM runs
+                WHERE COALESCE(
+                  manifest->'study'->>'study_id',
+                  'study_cad_branching_contract_v1'
+                ) = %s
+                ORDER BY created_at
+                """,
+                (study_id,),
+            )
+        )
+    study = _study_from_manifest(manifests[0]["manifest"], manifests[0]["algorithm"])
+    protocol_digests = {
+        _study_from_manifest(item["manifest"], item["algorithm"])["match_contract_digest"]
+        for item in manifests
+    }
+    condition_map: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        condition_map.setdefault(run["study"]["condition"], []).append(run)
+    seed_sets = [
+        {
+            int(item["manifest"]["seed"])
+            for item in condition_runs
+            if item["manifest"].get("seed") is not None
         }
-        run["cost"] = {
-            "execution_credits": round(float(run["verification_run_count"]) * 0.0142, 4),
-            "judge_credits": 0,
-        }
-    return {"items": data, "next_cursor": None}
+        for condition_runs in condition_map.values()
+    ]
+    paired_seeds = sorted(set.intersection(*seed_sets)) if seed_sets else []
+    conditions = []
+    for condition, condition_runs in sorted(condition_map.items()):
+        seeds = sorted(
+            {
+                int(item["manifest"]["seed"])
+                for item in condition_runs
+                if item["manifest"].get("seed") is not None
+            }
+        )
+        conditions.append(
+            {
+                "condition": condition,
+                "seeds": seeds,
+                "run_count": len(condition_runs),
+                "completed_count": sum(item["status"] == "SUCCEEDED" for item in condition_runs),
+                "learning_outcomes": sorted({item["learning_outcome"] for item in condition_runs}),
+                "test_result": None,
+                "test_result_label": "Not measured",
+                "execution_credits": round(
+                    sum(item["cost"]["execution_credits"] for item in condition_runs), 4
+                ),
+            }
+        )
+    comparison_valid = len(protocol_digests) == 1 and len(condition_map) >= 2 and bool(paired_seeds)
+    payload = {
+        "study_id": study_id,
+        "research_question": study["research_question"],
+        "protocol_revision": study["protocol_revision"],
+        "run_count": len(runs),
+        "conditions": conditions,
+        "comparison": {
+            "status": "MATCHED" if comparison_valid else "INCOMPLETE",
+            "paired_seeds": paired_seeds,
+            "protocol_digest": next(iter(protocol_digests)) if len(protocol_digests) == 1 else None,
+            "constraints": [
+                "dataset generator and task revision",
+                "model revision",
+                "evaluation pack",
+                "budgets",
+                "paired seed policy",
+            ],
+            "learning_claim": (
+                "Comparison inputs are matched, but no held-out test pack exists; "
+                "model improvement remains inconclusive."
+            ),
+        },
+        "updated_at": max(run["updated_at"] for run in runs),
+    }
+    if include_runs:
+        payload["runs"] = runs
+    return payload
+
+
+@app.get("/v1/studies")
+def list_studies() -> dict[str, Any]:
+    with connection() as conn:
+        ids = [
+            row["study_id"]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT COALESCE(
+                  manifest->'study'->>'study_id',
+                  'study_cad_branching_contract_v1'
+                ) AS study_id
+                FROM runs
+                ORDER BY study_id
+                """
+            )
+        ]
+    return {"items": [_study_payload(study_id) for study_id in ids]}
+
+
+@app.get("/v1/studies/{study_id}")
+def study_detail(study_id: str) -> dict[str, Any]:
+    return _study_payload(study_id, include_runs=True)
 
 
 @app.get("/v1/runs/{run_id}")
@@ -414,6 +819,52 @@ def get_run(run_id: str) -> dict[str, Any]:
                 (run_id,),
             )
         )
+        committed_iterations = list(
+            conn.execute(
+                """
+                SELECT ti.training_iteration_id, ti.status, ti.output_policy_version_id,
+                  ii.manifest, ii.digest
+                FROM training_iterations ti
+                LEFT JOIN iteration_inputs ii ON ii.manifest_id = ti.iteration_input_id
+                WHERE ti.run_id = %s
+                ORDER BY ti.created_at
+                """,
+                (run_id,),
+            )
+        )
+        proof_count = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM evidence_bundles eb
+            JOIN verification_runs vr ON vr.verification_run_id = eb.verification_run_id
+            WHERE vr.run_id = %s
+            """,
+            (run_id,),
+        ).fetchone()["count"]
+    committed = [
+        item for item in committed_iterations if item["output_policy_version_id"] is not None
+    ]
+    latest_input = committed[-1]["manifest"] if committed else None
+    gradient_lineage = {
+        "status": "MATERIALIZED" if latest_input else "PENDING",
+        "contributing_rollout_trees": len(latest_input.get("rollout_tree_ids", []))
+        if latest_input
+        else 0,
+        "contributing_proofs": len(latest_input.get("proof_bundle_ids", [])) if latest_input else 0,
+        "contributing_reward_signals": len(latest_input.get("reward_signal_ids", []))
+        if latest_input
+        else 0,
+        "eligibility_decisions_recorded": len(
+            [item for item in (latest_input or {}).get("eligibility_decision_ids", []) if item]
+        ),
+        "consumed_by_policy_version": committed[-1]["output_policy_version_id"]
+        if committed
+        else None,
+        "iteration_input_digest": committed[-1]["digest"] if committed else None,
+    }
+    study = _study_from_manifest(run["manifest"], run["algorithm"])
+    data_protocol = _data_protocol_from_manifest(run["manifest"])
+    semantics = _learning_semantics(run["status"], len(committed))
     return {
         "run": run,
         "attempts": attempts,
@@ -422,6 +873,15 @@ def get_run(run_id: str) -> dict[str, Any]:
         "metrics": metrics,
         "reward_signals": rewards,
         "failures": failures,
+        "study": study,
+        "data_protocol": {**data_protocol, "gradient_lineage": gradient_lineage},
+        "outcome": semantics,
+        "proof_count": proof_count,
+        "evaluation": {
+            "held_out_examples": 0,
+            "test_result": None,
+            "claim": "No held-out evaluation is configured for this contract fixture.",
+        },
         "providers": {
             "policy_compute": "MockRunPodProvider",
             "judge": "MockJudgeProvider",
@@ -432,6 +892,22 @@ def get_run(run_id: str) -> dict[str, Any]:
             "message": "Mock assessments are contract fixtures, not human-aligned visual judgments.",
         },
     }
+
+
+@app.get("/v1/runs/{run_id}/summary")
+def run_summary(run_id: str) -> dict[str, Any]:
+    page = list_runs(
+        q=run_id,
+        status=None,
+        study_id=None,
+        sort="updated_desc",
+        cursor=0,
+        limit=10,
+    )
+    item = next((run for run in page["items"] if run["run_id"] == run_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail={"code": "RUN_NOT_FOUND"})
+    return item
 
 
 @app.post("/v1/runs/{run_id}/cancel", status_code=202)
@@ -475,6 +951,10 @@ def reproduce_run(run_id: str) -> dict[str, Any]:
     request = LaunchRunRequest(
         name=f"Reproduction of {source['name']}"[:80],
         algorithm=manifest["algorithm"]["id"],
+        study_id=_study_from_manifest(manifest, source["algorithm"])["study_id"],
+        study_condition=_study_from_manifest(manifest, source["algorithm"])["condition"],
+        research_question=_study_from_manifest(manifest, source["algorithm"])["research_question"],
+        protocol_revision=_study_from_manifest(manifest, source["algorithm"])["protocol_revision"],
         policy_compute_provider="MockRunPodProvider",
         judge_provider="MockJudgeProvider",
         task_revision=manifest["task_revision"],
@@ -722,6 +1202,27 @@ def rollout_tree_graph(tree_id: str) -> dict[str, Any]:
                 (tree_id,),
             )
         )
+    lane_steps: dict[str, int] = {}
+    edge_items = []
+    for transition in transitions:
+        lane = transition["branch_member_id"] or "shared-prefix"
+        lane_steps[lane] = lane_steps.get(lane, 0) + 1
+        action = transition["payload"]["action"]
+        edge_items.append(
+            {
+                "id": transition["transition_id"],
+                "source": transition["source_state_id"],
+                "target": transition["destination_state_id"],
+                "branch_member_id": transition["branch_member_id"],
+                "lane": lane,
+                "local_step": lane_steps[lane],
+                "outcome": transition["outcome"],
+                "action": action,
+                "action_label": str(action["kind"]).replace("_", " "),
+                "verification_run_id": transition["verification_run_id"],
+                "proof_bundle_id": transition["proof_bundle_id"],
+            }
+        )
     return {
         "tree": tree,
         "nodes": [
@@ -734,19 +1235,7 @@ def rollout_tree_graph(tree_id: str) -> dict[str, Any]:
             }
             for state in states
         ],
-        "edges": [
-            {
-                "id": transition["transition_id"],
-                "source": transition["source_state_id"],
-                "target": transition["destination_state_id"],
-                "branch_member_id": transition["branch_member_id"],
-                "outcome": transition["outcome"],
-                "action": transition["payload"]["action"],
-                "verification_run_id": transition["verification_run_id"],
-                "proof_bundle_id": transition["proof_bundle_id"],
-            }
-            for transition in transitions
-        ],
+        "edges": edge_items,
         "branch_groups": branch_groups,
         "branch_members": branch_members,
         "decision_checkpoints": checkpoints,
@@ -760,6 +1249,68 @@ def rollout_tree_graph(tree_id: str) -> dict[str, Any]:
             }
             for state in states
         ],
+    }
+
+
+@app.get("/v1/rollout-trees/{tree_id}/index")
+def rollout_tree_index(tree_id: str) -> dict[str, Any]:
+    graph = rollout_tree_graph(tree_id)
+    return {
+        "tree": graph["tree"],
+        "states": [
+            {
+                "id": node["id"],
+                "sequence": node["sequence"],
+                "semantic_status": node["semantic_status"],
+            }
+            for node in graph["nodes"]
+        ],
+        "transitions": [
+            {
+                key: edge[key]
+                for key in (
+                    "id",
+                    "source",
+                    "target",
+                    "branch_member_id",
+                    "lane",
+                    "local_step",
+                    "outcome",
+                    "action_label",
+                    "verification_run_id",
+                )
+            }
+            for edge in graph["edges"]
+        ],
+        "branch_members": graph["branch_members"],
+        "updated_cursor": len(graph["edges"]),
+    }
+
+
+@app.get("/v1/rollout-trees/{tree_id}/branches/{branch_member_id}")
+def rollout_branch_snapshot(tree_id: str, branch_member_id: str) -> dict[str, Any]:
+    graph = rollout_tree_graph(tree_id)
+    member = next(
+        (item for item in graph["branch_members"] if item["branch_member_id"] == branch_member_id),
+        None,
+    )
+    if not member:
+        raise HTTPException(status_code=404, detail={"code": "BRANCH_MEMBER_NOT_FOUND"})
+    edges = [
+        edge for edge in graph["edges"] if edge["branch_member_id"] in (None, branch_member_id)
+    ]
+    state_ids = {edge["source"] for edge in edges} | {edge["target"] for edge in edges}
+    return {
+        "tree": graph["tree"],
+        "branch_member": member,
+        "nodes": [node for node in graph["nodes"] if node["id"] in state_ids],
+        "edges": edges,
+        "decision_checkpoint": graph["decision_checkpoints"][0]
+        if graph["decision_checkpoints"]
+        else None,
+        "environment_snapshot": graph["environment_snapshots"][0]
+        if graph["environment_snapshots"]
+        else None,
     }
 
 
@@ -816,6 +1367,210 @@ def transition_detail(transition_id: str) -> dict[str, Any]:
         "verification_runs": verifications,
         "metric_observations": metrics,
         "reward_signals": rewards,
+    }
+
+
+@app.get("/v1/transitions/{transition_id}/explanation")
+def transition_explanation(transition_id: str) -> dict[str, Any]:
+    with connection() as conn:
+        transition = conn.execute(
+            """
+            SELECT t.*, rt.task_revision, cb.behavior_policy_version_id,
+              ra.run_id, r.manifest AS run_manifest
+            FROM transitions t
+            JOIN rollout_trees rt ON rt.rollout_tree_id = t.rollout_tree_id
+            JOIN collection_batches cb ON cb.collection_batch_id = rt.collection_batch_id
+            JOIN run_attempts ra ON ra.attempt_id = cb.run_attempt_id
+            JOIN runs r ON r.run_id = ra.run_id
+            WHERE t.transition_id = %s
+            """,
+            (transition_id,),
+        ).fetchone()
+        if not transition:
+            raise HTTPException(status_code=404, detail={"code": "TRANSITION_NOT_FOUND"})
+        source = conn.execute(
+            "SELECT state_id, sequence, semantic_status FROM states WHERE state_id = %s",
+            (transition["source_state_id"],),
+        ).fetchone()
+        destination = conn.execute(
+            "SELECT state_id, sequence, semantic_status FROM states WHERE state_id = %s",
+            (transition["destination_state_id"],),
+        ).fetchone()
+        verification = conn.execute(
+            """
+            SELECT * FROM verification_runs
+            WHERE subject_id = %s AND rejudges_verification_run_id IS NULL
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (transition_id,),
+        ).fetchone()
+        steps = (
+            list(
+                conn.execute(
+                    """
+                    SELECT step_id, status, attempt_count, cache_status, metrics
+                    FROM verifier_step_runs
+                    WHERE verification_run_id = %s
+                    ORDER BY started_at, step_id
+                    """,
+                    (verification["verification_run_id"],),
+                )
+            )
+            if verification
+            else []
+        )
+        metrics = list(
+            conn.execute(
+                """
+                SELECT descriptor, value, unit
+                FROM metric_observations
+                WHERE subject_id = %s
+                ORDER BY descriptor
+                """,
+                (transition_id,),
+            )
+        )
+        rewards = list(
+            conn.execute(
+                """
+                SELECT reward_signal_id, name, value, metric_observation_ids
+                FROM reward_signals
+                WHERE subject_id = %s
+                ORDER BY name
+                """,
+                (transition_id,),
+            )
+        )
+        eligibility = conn.execute(
+            """
+            SELECT status, reason_code
+            FROM eligibility_decisions
+            WHERE rollout_tree_id = %s
+              AND branch_member_id IS NOT DISTINCT FROM %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (transition["rollout_tree_id"], transition["branch_member_id"]),
+        ).fetchone()
+        iteration = conn.execute(
+            """
+            SELECT ti.status, ti.training_iteration_id, ti.output_policy_version_id,
+              ii.digest AS iteration_input_digest
+            FROM training_iterations ti
+            LEFT JOIN iteration_inputs ii ON ii.manifest_id = ti.iteration_input_id
+            WHERE ti.collection_batch_id = (
+              SELECT collection_batch_id
+              FROM rollout_trees
+              WHERE rollout_tree_id = %s
+            )
+            ORDER BY ti.created_at DESC
+            LIMIT 1
+            """,
+            (transition["rollout_tree_id"],),
+        ).fetchone()
+        judge = (
+            conn.execute(
+                """
+                SELECT jr.outcome, jr.result
+                FROM judge_results jr
+                JOIN judge_invocations ji
+                  ON ji.judge_invocation_id = jr.judge_invocation_id
+                WHERE ji.verification_run_id = %s
+                ORDER BY jr.created_at DESC
+                LIMIT 1
+                """,
+                (verification["verification_run_id"],),
+            ).fetchone()
+            if verification
+            else None
+        )
+        local_step = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM transitions
+            WHERE rollout_tree_id = %s
+              AND branch_member_id IS NOT DISTINCT FROM %s
+              AND created_at <= %s
+            """,
+            (
+                transition["rollout_tree_id"],
+                transition["branch_member_id"],
+                transition["created_at"],
+            ),
+        ).fetchone()["count"]
+    terminal_quality = next(
+        (
+            metric["value"]
+            for metric in metrics
+            if metric["descriptor"] == "deterministic.terminal_quality"
+        ),
+        None,
+    )
+    action = transition["payload"]["action"]
+    study = _study_from_manifest(
+        transition["run_manifest"],
+        transition["run_manifest"]["algorithm"]["id"],
+    )
+    return {
+        "transition_id": transition_id,
+        "lane": transition["branch_member_id"] or "shared-prefix",
+        "local_step": int(local_step),
+        "task": {
+            "title": "Reconstruct the canonical mounting plate",
+            "revision": transition["task_revision"],
+            "families": ["cad reconstruction"],
+            "known_checks": [
+                "geometry validity",
+                "constraint compliance",
+                "canonical render",
+                "reference correspondence",
+            ],
+            "study_question": study["research_question"],
+        },
+        "checkpoint": {
+            "policy_version_id": transition["behavior_policy_version_id"],
+            "source_state_id": source["state_id"],
+            "source_sequence": source["sequence"],
+            "source_status": source["semantic_status"],
+        },
+        "action": {
+            "kind": action["kind"],
+            "label": str(action["kind"]).replace("_", " "),
+            "parameters": {key: value for key, value in action.items() if key != "kind"},
+        },
+        "effect": {
+            "destination_state_id": destination["state_id"],
+            "destination_sequence": destination["sequence"],
+            "destination_status": destination["semantic_status"],
+            "transition_outcome": transition["outcome"],
+            "terminal_quality": terminal_quality,
+        },
+        "verifier": {
+            "status": verification["status"] if verification else "PENDING",
+            "steps": steps,
+            "deterministic_facts": [
+                metric
+                for metric in metrics
+                if str(metric["descriptor"]).startswith("deterministic.")
+            ],
+            "model_assessment": {
+                "outcome": judge["outcome"],
+                "explanation": judge["result"].get("explanation"),
+            }
+            if judge
+            else None,
+        },
+        "learning": {
+            "eligibility": eligibility["status"] if eligibility else "PENDING",
+            "eligibility_reason": eligibility["reason_code"] if eligibility else None,
+            "reward_signals": rewards,
+            "optimizer_status": iteration["status"] if iteration else "PENDING",
+            "contributed_to_policy_version": iteration["output_policy_version_id"]
+            if iteration and eligibility and eligibility["status"] == "ADMITTED"
+            else None,
+            "iteration_input_digest": iteration["iteration_input_digest"] if iteration else None,
+        },
     }
 
 
@@ -1133,6 +1888,276 @@ async def event_stream(run_id: str, after: int = Query(default=0, ge=0)) -> Stre
             await asyncio.sleep(1)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/v1/proofs")
+def proofs(
+    q: str | None = Query(default=None, max_length=120),
+    status: str | None = Query(default=None, max_length=40),
+    cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict[str, Any]:
+    where = ["1 = 1"]
+    params: list[Any] = []
+    if q:
+        where.append(
+            "(r.name ILIKE %s OR r.run_id ILIKE %s "
+            "OR eb.proof_bundle_id ILIKE %s OR eb.digest ILIKE %s)"
+        )
+        needle = f"%{q.strip()}%"
+        params.extend([needle, needle, needle, needle])
+    if status:
+        where.append("vr.status = %s")
+        params.append(status)
+    where_sql = " AND ".join(where)
+    with connection() as conn:
+        total = conn.execute(
+            f"""
+            SELECT count(*) AS count
+            FROM evidence_bundles eb
+            JOIN verification_runs vr ON vr.verification_run_id = eb.verification_run_id
+            JOIN runs r ON r.run_id = vr.run_id
+            WHERE {where_sql}
+            """,
+            params,
+        ).fetchone()["count"]
+        items = list(
+            conn.execute(
+                f"""
+                SELECT eb.proof_bundle_id, eb.digest, eb.subject_type, eb.subject_id,
+                  eb.created_at, vr.verification_run_id, vr.status,
+                  vr.plan_id, vr.rejudges_verification_run_id,
+                  r.run_id, r.name AS run_name, r.algorithm, r.manifest
+                FROM evidence_bundles eb
+                JOIN verification_runs vr ON vr.verification_run_id = eb.verification_run_id
+                JOIN runs r ON r.run_id = vr.run_id
+                WHERE {where_sql}
+                ORDER BY eb.created_at DESC
+                OFFSET %s LIMIT %s
+                """,
+                [*params, cursor, limit],
+            )
+        )
+    for item in items:
+        study = _study_from_manifest(item.pop("manifest"), item["algorithm"])
+        item["study_id"] = study["study_id"]
+        item["study_condition"] = study["condition"]
+        item["label"] = (
+            "Solve rate evidence" if item["subject_type"] == "TRANSITION" else "Group evidence"
+        )
+    next_cursor = cursor + len(items) if cursor + len(items) < total else None
+    return {"items": items, "total": total, "next_cursor": next_cursor}
+
+
+def _proof_detail_payload(proof_bundle_id: str) -> dict[str, Any]:
+    with connection() as conn:
+        bundle = conn.execute(
+            """
+            SELECT eb.*, vr.run_id, vr.status AS verification_status, vr.plan_id,
+              vr.subject_type AS verification_subject_type,
+              vr.rejudges_verification_run_id,
+              r.name AS run_name, r.algorithm, r.status AS run_status,
+              r.manifest AS run_manifest, r.manifest_digest
+            FROM evidence_bundles eb
+            JOIN verification_runs vr ON vr.verification_run_id = eb.verification_run_id
+            JOIN runs r ON r.run_id = vr.run_id
+            WHERE eb.proof_bundle_id = %s
+            """,
+            (proof_bundle_id,),
+        ).fetchone()
+        if not bundle:
+            raise HTTPException(status_code=404, detail={"code": "EVIDENCE_BUNDLE_NOT_FOUND"})
+        artifacts = list(
+            conn.execute(
+                """
+                SELECT a.artifact_id, a.digest, a.media_type, a.size_bytes,
+                  ar.role, ar.ordinal, ar.viewer_hint, ar.visibility, ar.trust_class
+                FROM artifact_refs ar
+                JOIN artifacts a ON a.artifact_id = ar.artifact_id
+                WHERE (ar.entity_type = 'evidence_bundle' AND ar.entity_id = %s)
+                   OR (
+                     ar.entity_type = 'verification_run'
+                     AND ar.entity_id = %s
+                   )
+                ORDER BY ar.role, ar.ordinal
+                """,
+                (proof_bundle_id, bundle["verification_run_id"]),
+            )
+        )
+        policies = list(
+            conn.execute(
+                """
+                SELECT policy_version_id, ordinal, artifact_digest, behavior_manifest, created_at
+                FROM policy_versions
+                WHERE run_id = %s
+                ORDER BY ordinal
+                """,
+                (bundle["run_id"],),
+            )
+        )
+        allocations = list(
+            conn.execute(
+                """
+                SELECT ca.allocation_id, ca.provider_name, ca.desired_state,
+                  ca.observed_state, ca.cleanup_warning, ca.updated_at
+                FROM compute_allocations ca
+                JOIN run_attempts ra ON ra.attempt_id = ca.run_attempt_id
+                WHERE ra.run_id = %s
+                ORDER BY ca.created_at
+                """,
+                (bundle["run_id"],),
+            )
+        )
+    study = _study_from_manifest(bundle["run_manifest"], bundle["algorithm"])
+    data_protocol = _data_protocol_from_manifest(bundle["run_manifest"])
+    return {
+        "proof": {
+            key: bundle[key]
+            for key in (
+                "proof_bundle_id",
+                "verification_run_id",
+                "subject_type",
+                "subject_id",
+                "digest",
+                "manifest",
+                "created_at",
+                "verification_status",
+                "plan_id",
+                "rejudges_verification_run_id",
+            )
+        },
+        "run": {
+            "run_id": bundle["run_id"],
+            "name": bundle["run_name"],
+            "status": bundle["run_status"],
+            "manifest_digest": bundle["manifest_digest"],
+        },
+        "exact_run_manifest": bundle["run_manifest"],
+        "study": study,
+        "data_protocol": data_protocol,
+        "artifacts": [
+            {
+                **artifact,
+                "downloadable": artifact["visibility"] != "HIDDEN",
+            }
+            for artifact in artifacts
+        ],
+        "policy_versions": policies,
+        "teardown_receipt": {
+            "complete": bool(allocations)
+            and all(item["observed_state"] == "RELEASED" for item in allocations),
+            "allocations": allocations,
+        },
+        "evaluation": {
+            "examples": [],
+            "claim": "No held-out evaluation examples exist for this local contract proof.",
+        },
+        "downloads": [
+            {"item": "evidence-manifest", "label": "Evidence manifest"},
+            {"item": "data-manifest", "label": "Data and protocol manifest"},
+            {"item": "run-manifest", "label": "Exact run configuration"},
+            {"item": "policy-manifest", "label": "Policy lineage"},
+            {"item": "teardown-receipt", "label": "Teardown receipt"},
+        ],
+    }
+
+
+@app.get("/v1/proofs/{proof_bundle_id}")
+def proof_detail(proof_bundle_id: str) -> dict[str, Any]:
+    return _proof_detail_payload(proof_bundle_id)
+
+
+@app.get("/v1/proofs/{proof_bundle_id}/download")
+def proof_download(
+    proof_bundle_id: str,
+    item: Literal[
+        "evidence-manifest",
+        "data-manifest",
+        "run-manifest",
+        "policy-manifest",
+        "teardown-receipt",
+    ],
+) -> Response:
+    detail = _proof_detail_payload(proof_bundle_id)
+    payload = {
+        "evidence-manifest": detail["proof"]["manifest"],
+        "data-manifest": detail["data_protocol"],
+        "run-manifest": {
+            "manifest": detail["exact_run_manifest"],
+            "manifest_digest": detail["run"]["manifest_digest"],
+        },
+        "policy-manifest": {"policy_versions": detail["policy_versions"]},
+        "teardown-receipt": detail["teardown_receipt"],
+    }[item]
+    filename = f"{proof_bundle_id}-{item}.json"
+    return Response(
+        content=json.dumps(payload, indent=2, default=str),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/v1/environments")
+def environments() -> dict[str, Any]:
+    with connection() as conn:
+        usage = conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM rollout_trees) AS rollout_trees,
+              (SELECT count(*) FROM training_iterations
+               WHERE output_policy_version_id IS NOT NULL)
+                AS committed_iterations,
+              (SELECT count(*) FROM verification_runs) AS verification_runs
+            """
+        ).fetchone()
+    used_in_training = int(usage["committed_iterations"]) > 0
+    return {
+        "items": [
+            {
+                "environment_id": "cad.reconstruction",
+                "name": "CAD reconstruction",
+                "version": "1.0.0",
+                "description": (
+                    "A bounded multi-turn mounting-plate reconstruction fixture "
+                    "with canonical renders and deterministic geometry reports."
+                ),
+                "dataset": {
+                    "source": "generated",
+                    "revision": "mounting-plate@sha256:fixture-v1",
+                    "task_families": ["cad_reconstruction"],
+                },
+                "harness": {
+                    "provider": "ComposeExecutionProvider",
+                    "snapshot_fidelity": "logical_restore",
+                    "network": "disabled",
+                },
+                "reward_function": {
+                    "pipeline": "cad-local-rewards@1",
+                    "deterministic": [
+                        "geometry validity",
+                        "constraint compliance",
+                        "terminal quality",
+                        "execution cost",
+                    ],
+                    "model_assessed": [
+                        "reference correspondence",
+                        "progress from source state",
+                    ],
+                },
+                "readiness": {
+                    "current": "USED_IN_TRAINING" if used_in_training else "SANDBOX_INTEGRATED",
+                    "contract_defined": True,
+                    "simulator_verified": True,
+                    "sandbox_integrated": True,
+                    "used_in_training": used_in_training,
+                },
+                "usage": usage,
+            }
+        ]
+    }
 
 
 @app.get("/v1/resources")

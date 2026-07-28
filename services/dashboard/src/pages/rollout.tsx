@@ -45,30 +45,97 @@ interface BranchComparison {
   }>;
 }
 
+interface TransitionExplanation {
+  transition_id: string;
+  lane: string;
+  local_step: number;
+  task: {
+    title: string;
+    revision: string;
+    families: string[];
+    known_checks: string[];
+    study_question: string;
+  };
+  checkpoint: {
+    policy_version_id: string;
+    source_state_id: string;
+    source_sequence: number;
+    source_status: string;
+  };
+  action: {
+    kind: string;
+    label: string;
+    parameters: Record<string, unknown>;
+  };
+  effect: {
+    destination_state_id: string;
+    destination_sequence: number;
+    destination_status: string;
+    transition_outcome: string;
+    terminal_quality: number | null;
+  };
+  verifier: {
+    status: string;
+    steps: Array<{
+      step_id: string;
+      status: string;
+      attempt_count: number;
+      cache_status: string;
+    }>;
+    deterministic_facts: Array<{
+      descriptor: string;
+      value: unknown;
+      unit: string;
+    }>;
+    model_assessment: {
+      outcome: string;
+      explanation: string | null;
+    } | null;
+  };
+  learning: {
+    eligibility: string;
+    eligibility_reason: string | null;
+    reward_signals: Array<{
+      reward_signal_id: string;
+      name: string;
+      value: number;
+      metric_observation_ids: string[];
+    }>;
+    optimizer_status: string;
+    contributed_to_policy_version: string | null;
+    iteration_input_digest: string | null;
+  };
+}
+
 export function RolloutTreePage() {
   const { treeId = "" } = useParams();
   const [params, setParams] = useSearchParams();
-  const graph = useApi<RolloutGraph>(
-    `/v1/rollout-trees/${treeId}/graph`,
-    1_000,
-  );
+  const graph = useApi<RolloutGraph>(`/v1/rollout-trees/${treeId}/graph`);
   const selectedVerification = params.get("verification");
   const verification = useApi<VerificationDetail>(
     selectedVerification
       ? `/v1/verification-runs/${selectedVerification}`
       : null,
-    1_000,
   );
   const branchGroupId =
     params.get("branch") ?? graph.data?.branch_groups[0]?.branch_group_id;
   const comparison = useApi<BranchComparison>(
     branchGroupId ? `/v1/branch-groups/${branchGroupId}/comparison` : null,
-    1_000,
   );
   const [rejudging, setRejudging] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const view = params.get("view") ?? "graph";
-  const outcomeFilter = params.get("filter") ?? "all";
+  const requestedView = params.get("view");
+  const view =
+    requestedView === "graph" || requestedView === "outline"
+      ? requestedView
+      : window.matchMedia("(max-width: 760px)").matches
+        ? "outline"
+        : "graph";
+  const requestedFilter = params.get("filter");
+  const outcomeFilter =
+    requestedFilter === "accepted" || requestedFilter === "exceptions"
+      ? requestedFilter
+      : "all";
   const filteredGraph = useMemo(
     () =>
       graph.data
@@ -79,36 +146,58 @@ export function RolloutTreePage() {
 
   useEffect(() => {
     if (!filteredGraph) return;
-    const selectedMember = params.get("member");
+    const next = new URLSearchParams(params);
+    const selectedState = params.get("state");
+    const selectedEdge = filteredGraph.edges.find(
+      (edge) => edge.target === selectedState,
+    );
+    const selectedMember = selectedEdge?.branch_member_id ?? null;
     const memberVisible =
       !selectedMember ||
       filteredGraph.branch_members.some(
         (member) => member.branch_member_id === selectedMember,
       );
-    if (params.get("state") && memberVisible) return;
-    const defaultEdge =
-      [...filteredGraph.edges]
-        .reverse()
-        .find((edge) => edge.branch_member_id) ?? filteredGraph.edges.at(-1);
-    if (!defaultEdge) return;
-    const next = new URLSearchParams(params);
-    next.set("state", defaultEdge.target);
-    next.set("verification", defaultEdge.verification_run_id);
-    if (defaultEdge.branch_member_id)
-      next.set("member", defaultEdge.branch_member_id);
-    else next.delete("member");
+    const activeEdge =
+      selectedEdge && memberVisible
+        ? selectedEdge
+        : ([...filteredGraph.edges]
+            .reverse()
+            .find((edge) => edge.branch_member_id) ??
+          filteredGraph.edges.at(-1));
+    if (activeEdge) {
+      next.set("state", activeEdge.target);
+      next.set("verification", activeEdge.verification_run_id);
+      if (activeEdge.branch_member_id)
+        next.set("member", activeEdge.branch_member_id);
+      else next.delete("member");
+    }
     if (filteredGraph.branch_groups[0]) {
       next.set(
         "branch",
         String(filteredGraph.branch_groups[0].branch_group_id),
       );
     }
-    if (!params.get("view")) next.set("view", "graph");
-    setParams(next, { replace: true });
-  }, [filteredGraph, params, setParams]);
+    if (requestedView !== "graph" && requestedView !== "outline")
+      next.set("view", view);
+    if (
+      requestedFilter !== null &&
+      requestedFilter !== "all" &&
+      requestedFilter !== "accepted" &&
+      requestedFilter !== "exceptions"
+    )
+      next.set("filter", "all");
+    if (next.toString() !== params.toString())
+      setParams(next, { replace: true });
+  }, [filteredGraph, params, requestedFilter, requestedView, setParams, view]);
 
   const selectedState = params.get("state");
   const selectedStep = params.get("step");
+  const selectedEdge = graph.data?.edges.find(
+    (edge) => edge.target === selectedState,
+  );
+  const explanation = useApi<TransitionExplanation>(
+    selectedEdge ? `/v1/transitions/${selectedEdge.id}/explanation` : null,
+  );
   const flow = useMemo(
     () =>
       filteredGraph
@@ -211,7 +300,7 @@ export function RolloutTreePage() {
               <label>
                 Outcome filter
                 <select
-                  value={params.get("filter") ?? "all"}
+                  value={outcomeFilter}
                   onChange={(event) =>
                     updateParam(params, setParams, "filter", event.target.value)
                   }
@@ -360,6 +449,15 @@ export function RolloutTreePage() {
                 </div>
               </aside>
             </div>
+            <StepExplanation
+              loading={explanation.loading}
+              error={explanation.error}
+              explanation={explanation.data}
+              member={graph.data.branch_members.find(
+                (item) =>
+                  item.branch_member_id === selectedEdge?.branch_member_id,
+              )}
+            />
             <EvidenceComparator
               proof={proof}
               comparison={comparison.data}
@@ -394,6 +492,155 @@ export function RolloutTreePage() {
         ) : null}
       </AsyncState>
     </>
+  );
+}
+
+function StepExplanation({
+  loading,
+  error,
+  explanation,
+  member,
+}: {
+  loading: boolean;
+  error: Error | null;
+  explanation: TransitionExplanation | null;
+  member:
+    | {
+        sibling_index: number;
+        status: string;
+      }
+    | undefined;
+}) {
+  return (
+    <Section
+      id="step-explanation"
+      title={
+        explanation
+          ? `${member ? `Sibling ${member.sibling_index + 1}` : "Shared prefix"} · step ${explanation.local_step}`
+          : "Selected step"
+      }
+      aside={
+        explanation ? (
+          <StatusBadge status={explanation.verifier.status} />
+        ) : undefined
+      }
+      className="step-explanation"
+    >
+      <AsyncState loading={loading} error={error}>
+        {explanation ? (
+          <>
+            <a className="mobile-back-link" href="#trajectory-outline">
+              ← Back to trajectory steps
+            </a>
+            <div className="explanation-grid">
+              <article>
+                <span>Task</span>
+                <h3>{explanation.task.title}</h3>
+                <p>
+                  Families: {explanation.task.families.join(", ")}. Known
+                  checks: {explanation.task.known_checks.join(", ")}.
+                </p>
+              </article>
+              <article>
+                <span>Checkpoint knowledge</span>
+                <h3>
+                  State {explanation.checkpoint.source_sequence} ·{" "}
+                  {explanation.checkpoint.source_status.toLowerCase()}
+                </h3>
+                <p>
+                  Policy{" "}
+                  <MachineId
+                    value={explanation.checkpoint.policy_version_id}
+                    copy={false}
+                  />{" "}
+                  produced this continuation.
+                </p>
+              </article>
+              <article>
+                <span>Action</span>
+                <h3>{explanation.action.label}</h3>
+                <p>
+                  {Object.keys(explanation.action.parameters).length
+                    ? Object.entries(explanation.action.parameters)
+                        .map(([key, value]) => `${key} ${String(value)}`)
+                        .join(" · ")
+                    : "No additional action parameters."}
+                </p>
+              </article>
+              <article>
+                <span>Effect</span>
+                <h3>
+                  State {explanation.checkpoint.source_sequence} →{" "}
+                  {explanation.effect.destination_sequence}
+                </h3>
+                <p>
+                  {explanation.effect.transition_outcome
+                    .toLowerCase()
+                    .replaceAll("_", " ")}
+                  {explanation.effect.terminal_quality !== null
+                    ? ` · terminal quality ${Number(explanation.effect.terminal_quality).toFixed(3)}`
+                    : ""}
+                </p>
+              </article>
+              <article>
+                <span>Verifier observation</span>
+                <h3>
+                  {explanation.verifier.steps.length} components ·{" "}
+                  {explanation.verifier.steps.reduce(
+                    (total, step) => total + step.attempt_count,
+                    0,
+                  )}{" "}
+                  attempts
+                </h3>
+                <ul>
+                  {explanation.verifier.deterministic_facts
+                    .slice(0, 4)
+                    .map((fact) => (
+                      <li key={fact.descriptor}>
+                        {fact.descriptor
+                          .replace("deterministic.", "")
+                          .replaceAll("_", " ")}
+                        : <strong>{String(fact.value)}</strong>{" "}
+                        <small>{fact.unit}</small>
+                      </li>
+                    ))}
+                </ul>
+              </article>
+              <article>
+                <span>Credit and update</span>
+                <h3>
+                  {explanation.learning.eligibility
+                    .toLowerCase()
+                    .replaceAll("_", " ")}
+                </h3>
+                <p>
+                  {explanation.learning.reward_signals.length} named reward
+                  signals. Optimizer{" "}
+                  {explanation.learning.optimizer_status.toLowerCase()}.
+                </p>
+                {explanation.learning.contributed_to_policy_version ? (
+                  <p>
+                    Contributed to{" "}
+                    <MachineId
+                      value={explanation.learning.contributed_to_policy_version}
+                      copy={false}
+                    />
+                  </p>
+                ) : (
+                  <p>No optimizer contribution is recorded for this step.</p>
+                )}
+              </article>
+            </div>
+            <details className="manifest-details">
+              <summary>Technical details</summary>
+              <pre className="json-block">
+                {JSON.stringify(explanation, null, 2)}
+              </pre>
+            </details>
+          </>
+        ) : null}
+      </AsyncState>
+    </Section>
   );
 }
 
@@ -463,7 +710,13 @@ function buildFlow(
             aria-label={`${label}, state ${state.sequence}, ${state.semantic_status}`}
           >
             <span>{label}</span>
-            <code>S{state.sequence}</code>
+            <code>
+              {edge
+                ? edge.branch_member_id
+                  ? `B${(memberIndex.get(edge.branch_member_id) ?? 0) + 1}.${edge.local_step}`
+                  : `P${edge.local_step}`
+                : "START"}
+            </code>
           </button>
         ),
       },
@@ -499,8 +752,8 @@ export function TrajectoryOutline({
 }) {
   const incoming = new Map(graph.edges.map((edge) => [edge.target, edge]));
   return (
-    <div className="outline-table-wrap">
-      <table className="data-table outline-table">
+    <div className="outline-table-wrap" id="trajectory-outline">
+      <table className="data-table outline-table desktop-index">
         <caption>Keyboard-navigable equivalent of the rollout graph</caption>
         <thead>
           <tr>
@@ -528,7 +781,9 @@ export function TrajectoryOutline({
                     type="button"
                     onClick={() => select(state.id, edge)}
                   >
-                    S{state.sequence}{" "}
+                    {edge
+                      ? `${member ? `Sibling ${member.sibling_index + 1}` : "Prefix"} · step ${edge.local_step}`
+                      : "Initial state"}{" "}
                     <MachineId value={state.id} copy={false} />
                   </button>
                 </td>
@@ -555,6 +810,48 @@ export function TrajectoryOutline({
           })}
         </tbody>
       </table>
+      <ol className="mobile-index trajectory-cards">
+        {graph.nodes.flatMap((state) => {
+          const edge = incoming.get(state.id);
+          if (!edge) return [];
+          const member = graph.branch_members.find(
+            (item) => item.branch_member_id === edge.branch_member_id,
+          );
+          return [
+            <li
+              key={state.id}
+              className={selectedState === state.id ? "selected" : ""}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  select(state.id, edge);
+                  window.requestAnimationFrame(() =>
+                    document
+                      .getElementById("step-explanation")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                  );
+                }}
+              >
+                <span>
+                  <strong>
+                    {member
+                      ? `Sibling ${member.sibling_index + 1}`
+                      : "Shared prefix"}{" "}
+                    · step {edge.local_step}
+                  </strong>
+                  <small>{edge.action_label}</small>
+                </span>
+                <StatusBadge status={edge.outcome} />
+                <span className="trajectory-card-footer">
+                  State {state.sequence} ·{" "}
+                  {state.semantic_status.toLowerCase().replaceAll("_", " ")}
+                </span>
+              </button>
+            </li>,
+          ];
+        })}
+      </ol>
     </div>
   );
 }

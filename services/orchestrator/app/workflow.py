@@ -1979,6 +1979,10 @@ def _commit_iteration(
                 (run_id,),
             )
         ]
+        run_manifest = conn.execute(
+            "SELECT manifest FROM runs WHERE run_id = %s",
+            (run_id,),
+        ).fetchone()["manifest"]
         base_manifest = {
             "manifest_id": make_id("iteration_input"),
             "rollout_tree_ids": tree_ids,
@@ -1989,6 +1993,21 @@ def _commit_iteration(
             "reward_signal_ids": reward_ids,
             "materializer_version": "branch-jsonl@1",
             "weights": {tree_id: 1.0 for tree_id in tree_ids},
+            "data_protocol_digest": run_manifest.get("data_protocol", {}).get(
+                "digest",
+                canonical_digest(
+                    {
+                        "task_revision": run_manifest.get("task_revision"),
+                        "seed": run_manifest.get("seed"),
+                        "source": "generated",
+                    }
+                ),
+            ),
+            "gradient_contributors": {
+                "rollout_tree_ids": tree_ids,
+                "proof_bundle_ids": proof_ids,
+                "reward_signal_ids": reward_ids,
+            },
         }
         manifest = {**base_manifest, "digest": canonical_digest(base_manifest)}
         validate_contract("IterationInput", manifest)
