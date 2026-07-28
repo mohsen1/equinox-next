@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "amendment_id": "repository-repair-confirmatory-study@1/amendment-3",
+  "study_id": "repository-repair-confirmatory-study@1",
+  "authored_at": "2026-07-28",
+  "effective_before_first_post_amendment_optimization": true,
+  "frozen_source_commit": "e6a139375a4e6ec92df362873237b398aa0041c0",
+  "algorithm_change": false,
+  "gate_change": false,
+  "task_outcomes_observed_before_roster_finalization": false,
+  "reason": {
+    "code": "BLIND_ELIGIBILITY_ROSTER_COMPLETE",
+    "summary": "Seeds 307 and 701 are the first two candidates in the predeclared full order to pass the frozen action-protocol gate.",
+    "scientific_interpretation": "The final optimization and causal-control roster is bound before training, test, adapter, or external-pack outcomes are observed.",
+    "stopping_rule_applied": "Screening stopped immediately after seed 701 became the second total protocol-eligible candidate."
+  },
+  "screen_outcomes": [
+    {
+      "optimization_seed": 307,
+      "execution_id": "runpod-proof-20260728T175652Z",
+      "action_protocol_validity_rate": 1.0,
+      "protocol_eligible": true,
+      "estimated_cost_usd": 0.018411,
+      "teardown_confirmed": true
+    },
+    {
+      "optimization_seed": 401,
+      "execution_id": "runpod-proof-20260728T180041Z",
+      "action_protocol_validity_rate": 0.988095,
+      "protocol_eligible": false,
+      "estimated_cost_usd": 0.023327,
+      "teardown_confirmed": true
+    },
+    {
+      "optimization_seed": 503,
+      "execution_id": "runpod-proof-20260728T180557Z",
+      "action_protocol_validity_rate": 0.988095,
+      "protocol_eligible": false,
+      "estimated_cost_usd": 0.02143,
+      "teardown_confirmed": true
+    },
+    {
+      "optimization_seed": 601,
+      "execution_id": "runpod-proof-20260728T180933Z",
+      "protocol_eligible": null,
+      "failure_code": "RUNPOD_CAPACITY_UNAVAILABLE",
+      "gpu_work_started": false,
+      "estimated_cost_usd": 0,
+      "teardown_confirmed": true
+    },
+    {
+      "optimization_seed": 601,
+      "execution_id": "runpod-proof-20260728T181027Z",
+      "action_protocol_validity_rate": 0.988235,
+      "protocol_eligible": false,
+      "estimated_cost_usd": 0.03823,
+      "teardown_confirmed": true
+    },
+    {
+      "optimization_seed": 701,
+      "execution_id": "runpod-proof-20260728T181623Z",
+      "action_protocol_validity_rate": 1.0,
+      "protocol_eligible": true,
+      "estimated_cost_usd": 0.065337,
+      "teardown_confirmed": true
+    }
+  ],
+  "final_condition_roster": {
+    "frozen_reference": [
+      "k4_train_seed113"
+    ],
+    "reported_protocol_failure": [
+      "k4_train_seed211"
+    ],
+    "fresh_replications": [
+      "k4_train_seed307",
+      "k4_train_seed701"
+    ],
+    "matched_causal_controls": [
+      "k4_no_update_seed307",
+      "k1_train_seed307"
+    ],
+    "control_completion_budget_source": "k4_train_seed307.total_sampled_completions"
+  },
+  "reporting": {
+    "seed_211_failures_remain_primary_rows": true,
+    "every_screen_and_capacity_failure_remains_a_primary_row": true,
+    "replacement_runs_are_labeled_post_preregistration_amendment": true,
+    "no_failure_is_removed_from_aggregates": true,
+    "no_claim_uses_only_successful_runs_without_showing_failures": true
+  }
+}

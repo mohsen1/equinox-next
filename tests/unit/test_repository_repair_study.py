@@ -163,11 +163,16 @@ def test_no_update_control_executes_optimizer_then_restores_parameters(
 
 def test_frozen_source_digests_and_preregistration_are_current() -> None:
     study.verify_frozen_sources()
+    repository_root = Path(__file__).resolve().parents[2]
     manifest = json.loads(
-        (
-            Path(__file__).resolve().parents[2]
-            / "research/studies/revision30-confirmatory-study.json"
-        ).read_text(encoding="utf-8")
+        (repository_root / "research/studies/revision30-confirmatory-study.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    amendment = json.loads(
+        (repository_root / "research/studies/revision30-confirmatory-amendment-3.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     assert manifest["study_id"] == study.STUDY_ID
@@ -175,6 +180,18 @@ def test_frozen_source_digests_and_preregistration_are_current() -> None:
         "k4_train_seed113",
         "k4_train_seed211",
         "k4_train_seed307",
-        "k4_no_update_seed211",
-        "k1_train_seed211",
+        "k4_train_seed701",
+        "k4_no_update_seed307",
+        "k1_train_seed307",
+    ]
+    assert manifest["conditions"][1]["role"] == "protocol_ineligible_failure"
+    assert manifest["conditions"][1]["training_started"] is False
+    assert amendment["task_outcomes_observed_before_roster_finalization"] is False
+    assert amendment["final_condition_roster"]["fresh_replications"] == [
+        "k4_train_seed307",
+        "k4_train_seed701",
+    ]
+    assert amendment["final_condition_roster"]["matched_causal_controls"] == [
+        "k4_no_update_seed307",
+        "k1_train_seed307",
     ]
