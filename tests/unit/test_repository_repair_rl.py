@@ -52,10 +52,12 @@ from research.runpod.repository_repair_rl import (
     render_action_prompt,
     resumed_crash_tail_actions_unaccounted,
     retained_final_evaluation_reserve,
+    retention_guard_decision,
     sampled_reverse_kl_penalty,
     select_representative_collection,
     serialize_branch_group,
     sibling_advantages,
+    training_level_allocation,
     training_loop_entry,
     training_stop_decision,
     uninformative_group_limit_reached,
@@ -93,8 +95,7 @@ def clear_runtime_configuration_environment(
 def test_sibling_advantage_is_leave_one_out_centered_and_zero_for_ties() -> None:
     advantages = sibling_advantages([1.0, 0.0, 0.0, 0.0])
 
-    assert advantages[0] > 0
-    assert all(value < 0 for value in advantages[1:])
+    assert advantages == [1.0, -0.33333333, -0.33333333, -0.33333333]
     assert abs(sum(advantages)) < 1e-7
     assert sibling_advantages([0.25] * BRANCH_WIDTH) == [0.0] * BRANCH_WIDTH
 
@@ -109,6 +110,41 @@ def test_correctness_contrast_is_required_for_policy_signal() -> None:
     assert correctness_contrast_advantages([0.97, 0.975, 0.975, 0.97]) == [0.0] * 4
     assert correctness_contrast_advantages([0.0, 0.0, 0.0, 0.0]) == [0.0] * 4
     assert correctness_contrast_advantages([0.97, 0.0, 0.0, 0.0])[0] > 0
+
+
+def test_training_allocation_keeps_a_majority_on_frontier_and_probes_two_levels() -> None:
+    assert training_level_allocation(0, 4) == [0, 0, 1, 2]
+    assert training_level_allocation(1, 4) == [1, 1, 2, 3]
+    assert training_level_allocation(2, 4) == [2, 2, 2, 3]
+    assert training_level_allocation(3, 4) == [3, 3, 3, 3]
+    assert training_level_allocation(0, 1) == [0]
+
+    with pytest.raises(ValueError, match="outside"):
+        training_level_allocation(4, 4)
+
+
+def test_retention_guard_requires_zero_paired_regressions() -> None:
+    assert retention_guard_decision(
+        best_fixed_successes=5,
+        best_guard_net_improved=0,
+        observed_fixed_successes=6,
+        guard_change={"improved": 1, "regressed": 0, "net_improved": 1},
+        consecutive_regressions=1,
+    ) == (True, 6, 1, 0)
+    assert retention_guard_decision(
+        best_fixed_successes=5,
+        best_guard_net_improved=0,
+        observed_fixed_successes=6,
+        guard_change={"improved": 1, "regressed": 1, "net_improved": 0},
+        consecutive_regressions=0,
+    ) == (False, 5, 0, 1)
+    assert retention_guard_decision(
+        best_fixed_successes=5,
+        best_guard_net_improved=0,
+        observed_fixed_successes=5,
+        guard_change={"improved": 1, "regressed": 0, "net_improved": 1},
+        consecutive_regressions=1,
+    ) == (True, 5, 1, 0)
 
 
 def test_sampled_reverse_kl_penalty_is_zero_at_reference_and_nonnegative() -> None:
@@ -375,7 +411,7 @@ def test_partial_final_evaluation_has_no_headline_reward() -> None:
     (
         ("EQUINOX_RL_VALIDATION_EXAMPLES", "9"),
         ("EQUINOX_RL_TEST_EXAMPLES", "13"),
-        ("EQUINOX_RL_TRAINING_TASKS_PER_UPDATE", "6"),
+        ("EQUINOX_RL_TRAINING_TASKS_PER_UPDATE", "14"),
         ("EQUINOX_RL_MASTERY_WINDOWS", "3"),
     ),
 )
@@ -1153,6 +1189,13 @@ def test_reference_anchor_covers_prefix_and_all_accepted_continuations() -> None
     assert reference_actions == [prefix_actions[0], *(actions[0] for actions in sibling_actions)]
     assert policy_example_count == 4
     assert [example.weight for example in anchored] == [0.0, 3.0, -1.0, -1.0, -1.0]
+    gated_anchor_only, gated_policy_examples = reference_anchored_examples(
+        [collection],
+        minimum_informative_groups=2,
+    )
+    assert gated_policy_examples == 0
+    assert len(gated_anchor_only) == 5
+    assert all(example.weight == 0.0 for example in gated_anchor_only)
     anchor_only, no_policy_examples = reference_anchored_examples(
         [replace(collection, advantages=[0.0] * BRANCH_WIDTH)]
     )

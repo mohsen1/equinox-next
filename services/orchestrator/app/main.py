@@ -164,7 +164,15 @@ def lightweight_research_validation_history(value: Any) -> list[dict[str, Any]] 
         "mastered",
         "mastery_streak",
         "policy_loss",
+        "reinforce_loss",
+        "reference_kl",
         "gradient_norm",
+        "curriculum_baseline_exact_successes",
+        "curriculum_baseline_exact_rate",
+        "curriculum_exact_successes",
+        "curriculum_exact_rate",
+        "curriculum_paired_change",
+        "retention_guard_passed",
         "elapsed_seconds",
         "validation_elapsed_seconds",
         "final_evaluation_reserve_seconds",
@@ -217,6 +225,10 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "update": result.get("updates_completed"),
         "current_level": level,
         "promotion_count": result.get("promotion_count"),
+        "frontier_probe_task_groups": result.get("frontier_probe_task_groups"),
+        "maximum_sampled_complexity_level": result.get(
+            "maximum_sampled_complexity_level"
+        ),
         "sampled_completions": result.get("total_sampled_completions"),
         "exact_rate": exact_rate,
         "exact_rate_95ci": (
@@ -251,6 +263,7 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "post_training_completed": result.get("post_training_completed"),
         "informative_group_rate": result.get("informative_group_rate"),
         "policy_update_count": result.get("policy_update_count"),
+        "optimizer_update_count": result.get("optimizer_update_count"),
         "action_protocol_validity_rate": result.get("action_protocol_validity_rate"),
         "recent_malformed_action_rate": (
             result.get("recent_action_protocol", {}).get("malformed_rate")
@@ -347,6 +360,7 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "snapshot_fidelity": result.get("snapshot_fidelity"),
         "maximum_level": result.get("maximum_complexity_level", result.get("maximum_level")),
         "reached_level": result.get("reached_complexity_level", result.get("current_level")),
+        "maximum_sampled_level": result.get("maximum_sampled_complexity_level"),
         "updates_completed": result.get("updates_completed", result.get("update")),
         "initial_exact_rate": (
             None if result.get("final_evaluation_partial") is True else result.get("initial_reward")
@@ -377,6 +391,8 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "initial_by_level": initial_by_level if isinstance(initial_by_level, dict) else {},
         "final_by_level": final_by_level if isinstance(final_by_level, dict) else {},
         "policy_update_count": result.get("policy_update_count"),
+        "optimizer_update_count": result.get("optimizer_update_count"),
+        "frontier_probe_task_groups": result.get("frontier_probe_task_groups"),
         "informative_group_rate": result.get("informative_group_rate"),
         "total_sampled_completions": result.get("total_sampled_completions"),
         "total_sampled_actions": result.get("total_sampled_actions"),

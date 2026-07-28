@@ -275,6 +275,9 @@ function progressItems(run: ResearchComputeExecution) {
   const maximumUpdates = numberValue(progress.maximum_updates);
   const currentLevel = numberValue(progress.current_level);
   const maximumLevel = numberValue(progress.maximum_level);
+  const maximumSampledLevel = numberValue(
+    progress.maximum_sampled_complexity_level,
+  );
   const validationRate = numberValue(progress.exact_rate);
   const validationInterval = intervalValue(progress.exact_rate_95ci);
   const validationExamples = numberValue(progress.validation_examples);
@@ -338,6 +341,10 @@ function progressItems(run: ResearchComputeExecution) {
           ? "Awaiting evaluation"
           : `Level ${currentLevel}${
               maximumLevel !== null ? ` of ${maximumLevel}` : ""
+            }${
+              maximumSampledLevel !== null && maximumSampledLevel > currentLevel
+                ? ` · probed through level ${maximumSampledLevel}`
+                : ""
             }${
               activeComplexity
                 ? ` · ${activeComplexity.file_count} files · ${activeComplexity.fault_count} fault${
@@ -473,13 +480,15 @@ function ValidationHistory({
                 <td>
                   {isBest
                     ? "Best retained"
-                    : row.mastered
-                      ? `Mastery ${row.mastery_streak ?? 1}`
-                      : row.regression_streak
-                        ? `Regression ${row.regression_streak}`
-                        : isBaseline
-                          ? "Reference"
-                          : "Continue"}
+                    : row.retention_guard_passed === false
+                      ? "Guard rejected"
+                      : row.mastered
+                        ? `Mastery ${row.mastery_streak ?? 1}`
+                        : row.regression_streak
+                          ? `Regression ${row.regression_streak}`
+                          : isBaseline
+                            ? "Reference"
+                            : "Continue"}
                 </td>
               </tr>
             );

@@ -94,6 +94,9 @@ export interface ResearchComputeExecution {
     post_training_completed?: boolean;
     informative_group_rate?: number;
     policy_update_count?: number;
+    optimizer_update_count?: number;
+    frontier_probe_task_groups?: number;
+    maximum_sampled_complexity_level?: number;
     action_protocol_validity_rate?: number;
     recent_malformed_action_rate?: number;
     consecutive_uninformative_groups?: number;
@@ -236,6 +239,19 @@ export interface ResearchValidationSummary {
   mastery_streak?: number;
   regression_streak?: number;
   best_checkpoint?: number;
+  curriculum_baseline_exact_successes?: number;
+  curriculum_baseline_exact_rate?: number;
+  curriculum_exact_successes?: number;
+  curriculum_exact_rate?: number;
+  curriculum_paired_change?: {
+    examples: number;
+    improved: number;
+    regressed: number;
+    unchanged: number;
+    net_improved: number;
+    mcnemar_exact_p_value: number;
+  };
+  retention_guard_passed?: boolean;
   elapsed_seconds?: number;
 }
 
@@ -360,6 +376,7 @@ export interface ResearchBranchSnapshot {
   excluded?: boolean;
   exclusion_reason?: string | null;
   replay?: boolean;
+  curriculum_role?: string;
   optimizer_update?: {
     applied: boolean;
     policy_signal_applied?: boolean;
@@ -377,6 +394,8 @@ export interface ResearchBranchSnapshot {
     reference_examples?: number;
     effective_batch_weight?: number;
     informative_group_count?: number;
+    minimum_informative_groups?: number;
+    policy_signal_suppressed_reason?: string | null;
   } | null;
   siblings: ResearchBranchSibling[];
 }
@@ -395,6 +414,7 @@ export interface ResearchTrajectory {
   snapshot_fidelity?: string | null;
   maximum_level?: number;
   reached_level?: number;
+  maximum_sampled_level?: number;
   updates_completed?: number;
   initial_exact_rate?: number;
   final_exact_rate?: number;
@@ -409,6 +429,8 @@ export interface ResearchTrajectory {
   initial_by_level: Record<string, ResearchLevelObservation>;
   final_by_level: Record<string, ResearchLevelObservation>;
   policy_update_count?: number;
+  optimizer_update_count?: number;
+  frontier_probe_task_groups?: number;
   informative_group_rate?: number;
   total_sampled_completions?: number;
   total_sampled_actions?: number;

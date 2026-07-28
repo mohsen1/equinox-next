@@ -938,7 +938,11 @@ function Fact({ label, value }: { label: string; value: string }) {
 
 export function branchSnapshotLabel(snapshot: ResearchBranchSnapshot): string {
   const replay = snapshot.replay ? " · Replay" : "";
-  return `Update ${snapshot.update} · Level ${snapshot.level}${replay}`;
+  const probe =
+    snapshot.curriculum_role === "adjacent_complexity_probe"
+      ? " · Complexity probe"
+      : "";
+  return `Update ${snapshot.update} · Level ${snapshot.level}${replay}${probe}`;
 }
 
 function siblingReturn(sibling: ResearchBranchSibling): number {

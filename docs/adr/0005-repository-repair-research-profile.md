@@ -19,7 +19,7 @@ The first proof runs the environment as a safe deterministic simulator alongside
 trainer on a bounded RunPod worker. It does not execute model-generated code, shell
 commands, or arbitrary test processes.
 
-This protocol pins environment revision `repository-repair-simulator@3` and verifier
+This protocol pins environment revision `repository-repair-simulator@4` and verifier
 revision `repository-repair-hidden-state@3`.
 
 ## Why this vertical
@@ -334,6 +334,33 @@ The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and
 zero ongoing provider spend. It is not a completed paired evaluation.
+
+The completed seed `109` revision-18 run applied 25 optimizer steps, 21 with sibling
+policy credit. The fixed checkpoint improved from `5/8` to `6/8`, aggregate action
+validity remained `97.3556%`, and no malformed-action strike remained at termination.
+The 24-task paired test moved in the wrong direction: zero improvements, two
+regressions, and reward `0.416666` to `0.333334`. The hypothesis gate rejected the run.
+The retained adapter and manifest were persisted, the pod was deleted, ongoing spend
+returned to zero, and estimated GPU cost was `$1.096833`.
+
+Objective v9 is `leave-one-out-retention-guarded-reinforce@9` under workload revision
+`runpod-repository-repair-loo-reinforce@19` and environment revision
+`repository-repair-simulator@4`. It keeps static `K=4`, the `4e-5` learning rate, and the
+full-trajectory base-policy anchor. It changes four measured weak points:
+
+- thirteen disjoint training fixture families cover the held-out repair grammar through
+  disclosed structural analogues;
+- each four-task batch keeps two active-frontier groups and probes up to two harder
+  complexity levels;
+- absolute sibling advantage is capped at `1.0`, and policy credit requires two
+  independent informative groups in the batch; and
+- a candidate checkpoint must preserve the fixed window, improve either the fixed or
+  rotating window, and have zero paired rotating regressions against the
+  disabled-adapter base before it can replace the retained checkpoint.
+
+The observer retains one active-frontier branch tree and one complexity-probe tree per
+update, reports the highest sampled level, and labels guard rejection explicitly.
+Final hypothesis acceptance additionally requires zero paired test regressions.
 
 ## Non-goals
 

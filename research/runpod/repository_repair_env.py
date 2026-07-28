@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from itertools import combinations
 from typing import Any, Literal
 
-ENVIRONMENT_REVISION = "repository-repair-simulator@3"
+ENVIRONMENT_REVISION = "repository-repair-simulator@4"
 VERIFIER_REVISION = "repository-repair-hidden-state@3"
 ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@2"
 BRANCH_WIDTH = 4
@@ -387,10 +387,66 @@ FAULT_TEMPLATES = (
         "return left and right",
         "test_both_requires_two_truthy_values",
     ),
+    (
+        "key_exists",
+        "def key_exists(records, key):\n    return key not in records\n",
+        "return key not in records",
+        "return key in records",
+        "test_key_exists_reports_membership",
+    ),
+    (
+        "second",
+        "def second(values):\n    return values[0]\n",
+        "return values[0]",
+        "return values[1]",
+        "test_second_returns_second_item",
+    ),
+    (
+        "all_true",
+        "def all_true(left, right):\n    return left or right\n",
+        "return left or right",
+        "return left and right",
+        "test_all_true_requires_both_values",
+    ),
+    (
+        "has_items",
+        "def has_items(value):\n    return len(value) == 0\n",
+        "return len(value) == 0",
+        "return len(value) > 0",
+        "test_has_items_detects_nonempty_values",
+    ),
+    (
+        "fallback",
+        "def fallback(value, default):\n    return default if value is not None else value\n",
+        "return default if value is not None else value",
+        "return default if value is None else value",
+        "test_fallback_uses_default_only_for_none",
+    ),
+    (
+        "largest",
+        "def largest(values):\n    return min(values)\n",
+        "return min(values)",
+        "return max(values)",
+        "test_largest_returns_greatest_item",
+    ),
+    (
+        "double",
+        "def double(value):\n    return value + 1\n",
+        "return value + 1",
+        "return value + value",
+        "test_double_adds_value_to_itself",
+    ),
+    (
+        "head_or",
+        "def head_or(values, fallback):\n    return values[-1] if values else fallback\n",
+        "return values[-1] if values else fallback",
+        "return values[0] if values else fallback",
+        "test_head_or_returns_initial_item",
+    ),
 )
 
 TEMPLATE_SPLITS = {
-    "train": FAULT_TEMPLATES[:5],
+    "train": FAULT_TEMPLATES[:5] + FAULT_TEMPLATES[33:],
     "validation": FAULT_TEMPLATES[5:10] + FAULT_TEMPLATES[15:26],
     "test": FAULT_TEMPLATES[10:15] + FAULT_TEMPLATES[26:33],
 }
@@ -429,6 +485,41 @@ STRUCTURAL_MIRROR_DISCLOSURES = (
         "families": ("different", "negate", "both"),
         "splits": ("validation", "test"),
         "relationship": "boolean operator repair",
+    },
+    {
+        "families": ("lookup", "key_exists", "has_key"),
+        "splits": ("train", "test"),
+        "relationship": "mapping lookup and membership repair",
+    },
+    {
+        "families": ("second", "head_or", "middle", "safe_head"),
+        "splits": ("train", "test"),
+        "relationship": "positional indexing repair",
+    },
+    {
+        "families": ("all_true", "both"),
+        "splits": ("train", "test"),
+        "relationship": "boolean conjunction repair",
+    },
+    {
+        "families": ("has_items", "is_empty"),
+        "splits": ("train", "test"),
+        "relationship": "sequence emptiness repair",
+    },
+    {
+        "families": ("fallback", "default_zero"),
+        "splits": ("train", "test"),
+        "relationship": "fallback selection repair",
+    },
+    {
+        "families": ("clamp", "largest", "maximum", "bounded_lower", "maximum_three"),
+        "splits": ("train", "test"),
+        "relationship": "extremum operator repair",
+    },
+    {
+        "families": ("combine", "double", "multiply", "subtract", "square"),
+        "splits": ("train", "test"),
+        "relationship": "arithmetic operator repair",
     },
 )
 
@@ -661,6 +752,14 @@ SEMANTIC_CASES: dict[str, tuple[tuple[Any, ...], ...]] = {
     "safe_head": (((1, 2), 9), ((2, 1), 9), ((), 9), (("a",), "fallback")),
     "middle": (((1, 2, 3),), ((3, 1, 2),), (("a", "b", "c"),)),
     "both": ((True, True), (True, False), (False, True), (False, False)),
+    "key_exists": (({"a": 1}, "a"), ({"a": 1}, "b"), ({}, "a")),
+    "second": (((1, 2, 3),), ((3, 1, 2),), (("a", "b"),)),
+    "all_true": ((True, True), (True, False), (False, True), (False, False)),
+    "has_items": (("",), ("x",), ([],), ([0],)),
+    "fallback": ((None, 9), (0, 9), ("value", "fallback")),
+    "largest": (((1, 2, 3),), ((-2, 5),), ((7, 0, -3),)),
+    "double": ((-3,), (0,), (5,)),
+    "head_or": (((1, 2), 9), ((2, 1), 9), ((), 9), (("a",), "fallback")),
 }
 RANDOMIZED_NUMERIC_CASE_ARITY = {
     "absolute": 1,
@@ -677,6 +776,7 @@ RANDOMIZED_NUMERIC_CASE_ARITY = {
     "nonnegative": 1,
     "square": 1,
     "subtract": 2,
+    "double": 1,
 }
 
 
@@ -698,9 +798,9 @@ def semantic_cases(
             else:
                 values = tuple(rng.randint(-10_000, 10_000) for _ in range(arity))
                 randomized.append(values)
-    elif family_id in {"last", "middle", "total"}:
+    elif family_id in {"largest", "last", "middle", "second", "total"}:
         randomized.extend((tuple(rng.sample(range(-10_000, 10_001), 3)),) for _ in range(8))
-    elif family_id in {"first", "safe_head"}:
+    elif family_id in {"first", "head_or", "safe_head"}:
         randomized.extend(
             (
                 tuple(rng.sample(range(-10_000, 10_001), 3)),
@@ -714,7 +814,7 @@ def semantic_cases(
         for _ in range(8):
             token = f"probe{rng.randrange(1_000_000):06d}"
             randomized.extend(((f"{token}-tail", token), (f"head-{token}", token)))
-    elif family_id in {"nonempty", "is_empty"}:
+    elif family_id in {"has_items", "nonempty", "is_empty"}:
         randomized.extend((f"probe-{rng.randrange(1_000_000):06d}",) for _ in range(8))
     elif family_id == "contains":
         for _ in range(8):
@@ -726,7 +826,7 @@ def semantic_cases(
             value = rng.randint(-10_000, 10_000)
             fallback = rng.randint(20_001, 30_000)
             randomized.extend((({key: value}, key, fallback), ({}, key, fallback)))
-    elif family_id == "has_key":
+    elif family_id in {"has_key", "key_exists"}:
         for _ in range(8):
             key = f"k{rng.randrange(1_000_000):06d}"
             randomized.extend((({key: 1}, key), ({}, key)))
@@ -734,7 +834,7 @@ def semantic_cases(
         for _ in range(8):
             value = rng.randint(-10_000, 10_000)
             randomized.extend(((value, value), (value, value + 1)))
-    elif family_id == "coalesce":
+    elif family_id in {"coalesce", "fallback"}:
         randomized.extend(
             (
                 rng.choice((rng.randint(1, 10_000), f"v{rng.randrange(1_000_000):06d}")),

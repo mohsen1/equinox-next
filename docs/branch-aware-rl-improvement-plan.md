@@ -80,8 +80,21 @@ Revision 17 established that continuation-only reference KL at coefficient `0.02
 not prevent shared-prefix protocol collapse. Revision 18 now anchors every accepted
 policy action—including the greedy shared prefix and no-signal groups—against the base
 policy, raises the coefficient to `0.1`, and lowers the adapter learning rate to `4e-5`.
-The next paid run must demonstrate both protocol stability and a positive fixed paired
-result; either property alone is insufficient.
+The seed `109` revision-18 run remained stable through 25 optimizer updates and raised
+the fixed checkpoint from `5/8` to `6/8`, but the retained adapter regressed on two of 24
+paired test tasks and improved none. It ended with `97.3556%` aggregate action validity,
+verified teardown, and `$0/hour` ongoing spend. Stability alone was insufficient.
+
+Objective v9 addresses the measured generalization failure. The train split now contains
+13 disjoint fixture families with declared structural analogues for every held-out repair
+class. Each four-task update keeps two tasks on the active frontier and probes the next
+two complexity levels when available. A policy update requires two independent
+informative groups; a lone mixed-outcome group remains branch evidence and receives only
+the reference anchor. Leave-one-out advantages are capped at absolute value `1.0`.
+Checkpoint retention requires no loss on the fixed window, an improvement on either the
+fixed or paired rotating window, and zero paired rotating regressions against the
+disabled-adapter base. The next paid run must demonstrate stable protocol behavior, retained
+zero-regression validation evidence, and positive paired test transfer.
 
 ## What we learned
 

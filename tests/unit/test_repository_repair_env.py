@@ -27,7 +27,7 @@ def test_environment_self_test_covers_each_level() -> None:
 
     assert result["self_test_passed"] is True
     assert result["levels"] == len(COMPLEXITY_LEVELS)
-    assert result["tasks_checked"] == 26
+    assert result["tasks_checked"] == 32
 
 
 def test_complexity_changes_repository_faults_depth_and_horizon() -> None:
@@ -41,12 +41,8 @@ def test_complexity_changes_repository_faults_depth_and_horizon() -> None:
 
 def test_task_families_are_disjoint_across_train_validation_and_test() -> None:
     families = {
-        split: {
-            fault.family_id
-            for task in (make_task(3, seed, split=split) for seed in range(20))
-            for fault in task.faults
-        }
-        for split in ("train", "validation", "test")
+        split: {template[0] for template in templates}
+        for split, templates in TEMPLATE_SPLITS.items()
     }
 
     assert families["train"].isdisjoint(families["validation"])
@@ -55,6 +51,7 @@ def test_task_families_are_disjoint_across_train_validation_and_test() -> None:
 
 
 def test_held_out_splits_cover_the_configured_semantic_sample_sizes() -> None:
+    assert semantic_task_universe_size(0, "train") == 13
     assert semantic_task_universe_size(0, "validation") == 16
     assert semantic_task_universe_size(0, "test") == 12
 
