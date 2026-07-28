@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import tarfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -17,8 +19,10 @@ from research.runpod.revision30_external_eval import (
     canonical_json,
 )
 from research.runpod.revision30_external_operator import (
+    UTC,
     adapter_record,
     build_input_manifest,
+    new_evaluation_id,
     retained_conditions,
 )
 
@@ -195,3 +199,10 @@ def test_operator_rejects_tampered_adapter_bytes(tmp_path: Path) -> None:
 def test_retained_roster_cannot_silently_drop_a_condition() -> None:
     with pytest.raises(RuntimeError, match="roster is incomplete"):
         retained_conditions({"conditions": conditions()[:-1]})
+
+
+def test_generated_evaluation_identity_satisfies_transport_schema() -> None:
+    identifier = new_evaluation_id(datetime(2026, 7, 28, 22, 35, 15, tzinfo=UTC))
+
+    assert identifier == "revision30-external-20260728t223515z"
+    assert re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", identifier)

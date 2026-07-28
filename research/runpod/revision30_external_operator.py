@@ -52,6 +52,11 @@ def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def new_evaluation_id(now: datetime | None = None) -> str:
+    timestamp = now or datetime.now(UTC)
+    return "revision30-external-" + timestamp.astimezone(UTC).strftime("%Y%m%dt%H%M%Sz")
+
+
 def execution_id_from_result_path(path: Path) -> str:
     suffix = ".result.json"
     if not path.name.endswith(suffix):
@@ -325,7 +330,7 @@ def main() -> None:
     arguments = parser.parse_args()
     repository_root = Path(__file__).resolve().parents[2]
     state_directory = repository_root / "var/revision30-study"
-    evaluation_id = "revision30-external-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    evaluation_id = new_evaluation_id()
     manifest, source_archives = build_input_manifest(repository_root, evaluation_id)
     manifest_path = state_directory / f"{evaluation_id}.input.json"
     write_manifest_durably(manifest_path, manifest)
