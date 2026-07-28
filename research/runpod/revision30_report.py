@@ -71,9 +71,9 @@ def estimated_cost(execution: dict[str, Any]) -> float | None:
     elapsed = progress.get("elapsed_seconds") if isinstance(progress, dict) else None
     if (
         isinstance(rate, bool)
-        or not isinstance(rate, (int, float))  # noqa: UP038 - Python 3.9.
+        or not isinstance(rate, (int, float))
         or isinstance(elapsed, bool)
-        or not isinstance(elapsed, (int, float))  # noqa: UP038 - Python 3.9.
+        or not isinstance(elapsed, (int, float))
         or not math.isfinite(float(rate))
         or not math.isfinite(float(elapsed))
     ):
@@ -321,7 +321,7 @@ def execution_rows(
             continue
         validity = progress.get("action_protocol_validity_rate")
         outcome = execution.get("status")
-        validity_is_numeric = isinstance(validity, (int, float))  # noqa: UP038
+        validity_is_numeric = isinstance(validity, (int, float))
         if execution.get("workload_id") == SCREEN_WORKLOAD and validity_is_numeric:
             outcome = "ELIGIBLE" if float(validity) >= 0.99 else "INELIGIBLE"
         row = {
@@ -503,15 +503,89 @@ def clean_positive_gain(result: dict[str, Any] | None) -> bool:
     return (
         result.get("final_evaluation_complete") is True
         and not isinstance(gain, bool)
-        and isinstance(gain, (int, float))  # noqa: UP038 - Python 3.9.
+        and isinstance(gain, (int, float))
         and math.isfinite(float(gain))
         and gain > 0
         and isinstance(paired, dict)
         and not isinstance(net_improved, bool)
-        and isinstance(net_improved, (int, float))  # noqa: UP038 - Python 3.9.
+        and isinstance(net_improved, (int, float))
         and net_improved > 0
         and paired.get("regressed") == 0
     )
+
+
+def realized_training_schedule(
+    result: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    snapshots = result.get("branch_snapshots")
+    if not isinstance(snapshots, list) or not snapshots:
+        return None
+    schedule = []
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            return None
+        update = snapshot.get("update")
+        task_id = snapshot.get("task_id")
+        level = snapshot.get("level")
+        curriculum_role = snapshot.get("curriculum_role")
+        replay = snapshot.get("replay")
+        if (
+            isinstance(update, bool)
+            or not isinstance(update, int)
+            or not isinstance(task_id, str)
+            or isinstance(level, bool)
+            or not isinstance(level, int)
+            or not isinstance(curriculum_role, str)
+            or not isinstance(replay, bool)
+        ):
+            return None
+        schedule.append(
+            {
+                "update": update,
+                "task_id": task_id,
+                "level": level,
+                "curriculum_role": curriculum_role,
+                "replay": replay,
+            }
+        )
+    return schedule
+
+
+def compare_realized_training_schedules(
+    trained: dict[str, Any],
+    comparison: dict[str, Any],
+) -> dict[str, Any]:
+    trained_schedule = realized_training_schedule(trained)
+    comparison_schedule = realized_training_schedule(comparison)
+    if trained_schedule is None or comparison_schedule is None:
+        return {"available": False}
+    differences = []
+    position_count = max(len(trained_schedule), len(comparison_schedule))
+    for index in range(position_count):
+        trained_task = trained_schedule[index] if index < len(trained_schedule) else None
+        comparison_task = comparison_schedule[index] if index < len(comparison_schedule) else None
+        if trained_task != comparison_task:
+            differences.append(
+                {
+                    "position": index,
+                    "trained": trained_task,
+                    "comparison": comparison_task,
+                }
+            )
+    return {
+        "available": True,
+        "identical": not differences,
+        "trained_task_count": len(trained_schedule),
+        "comparison_task_count": len(comparison_schedule),
+        "matching_position_count": position_count - len(differences),
+        "difference_count": len(differences),
+        "differences": differences,
+        "interpretation": (
+            "Adaptive task routing is policy-mediated and therefore part of the "
+            "treatment. Matching the generator inputs does not guarantee an identical "
+            "realized training schedule."
+        ),
+    }
 
 
 def compare_matched_conditions(
@@ -548,6 +622,7 @@ def compare_matched_conditions(
     trained_tasks = evaluation_task_ids(trained)
     control_tasks = evaluation_task_ids(control)
     matched_tasks = bool(trained_tasks) and trained_tasks == control_tasks
+    realized_training = compare_realized_training_schedules(trained, control)
     paired_trained_vs_control = paired_condition_change(control, trained)
     trained_identity = frozen_runtime_identity(trained)
     control_identity = frozen_runtime_identity(control)
@@ -558,7 +633,7 @@ def compare_matched_conditions(
     matched_start = (
         trained.get("initial_reward") == control.get("initial_reward")
         and not isinstance(trained.get("initial_reward"), bool)
-        and isinstance(trained.get("initial_reward"), (int, float))  # noqa: UP038
+        and isinstance(trained.get("initial_reward"), (int, float))
     )
     branch_contract = (
         trained_study.get("branch_width") == 4
@@ -571,7 +646,7 @@ def compare_matched_conditions(
     trained_final = trained.get("final_reward")
     control_final = control.get("final_reward")
     numerical = all(
-        isinstance(value, (int, float))  # noqa: UP038 - Python 3.9.
+        isinstance(value, (int, float))
         and not isinstance(value, bool)
         for value in (trained_net, control_net, trained_final, control_final)
     )
@@ -630,6 +705,7 @@ def compare_matched_conditions(
             "completion_budget": trained_completion_budget,
             "matched_evaluation_tasks": matched_tasks,
             "evaluation_task_count": len(trained_tasks),
+            "realized_training_schedule": realized_training,
             "paired_trained_vs_control": paired_trained_vs_control,
             "matched_frozen_runtime": matched_runtime,
             "matched_initial_score": matched_start,
@@ -967,6 +1043,21 @@ def render_markdown(report: dict[str, Any]) -> str:
     ]
     for name, result in report["decisions"].items():
         lines.append(f"| {name.replace('_', ' ')} | {result['status']} |")
+    lines.extend(["", "## Causal matching caveats", ""])
+    for name in (
+        "k4_training_beats_frozen_policy_k4",
+        "k4_training_beats_matched_k1",
+    ):
+        schedule = report["decisions"][name]["evidence"].get("realized_training_schedule")
+        if not isinstance(schedule, dict) or schedule.get("available") is not True:
+            lines.append(f"- `{name}`: the realized training schedule was not available.")
+            continue
+        lines.append(
+            f"- `{name}`: {schedule['matching_position_count']} of "
+            f"{max(schedule['trained_task_count'], schedule['comparison_task_count'])} "
+            f"task positions matched; {schedule['difference_count']} differed. "
+            f"{schedule['interpretation']}"
+        )
     lines.extend(
         [
             "",

@@ -57,6 +57,7 @@ def training_result(
     improved: int = 4,
     regressed: int = 0,
     outcome_pattern: tuple[bool, bool] = (True, True),
+    training_schedule: tuple[str, ...] = ("train-task-1", "train-task-2"),
 ) -> dict:
     validation_seed = 220_000_000 if seed == 307 else 620_000_000
     test_seed = 260_000_000 if seed == 307 else 660_000_000
@@ -101,6 +102,16 @@ def training_result(
             "net_improved": improved - regressed,
             "mcnemar_exact_p_value": 0.03125,
         },
+        "branch_snapshots": [
+            {
+                "update": index + 1,
+                "task_id": task_id,
+                "level": 0,
+                "curriculum_role": "active_frontier",
+                "replay": False,
+            }
+            for index, task_id in enumerate(training_schedule)
+        ],
         "final_by_level": {
             "0": {
                 "task_outcomes": [
@@ -267,6 +278,7 @@ def test_failure_complete_report_passes_only_verified_causal_contracts() -> None
     no_update = report["decisions"]["k4_training_beats_frozen_policy_k4"]
     assert no_update["evidence"]["matched_completion_budget"] is True
     assert no_update["evidence"]["matched_evaluation_tasks"] is True
+    assert no_update["evidence"]["realized_training_schedule"]["identical"] is True
     assert no_update["evidence"]["paired_trained_vs_control"]["net_improved"] == 1
     assert no_update["evidence"]["mutation_contract_verified"] is True
     assert report["conditions"]["k4_train_seed307"]["gain"] == 4
@@ -276,6 +288,35 @@ def test_failure_complete_report_passes_only_verified_causal_contracts() -> None
     assert len(report["external_evaluation"]["task_transitions"]) == 10
     assert report["external_evaluation"]["task_transitions"][2]["transition"] == "improved"
     assert "mean" not in report
+
+
+def test_report_discloses_policy_mediated_training_schedule_divergence() -> None:
+    results = complete_results()
+    results["runpod-proof-no-update"]["branch_snapshots"][1].update(
+        {
+            "task_id": "control-routed-task",
+            "level": 1,
+            "curriculum_role": "adjacent_complexity_probe",
+        }
+    )
+
+    report = assemble_report(
+        manifest(),
+        [],
+        results,
+        generated_at="2026-07-28T00:00:00+00:00",
+    )
+
+    comparison = report["decisions"]["k4_training_beats_frozen_policy_k4"]
+    schedule = comparison["evidence"]["realized_training_schedule"]
+    assert comparison["status"] == "PASS"
+    assert schedule["identical"] is False
+    assert schedule["matching_position_count"] == 1
+    assert schedule["difference_count"] == 1
+    assert schedule["differences"][0]["comparison"]["task_id"] == "control-routed-task"
+    markdown = render_markdown(report)
+    assert "1 of 2 task positions matched; 1 differed" in markdown
+    assert "Adaptive task routing is policy-mediated" in markdown
 
 
 def test_report_rejects_named_no_update_control_without_byte_restore_evidence() -> None:
