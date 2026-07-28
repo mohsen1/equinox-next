@@ -564,7 +564,11 @@ publish_execution "PROVISIONING" "$last_progress"
 echo "Worker $pod_id allocated at \$$hourly_cost/hour; waiting for container readiness." >&2
 proxy_root="https://${pod_id}-8000.proxy.runpod.net"
 bootstrap_health_url="$proxy_root/bootstrap-health"
-bundle_upload_url="$proxy_root/"
+bundle_upload_urls=(
+  "$proxy_root/bootstrap-health?bundle=1"
+  "$proxy_root/bundle"
+  "$proxy_root/"
+)
 progress_url="$proxy_root/progress.json"
 remote_authorization="Authorization: Bearer $transport_token"
 exit_code=""
@@ -623,6 +627,7 @@ failure_message="The bundle upload did not hand off to structured workload progr
 bundle_upload_attempts=3
 bundle_handoff_attempts=12
 for ((upload_attempt = 1; upload_attempt <= bundle_upload_attempts; upload_attempt += 1)); do
+  bundle_upload_url="${bundle_upload_urls[$((upload_attempt - 1))]}"
   bundle_upload_status="$(
     curl --silent --show-error --max-time 60 \
       -X POST \

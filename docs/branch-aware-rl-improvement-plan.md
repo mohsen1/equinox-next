@@ -117,6 +117,14 @@ adaptive complexity, the paired retention guard, and the final zero-regression g
 unchanged. The corrected seed `113` run is a same-seed test of batching behavior, not a
 new hypothesis.
 
+The first revision-20 provisioning attempt never reached the workload. RunPod's proxy
+served the authenticated bootstrap health check but returned `404` for three bundle
+posts to the proxy root. The launcher deleted the worker, confirmed zero ongoing spend,
+and retained the attempt as non-probative failed execution evidence. Bundle transport
+now posts first to the already-routable bootstrap health path, then falls back to
+dedicated and root paths; the authenticated bootstrap accepts all three because provider
+proxies may rewrite the request path.
+
 ## What we learned
 
 ### From the current Equinox runs

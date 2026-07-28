@@ -379,6 +379,13 @@ earlier pending credit.
 Static `K=4`, adaptive complexity, and all revision-19 retention and final-evaluation
 gates remain unchanged.
 
+The first revision-20 provisioning attempt was terminated before workload handoff when
+RunPod's proxy returned `404` for bundle posts to its root despite serving authenticated
+bootstrap health. Teardown returned provider spend to zero. The launcher now tries the
+known-routable bootstrap health path, a dedicated bundle path, and the proxy root in
+that order. The bootstrap continues to authenticate every POST and validates the bundle
+size and exact file allowlist independently of the provider-rewritten path.
+
 ## Non-goals
 
 - Dynamic branch width.
