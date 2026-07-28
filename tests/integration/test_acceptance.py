@@ -801,7 +801,7 @@ def test_migrations_are_recorded_in_both_authority_schemas() -> None:
             FROM schema_migrations ORDER BY version
             """
         ).fetchall()
-        assert [row[0] for row in science] == list(range(1, 11))
+        assert [row[0] for row in science] == list(range(1, 12))
         assert all(row[1] and row[2].startswith("sha256:") and not row[3] for row in science)
     with psycopg.connect(OPS_DSN) as conn:
         operations = conn.execute(
@@ -812,6 +812,28 @@ def test_migrations_are_recorded_in_both_authority_schemas() -> None:
         ).fetchall()
         assert [row[0] for row in operations] == [1, 2, 3]
         assert all(row[1] and row[2].startswith("sha256:") and not row[3] for row in operations)
+
+
+@pytest.mark.integration
+def test_research_compute_execution_schema_accepts_k1_ablation() -> None:
+    execution_id = f"runpod-proof-k1-schema-{uuid.uuid4().hex}"
+    with psycopg.connect(SCIENCE_DSN) as conn:
+        row = conn.execute(
+            """
+            INSERT INTO research_compute_executions(
+              execution_id, name, workload_id, model_id, branch_width,
+              complexity_strategy, status, provider_name, started_at
+            ) VALUES (
+              %s, 'K=1 schema acceptance', 'repository-repair-k1-ablation',
+              'Qwen/Qwen2.5-Coder-3B-Instruct', 1, 'adaptive',
+              'PROVISIONING', 'RunPod', now()
+            )
+            RETURNING branch_width
+            """,
+            (execution_id,),
+        ).fetchone()
+        assert row[0] == 1
+        conn.rollback()
 
 
 @pytest.mark.integration
