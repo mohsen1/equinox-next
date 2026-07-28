@@ -33,6 +33,8 @@ The scheduled treatment is still dynamically complex: it traverses the same orde
 
 Each cell uses seeds 137, 269, 443, 617, and 887. Conditions sharing a seed also share the validation and test split bases. Every condition receives exactly 320 sampled completions. `K=4` collects four tasks per update and `K=1` collects sixteen so that both attempt sixteen new continuations per update before replay.
 
+Outcome-triggered early stops for regression, uninformative groups, and maximum-level mastery are disabled in every cell so they cannot break completion-budget matching. Provider deadlines, final-evaluation reserve, action-protocol failure, and the exact 320-completion stop remain binding.
+
 The primary estimands are paired within seed:
 
 1. the branching main effect, `K=4 − K=1`, averaged across curriculum policies;

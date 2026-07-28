@@ -61,6 +61,7 @@
       "4": 4
     },
     "completion_budget_matching": "exact across every factorial cell",
+    "fixed_budget_stop_policy": "Disable outcome-triggered early stops for regression, uninformative groups, and maximum-level mastery; retain provider deadlines, final-evaluation reserve, protocol failure, and the exact completion budget.",
     "hardware_preference": "NVIDIA A40",
     "maximum_hourly_cost_usd": 0.5,
     "provider": "RunPod"
