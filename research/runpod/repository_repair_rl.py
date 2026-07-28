@@ -82,8 +82,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@19"
-OBJECTIVE_ID = "leave-one-out-retention-guarded-reinforce@9"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@20"
+OBJECTIVE_ID = "leave-one-out-accumulated-retention-reinforce@10"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -1211,6 +1211,79 @@ def reference_anchored_examples(
     return anchored, len(policy_training_examples)
 
 
+def accumulated_reference_anchored_examples(
+    collections: list[BranchCollection],
+    pending_training_examples: list[WeightedAction],
+    pending_policy_example_count: int,
+    pending_informative_group_ids: list[str],
+    *,
+    minimum_informative_groups: int,
+) -> tuple[
+    list[WeightedAction],
+    int,
+    list[WeightedAction],
+    int,
+    list[str],
+    list[str],
+]:
+    if minimum_informative_groups < 1:
+        raise ValueError("minimum informative groups must be positive")
+    if pending_policy_example_count < 0:
+        raise ValueError("pending policy example count cannot be negative")
+    if bool(pending_training_examples) != bool(pending_informative_group_ids):
+        raise ValueError("pending training examples and group identities must agree")
+    if bool(pending_policy_example_count) != bool(pending_informative_group_ids):
+        raise ValueError("pending policy example count and group identities must agree")
+    if len(pending_informative_group_ids) >= minimum_informative_groups:
+        raise ValueError("a complete pending policy batch should already have been applied")
+    if len(set(pending_informative_group_ids)) != len(pending_informative_group_ids):
+        raise ValueError("pending informative group identities must be unique")
+
+    current_policy_groups = [
+        (collection.task.task_id, examples)
+        for collection in collections
+        if (examples := policy_examples(collection))
+    ]
+    current_group_ids = [group_id for group_id, _ in current_policy_groups]
+    accumulated_group_ids = [*pending_informative_group_ids, *current_group_ids]
+    if len(set(accumulated_group_ids)) != len(accumulated_group_ids):
+        raise RuntimeError("an informative task group was sampled more than once")
+    current_anchored, current_policy_example_count = reference_anchored_examples(
+        collections,
+    )
+    accumulated_examples = [*pending_training_examples, *current_anchored]
+    accumulated_policy_example_count = (
+        pending_policy_example_count + current_policy_example_count
+    )
+    if not accumulated_group_ids:
+        return (
+            current_anchored,
+            0,
+            [],
+            0,
+            [],
+            [],
+        )
+    if len(accumulated_group_ids) < minimum_informative_groups:
+        return (
+            [],
+            0,
+            accumulated_examples,
+            accumulated_policy_example_count,
+            accumulated_group_ids,
+            [],
+        )
+
+    return (
+        accumulated_examples,
+        accumulated_policy_example_count,
+        [],
+        0,
+        [],
+        accumulated_group_ids,
+    )
+
+
 def serialize_step(step: Any) -> dict[str, Any]:
     value = asdict(step)
     value["step_id"] = f"step-{step.index}"
@@ -1550,6 +1623,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "minimum_informative_groups_per_policy_update": (
             MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
         ),
+        "policy_batching": "durable_cross_update_accumulation",
         "frontier_probe_offset": MAXIMUM_FRONTIER_PROBE_OFFSET,
         "training_level_allocation": "frontier_majority_with_adjacent_probes",
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
@@ -2105,6 +2179,31 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     updates_completed = int(resume_state["updates_completed"]) if resume_state else 0
     optimizer_update_count = int(resume_state["optimizer_update_count"]) if resume_state else 0
     policy_update_count = int(resume_state["policy_update_count"]) if resume_state else 0
+    pending_training_examples = (
+        list(resume_state.get("pending_training_examples", [])) if resume_state else []
+    )
+    pending_policy_example_count = (
+        int(resume_state.get("pending_policy_example_count", 0))
+        if resume_state
+        else 0
+    )
+    pending_informative_group_ids = (
+        list(resume_state.get("pending_informative_group_ids", []))
+        if resume_state
+        else []
+    )
+    if (
+        bool(pending_training_examples) != bool(pending_informative_group_ids)
+        or bool(pending_policy_example_count) != bool(pending_informative_group_ids)
+        or pending_policy_example_count < 0
+        or pending_policy_example_count > len(pending_training_examples)
+        or len(pending_informative_group_ids)
+        >= MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
+        or len(set(pending_informative_group_ids))
+        != len(pending_informative_group_ids)
+        or not all(isinstance(group_id, str) for group_id in pending_informative_group_ids)
+    ):
+        raise RuntimeError("training checkpoint pending policy batch is invalid")
     total_task_groups = int(resume_state["total_task_groups"]) if resume_state else 0
     replay_task_groups = int(resume_state["replay_task_groups"]) if resume_state else 0
     frontier_probe_task_groups = (
@@ -2237,6 +2336,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "mastery_streak": mastery_streak,
             "optimizer_update_count": optimizer_update_count,
             "policy_update_count": policy_update_count,
+            "pending_training_examples": pending_training_examples,
+            "pending_policy_example_count": pending_policy_example_count,
+            "pending_informative_group_ids": pending_informative_group_ids,
             "total_task_groups": total_task_groups,
             "replay_task_groups": replay_task_groups,
             "frontier_probe_task_groups": frontier_probe_task_groups,
@@ -2368,22 +2470,30 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             training_complete = True
             persist_training_checkpoint(updates_completed)
             break
-        anchored_training_examples, policy_training_example_count = reference_anchored_examples(
+        (
+            anchored_training_examples,
+            policy_training_example_count,
+            pending_training_examples,
+            pending_policy_example_count,
+            pending_informative_group_ids,
+            policy_signal_group_ids,
+        ) = accumulated_reference_anchored_examples(
             collections,
+            pending_training_examples,
+            pending_policy_example_count,
+            pending_informative_group_ids,
             minimum_informative_groups=MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE,
         )
         informative_collections = sum(collection.informative for collection in collections)
-        policy_signal_suppressed_for_batch_size = (
-            0
-            < informative_collections
-            < MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
+        policy_signal_accumulating = (
+            bool(pending_informative_group_ids) and not policy_signal_group_ids
         )
 
         model.train()
         optimizer.zero_grad(set_to_none=True)
         reinforce_loss, reference_kl, policy_loss = train_policy(
             anchored_training_examples,
-            max(1, informative_collections * BRANCH_WIDTH),
+            max(1, len(policy_signal_group_ids) * BRANCH_WIDTH),
         )
         if anchored_training_examples:
             gradient_norm = torch.nn.utils.clip_grad_norm_(
@@ -2459,9 +2569,15 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "minimum_informative_groups": (
                 MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
             ),
+            "policy_signal_group_count": len(policy_signal_group_ids),
+            "policy_signal_group_ids": policy_signal_group_ids,
+            "pending_informative_group_count": len(pending_informative_group_ids),
+            "pending_informative_group_ids": pending_informative_group_ids,
+            "pending_policy_examples": pending_policy_example_count,
+            "pending_training_examples": len(pending_training_examples),
             "policy_signal_suppressed_reason": (
-                "INSUFFICIENT_INDEPENDENT_INFORMATIVE_GROUPS"
-                if policy_signal_suppressed_for_batch_size
+                "ACCUMULATING_INDEPENDENT_INFORMATIVE_GROUPS"
+                if policy_signal_accumulating
                 else None
             ),
             "effective_batch_weight": round(
@@ -2470,6 +2586,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             ),
             "informative_group_count": informative_collections,
         }
+        if policy_signal_group_ids:
+            for snapshot in branch_snapshots:
+                if snapshot.get("task_id") in policy_signal_group_ids:
+                    prior_optimizer = snapshot.get("optimizer_update")
+                    if isinstance(prior_optimizer, dict):
+                        prior_optimizer["policy_signal_consumed_by_update"] = update
         latest_snapshot = serialize_branch_group(
             representative_collection,
             update=update,
@@ -2556,6 +2678,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             total_sampled_actions=total_sampled_actions,
             policy_update_count=policy_update_count,
             optimizer_update_count=optimizer_update_count,
+            pending_informative_group_count=len(pending_informative_group_ids),
+            pending_policy_example_count=pending_policy_example_count,
+            pending_training_example_count=len(pending_training_examples),
             frontier_probe_task_groups=frontier_probe_task_groups,
             maximum_sampled_complexity_level=maximum_sampled_complexity_level,
             baseline_validation={
@@ -3006,6 +3131,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         best_validation=best_validation,
         rollback_applied=rollback_applied,
         stop_reason=stop_reason,
+        pending_informative_group_count=len(pending_informative_group_ids),
+        pending_policy_example_count=pending_policy_example_count,
+        pending_training_example_count=len(pending_training_examples),
         validation_history=lightweight_validation_history(history),
         curriculum_history=promotions,
         final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
@@ -3200,6 +3328,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "minimum_informative_groups_per_policy_update": (
                 MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
             ),
+            "policy_batching": "durable_cross_update_accumulation",
             "sequence_reduction": "mean_completion_token_log_probabilities",
         },
         "teacher_data_used": False,
@@ -3261,6 +3390,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "updates_completed": updates_completed,
         "optimizer_update_count": optimizer_update_count,
         "policy_update_count": policy_update_count,
+        "pending_informative_group_count": len(pending_informative_group_ids),
+        "pending_informative_group_ids": pending_informative_group_ids,
+        "pending_policy_example_count": pending_policy_example_count,
+        "pending_training_example_count": len(pending_training_examples),
         "total_task_groups": total_task_groups,
         "replay_task_groups": replay_task_groups,
         "frontier_probe_task_groups": frontier_probe_task_groups,
@@ -3368,6 +3501,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         total_sampled_actions=total_sampled_actions,
         optimizer_update_count=optimizer_update_count,
         policy_update_count=policy_update_count,
+        pending_informative_group_count=len(pending_informative_group_ids),
+        pending_policy_example_count=pending_policy_example_count,
+        pending_training_example_count=len(pending_training_examples),
         frontier_probe_task_groups=frontier_probe_task_groups,
         maximum_sampled_complexity_level=maximum_sampled_complexity_level,
         hypothesis_passed=hypothesis_passed,

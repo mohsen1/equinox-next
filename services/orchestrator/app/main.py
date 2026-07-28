@@ -264,6 +264,12 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "informative_group_rate": result.get("informative_group_rate"),
         "policy_update_count": result.get("policy_update_count"),
         "optimizer_update_count": result.get("optimizer_update_count"),
+        "pending_informative_group_count": result.get(
+            "pending_informative_group_count"
+        ),
+        "pending_informative_group_ids": result.get("pending_informative_group_ids"),
+        "pending_policy_example_count": result.get("pending_policy_example_count"),
+        "pending_training_example_count": result.get("pending_training_example_count"),
         "action_protocol_validity_rate": result.get("action_protocol_validity_rate"),
         "recent_malformed_action_rate": (
             result.get("recent_action_protocol", {}).get("malformed_rate")
@@ -393,6 +399,12 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "policy_update_count": result.get("policy_update_count"),
         "optimizer_update_count": result.get("optimizer_update_count"),
         "frontier_probe_task_groups": result.get("frontier_probe_task_groups"),
+        "pending_informative_group_count": result.get(
+            "pending_informative_group_count"
+        ),
+        "pending_informative_group_ids": result.get("pending_informative_group_ids"),
+        "pending_policy_example_count": result.get("pending_policy_example_count"),
+        "pending_training_example_count": result.get("pending_training_example_count"),
         "informative_group_rate": result.get("informative_group_rate"),
         "total_sampled_completions": result.get("total_sampled_completions"),
         "total_sampled_actions": result.get("total_sampled_actions"),

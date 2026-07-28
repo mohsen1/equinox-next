@@ -293,6 +293,9 @@ function progressItems(run: ResearchComputeExecution) {
   const elapsed = numberValue(progress.elapsed_seconds);
   const informativeGroupRate = numberValue(progress.informative_group_rate);
   const policyUpdates = numberValue(progress.policy_update_count);
+  const pendingSignalGroups = numberValue(
+    progress.pending_informative_group_count,
+  );
   const protocolValidity = numberValue(progress.action_protocol_validity_rate);
   const recentMalformedRate = numberValue(
     progress.recent_malformed_action_rate,
@@ -332,6 +335,10 @@ function progressItems(run: ResearchComputeExecution) {
           ? "Not started"
           : `${update}${maximumUpdates !== null ? ` / ${maximumUpdates}` : ""}${
               policyUpdates !== null ? ` · ${policyUpdates} policy` : ""
+            }${
+              pendingSignalGroups !== null && pendingSignalGroups > 0
+                ? ` · ${pendingSignalGroups} pending`
+                : ""
             }`,
     },
     {

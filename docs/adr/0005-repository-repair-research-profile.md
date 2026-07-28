@@ -362,6 +362,23 @@ The observer retains one active-frontier branch tree and one complexity-probe tr
 update, reports the highest sampled level, and labels guard rejection explicitly.
 Final hypothesis acceptance additionally requires zero paired test regressions.
 
+The first seed `113` revision-19 execution was stopped after update 3. Each update
+contained one informative group, so the minimum-two-groups gate applied only the
+reference anchor and discarded the policy signal. No policy update occurred. The run
+was not admitted as proof; its worker was deleted and provider spend returned to zero.
+
+Objective v10 is `leave-one-out-accumulated-retention-reinforce@10` under workload
+revision `runpod-repository-repair-loo-reinforce@20`. It preserves sparse informative
+groups across update boundaries until at least two distinct task identities are
+available. Pending weighted actions and task IDs are part of the durable training
+checkpoint. A pending group's base-policy anchor and bounded REINFORCE weight are queued
+without changing model weights until a later distinct group completes the policy batch.
+This keeps the queued trajectories on-policy. Duplicate identities are rejected.
+Branch evidence records the source task IDs and the optimizer update that consumes
+earlier pending credit.
+Static `K=4`, adaptive complexity, and all revision-19 retention and final-evaluation
+gates remain unchanged.
+
 ## Non-goals
 
 - Dynamic branch width.

@@ -786,6 +786,41 @@ function BranchInspector({
                     }`}
                   />
                   <Fact
+                    label="Signal groups"
+                    value={`${
+                      snapshot.optimizer_update.policy_signal_group_count ?? 0
+                    } applied · ${
+                      snapshot.optimizer_update
+                        .pending_informative_group_count ?? 0
+                    } pending`}
+                  />
+                  {snapshot.optimizer_update.policy_signal_group_ids?.length ? (
+                    <Fact
+                      label="Signal sources"
+                      value={snapshot.optimizer_update.policy_signal_group_ids.join(
+                        " · ",
+                      )}
+                    />
+                  ) : null}
+                  {(snapshot.optimizer_update.pending_training_examples ?? 0) >
+                  0 ? (
+                    <Fact
+                      label="Queued examples"
+                      value={`${
+                        snapshot.optimizer_update.pending_policy_examples ?? 0
+                      } policy · ${
+                        snapshot.optimizer_update.pending_training_examples ?? 0
+                      } total`}
+                    />
+                  ) : null}
+                  {snapshot.optimizer_update
+                    .policy_signal_consumed_by_update !== undefined ? (
+                    <Fact
+                      label="Credit applied"
+                      value={`Update ${snapshot.optimizer_update.policy_signal_consumed_by_update}`}
+                    />
+                  ) : null}
+                  <Fact
                     label="Effective weight"
                     value={
                       snapshot.optimizer_update.effective_batch_weight?.toFixed(

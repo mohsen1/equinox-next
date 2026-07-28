@@ -95,6 +95,10 @@ export interface ResearchComputeExecution {
     informative_group_rate?: number;
     policy_update_count?: number;
     optimizer_update_count?: number;
+    pending_informative_group_count?: number;
+    pending_informative_group_ids?: string[];
+    pending_policy_example_count?: number;
+    pending_training_example_count?: number;
     frontier_probe_task_groups?: number;
     maximum_sampled_complexity_level?: number;
     action_protocol_validity_rate?: number;
@@ -395,6 +399,13 @@ export interface ResearchBranchSnapshot {
     effective_batch_weight?: number;
     informative_group_count?: number;
     minimum_informative_groups?: number;
+    policy_signal_group_count?: number;
+    policy_signal_group_ids?: string[];
+    pending_informative_group_count?: number;
+    pending_informative_group_ids?: string[];
+    pending_policy_examples?: number;
+    pending_training_examples?: number;
+    policy_signal_consumed_by_update?: number;
     policy_signal_suppressed_reason?: string | null;
   } | null;
   siblings: ResearchBranchSibling[];
@@ -430,6 +441,10 @@ export interface ResearchTrajectory {
   final_by_level: Record<string, ResearchLevelObservation>;
   policy_update_count?: number;
   optimizer_update_count?: number;
+  pending_informative_group_count?: number;
+  pending_informative_group_ids?: string[];
+  pending_policy_example_count?: number;
+  pending_training_example_count?: number;
   frontier_probe_task_groups?: number;
   informative_group_rate?: number;
   total_sampled_completions?: number;

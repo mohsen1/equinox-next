@@ -96,6 +96,27 @@ fixed or paired rotating window, and zero paired rotating regressions against th
 disabled-adapter base. The next paid run must demonstrate stable protocol behavior, retained
 zero-regression validation evidence, and positive paired test transfer.
 
+The first seed `113` revision-19 execution exposed a batching defect before enough
+budget was spent to evaluate the objective. Updates 1 through 3 each produced exactly
+one informative branch group. The two-group safety gate discarded each policy signal
+instead of carrying it into the next update, so all three optimizer steps were
+reference-only and the policy-update count remained zero. The operator stopped the run,
+RunPod teardown was confirmed, and the execution is retained as non-probative failed
+evidence. Protocol behavior remained stable and the curriculum sampler reached level 2;
+neither fact is a learning result.
+
+Objective v10, `leave-one-out-accumulated-retention-reinforce@10`, corrects that defect
+under workload revision `runpod-repository-repair-loo-reinforce@20`. A lone informative
+group's complete reference-anchored trajectory and exact task identity remain in the
+durable training checkpoint. Model weights do not change while a policy-bearing batch
+is incomplete, so the queued sample stays on-policy. The next distinct informative group
+causes both signals and their anchors to be applied atomically. Pending group identities
+are unique, survive a bounded RunPod retry, appear in live progress, and are linked to
+the optimizer update that eventually consumes them in branch evidence. Static `K=4`,
+adaptive complexity, the paired retention guard, and the final zero-regression gate are
+unchanged. The corrected seed `113` run is a same-seed test of batching behavior, not a
+new hypothesis.
+
 ## What we learned
 
 ### From the current Equinox runs

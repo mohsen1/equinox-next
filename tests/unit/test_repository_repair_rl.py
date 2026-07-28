@@ -23,6 +23,7 @@ from research.runpod.repository_repair_rl import (
     BranchCollection,
     GeneratedAction,
     accepted_reference_actions,
+    accumulated_reference_anchored_examples,
     action_protocol_counts,
     bounded_final_evaluation_reserve,
     checkpoint_target_disposition,
@@ -1202,6 +1203,104 @@ def test_reference_anchor_covers_prefix_and_all_accepted_continuations() -> None
     assert no_policy_examples == 0
     assert len(anchor_only) == 5
     assert all(example.weight == 0.0 for example in anchor_only)
+
+
+def test_informative_groups_accumulate_across_anchor_only_updates() -> None:
+    task = make_task(0, seed=8)
+
+    def generated(token: int) -> GeneratedAction:
+        return GeneratedAction(
+            response='{"tool":"test"}',
+            input_ids=(1, token),
+            attention_mask=(1, 1),
+            completion_mask=(0, 1),
+        )
+
+    prefix_action = generated(10)
+    sibling_actions = [[generated(20 + index)] for index in range(4)]
+    collection = BranchCollection(
+        task=task,
+        snapshot=None,
+        prefix=SimpleNamespace(
+            steps=[SimpleNamespace(accepted=True)],
+        ),  # type: ignore[arg-type]
+        siblings=[
+            SimpleNamespace(
+                steps=[
+                    object(),
+                    SimpleNamespace(accepted=True),
+                ]
+            )
+            for _ in range(4)
+        ],  # type: ignore[list-item]
+        generated_by_sibling=sibling_actions,
+        sampling_seeds=[1, 2, 3, 4],
+        returns=[1.0, 0.0, 0.0, 0.0],
+        advantages=[1.0, -0.33333333, -0.33333333, -0.33333333],
+        exclusion_reason=None,
+        replay=False,
+        generated_prefix=[prefix_action],
+    )
+
+    (
+        first_training,
+        first_policy_count,
+        pending_examples,
+        pending_policy_count,
+        pending_groups,
+        first_signal_groups,
+    ) = accumulated_reference_anchored_examples(
+        [collection],
+        [],
+        0,
+        [],
+        minimum_informative_groups=2,
+    )
+
+    assert first_policy_count == 0
+    assert first_signal_groups == []
+    assert pending_groups == [collection.task.task_id]
+    assert pending_policy_count == 4
+    assert len(pending_examples) == 5
+    assert first_training == []
+
+    with pytest.raises(
+        RuntimeError,
+        match="informative task group was sampled more than once",
+    ):
+        accumulated_reference_anchored_examples(
+            [collection],
+            pending_examples,
+            pending_policy_count,
+            pending_groups,
+            minimum_informative_groups=2,
+        )
+
+    second_collection = replace(collection, task=make_task(0, seed=9))
+    (
+        second_training,
+        second_policy_count,
+        remaining_examples,
+        remaining_policy_count,
+        remaining_groups,
+        second_signal_groups,
+    ) = accumulated_reference_anchored_examples(
+        [second_collection],
+        pending_examples,
+        4,
+        pending_groups,
+        minimum_informative_groups=2,
+    )
+
+    assert second_policy_count == 8
+    assert second_signal_groups == [
+        collection.task.task_id,
+        second_collection.task.task_id,
+    ]
+    assert remaining_examples == []
+    assert remaining_policy_count == 0
+    assert remaining_groups == []
+    assert len(second_training) == 10
 
 
 def test_representative_branch_prefers_informative_frontier_over_replay_and_exclusion() -> None:
