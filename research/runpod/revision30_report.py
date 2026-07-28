@@ -563,6 +563,92 @@ def external_decision(
     return evaluation, transfer
 
 
+def policy_external_metrics(policy: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "policy_id": policy.get("policy_id"),
+        "condition_id": policy.get("condition_id"),
+        "role": policy.get("role"),
+        "optimization_seed": policy.get("optimization_seed"),
+        "examples": policy.get("examples"),
+        "exact_successes": policy.get("exact_successes"),
+        "exact_rate": policy.get("exact_rate"),
+        "domain_successes": policy.get("domain_successes"),
+        "action_protocol_validity_rate": policy.get("action_protocol_validity_rate"),
+        "paired_change_vs_base": policy.get("paired_change_vs_base"),
+    }
+
+
+def external_evaluation_metrics(
+    external_result: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if external_result is None:
+        return None
+    base = external_result.get("base")
+    adapters = external_result.get("adapters")
+    if not isinstance(base, dict) or not isinstance(adapters, list):
+        return None
+    base_outcomes = base.get("task_outcomes")
+    base_by_task = (
+        {
+            outcome.get("task_id"): outcome
+            for outcome in base_outcomes
+            if isinstance(outcome, dict) and isinstance(outcome.get("task_id"), str)
+        }
+        if isinstance(base_outcomes, list)
+        else {}
+    )
+    task_rows = []
+    for adapter in adapters:
+        if not isinstance(adapter, dict):
+            continue
+        outcomes = adapter.get("task_outcomes")
+        if not isinstance(outcomes, list):
+            continue
+        for outcome in outcomes:
+            if not isinstance(outcome, dict):
+                continue
+            task_id = outcome.get("task_id")
+            baseline = base_by_task.get(task_id)
+            if not isinstance(task_id, str) or not isinstance(baseline, dict):
+                continue
+            base_solved = baseline.get("solved")
+            adapter_solved = outcome.get("solved")
+            if base_solved is False and adapter_solved is True:
+                transition = "improved"
+            elif base_solved is True and adapter_solved is False:
+                transition = "regressed"
+            elif base_solved is adapter_solved and isinstance(base_solved, bool):
+                transition = "unchanged"
+            else:
+                transition = "invalid"
+            task_rows.append(
+                {
+                    "condition_id": adapter.get("condition_id"),
+                    "task_id": task_id,
+                    "domain": outcome.get("domain"),
+                    "base_solved": base_solved,
+                    "adapter_solved": adapter_solved,
+                    "transition": transition,
+                    "failed_checks": outcome.get("failed_checks"),
+                }
+            )
+    return {
+        "result_digest": external_result.get("result_digest"),
+        "pack_id": (
+            external_result.get("pack", {}).get("pack_id")
+            if isinstance(external_result.get("pack"), dict)
+            else None
+        ),
+        "task_count": external_result.get("task_count"),
+        "domain_task_counts": external_result.get("domain_task_counts"),
+        "base": policy_external_metrics(base),
+        "adapters": [
+            policy_external_metrics(adapter) for adapter in adapters if isinstance(adapter, dict)
+        ],
+        "task_transitions": task_rows,
+    }
+
+
 def assemble_report(
     manifest: dict[str, Any],
     executions: list[dict[str, Any]],
@@ -616,6 +702,9 @@ def assemble_report(
     evaluation, transfer = external_decision(
         external_results[0] if external_results else None,
         expected_adapter_ids,
+    )
+    external_metrics = external_evaluation_metrics(
+        external_results[0] if external_results else None
     )
     regression_complete = fresh_complete
     regression_passed = regression_complete and all(
@@ -697,6 +786,7 @@ def assemble_report(
         },
         "executions": rows,
         "operator_attempts": attempts,
+        "external_evaluation": external_metrics,
         "failures": {
             "provider_executions": provider_failures,
             "operator_attempts": operator_failures,
@@ -768,6 +858,71 @@ def render_markdown(report: dict[str, Any]) -> str:
             )
             + " |"
         )
+    external = report["external_evaluation"]
+    if external is not None:
+        lines.extend(
+            [
+                "",
+                "## External evaluation",
+                "",
+                f"Pack: `{format_value(external['pack_id'])}`",
+                "",
+                "| Policy | Seed | Exact | Micro repo | SQLite | Filesystem / CLI | + | − |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        policies = [external["base"], *external["adapters"]]
+        for policy in policies:
+            paired = policy.get("paired_change_vs_base")
+            domains = policy.get("domain_successes")
+            paired = paired if isinstance(paired, dict) else {}
+            domains = domains if isinstance(domains, dict) else {}
+            exact = (
+                f"{format_value(policy.get('exact_successes'))} / "
+                f"{format_value(policy.get('examples'))}"
+            )
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        format_value(
+                            policy.get("condition_id") or policy.get("policy_id") or "base"
+                        ),
+                        format_value(policy.get("optimization_seed")),
+                        exact,
+                        format_value(domains.get("micro_repository")),
+                        format_value(domains.get("sqlite_data_repair")),
+                        format_value(domains.get("filesystem_cli")),
+                        format_value(paired.get("improved")),
+                        format_value(paired.get("regressed")),
+                    ]
+                )
+                + " |"
+            )
+        lines.extend(
+            [
+                "",
+                "### External task transitions",
+                "",
+                "| Adapter | Task | Domain | Base | Adapter | Transition |",
+                "|---|---|---|---:|---:|---|",
+            ]
+        )
+        for transition in external["task_transitions"]:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        format_value(transition["condition_id"]),
+                        format_value(transition["task_id"]),
+                        format_value(transition["domain"]),
+                        "pass" if transition["base_solved"] else "fail",
+                        "pass" if transition["adapter_solved"] else "fail",
+                        format_value(transition["transition"]),
+                    ]
+                )
+                + " |"
+            )
     lines.extend(
         [
             "",

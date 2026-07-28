@@ -142,17 +142,89 @@ def complete_results() -> dict[str, dict]:
         "k4_no_update_seed307",
         "k1_train_seed307",
     ]
+    base_outcomes = [
+        {
+            "task_id": "external-1",
+            "domain": "micro_repository",
+            "solved": False,
+            "failed_checks": ["hidden-test"],
+        },
+        {
+            "task_id": "external-2",
+            "domain": "sqlite_data_repair",
+            "solved": True,
+            "failed_checks": [],
+        },
+    ]
     external = {
         "workload": EXTERNAL_WORKLOAD,
         "external_evaluation_completed": True,
         "every_adapter_reported": True,
-        "task_count": 9,
+        "task_count": 2,
+        "domain_task_counts": {
+            "micro_repository": 1,
+            "sqlite_data_repair": 1,
+            "filesystem_cli": 0,
+        },
+        "result_digest": "sha256:external",
+        "pack": {"pack_id": "post-freeze-pack"},
+        "base": {
+            "policy_id": "disabled_adapter_base",
+            "examples": 2,
+            "exact_successes": 1,
+            "exact_rate": 0.5,
+            "domain_successes": {
+                "micro_repository": 0,
+                "sqlite_data_repair": 1,
+                "filesystem_cli": 0,
+            },
+            "action_protocol_validity_rate": 1.0,
+            "task_outcomes": base_outcomes,
+        },
         "adapters": [
             {
                 "condition_id": condition_id,
+                "policy_id": condition_id,
+                "optimization_seed": (
+                    113
+                    if condition_id == "k4_train_seed113"
+                    else 701
+                    if condition_id == "k4_train_seed701"
+                    else 307
+                ),
+                "examples": 2,
+                "exact_successes": (
+                    2 if condition_id in {"k4_train_seed307", "k4_train_seed701"} else 1
+                ),
+                "exact_rate": (
+                    1.0 if condition_id in {"k4_train_seed307", "k4_train_seed701"} else 0.5
+                ),
+                "domain_successes": {
+                    "micro_repository": (
+                        1 if condition_id in {"k4_train_seed307", "k4_train_seed701"} else 0
+                    ),
+                    "sqlite_data_repair": 1,
+                    "filesystem_cli": 0,
+                },
+                "action_protocol_validity_rate": 1.0,
+                "task_outcomes": [
+                    {
+                        **outcome,
+                        "solved": (
+                            True
+                            if outcome["task_id"] == "external-1"
+                            and condition_id in {"k4_train_seed307", "k4_train_seed701"}
+                            else outcome["solved"]
+                        ),
+                    }
+                    for outcome in base_outcomes
+                ],
                 "paired_change_vs_base": {
+                    "improved": (
+                        1 if condition_id in {"k4_train_seed307", "k4_train_seed701"} else 0
+                    ),
                     "net_improved": (
-                        2 if condition_id in {"k4_train_seed307", "k4_train_seed701"} else 0
+                        1 if condition_id in {"k4_train_seed307", "k4_train_seed701"} else 0
                     ),
                     "regressed": 0,
                 },
@@ -185,6 +257,9 @@ def test_failure_complete_report_passes_only_verified_causal_contracts() -> None
     assert no_update["evidence"]["matched_evaluation_tasks"] is True
     assert no_update["evidence"]["mutation_contract_verified"] is True
     assert report["conditions"]["k4_train_seed307"]["gain"] == 4
+    assert report["external_evaluation"]["base"]["exact_successes"] == 1
+    assert len(report["external_evaluation"]["task_transitions"]) == 10
+    assert report["external_evaluation"]["task_transitions"][2]["transition"] == "improved"
     assert "mean" not in report
 
 
@@ -296,6 +371,8 @@ def test_every_provider_failure_and_operator_attempt_is_rendered() -> None:
     assert "runpod-proof-failed" in markdown
     assert "k4_train_seed701" in markdown
     assert "protocol gate failed" in markdown
+    assert "External task transitions" in markdown
+    assert "post-freeze-pack" in markdown
 
 
 def test_decision_digest_changes_when_a_per_seed_result_changes() -> None:
