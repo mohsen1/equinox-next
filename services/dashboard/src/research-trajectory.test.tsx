@@ -182,12 +182,19 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
   replay: false,
   optimizer_update: {
     applied: true,
-    objective_id: "leave-one-out-paired-validation-reinforce@6",
+    policy_signal_applied: true,
+    reference_anchor_applied: true,
+    objective_id: "leave-one-out-full-trajectory-anchor-reinforce@8",
     adapter_revision: "update-5",
-    learning_rate: 0.00002,
+    learning_rate: 0.00004,
     policy_loss: 0.12,
+    reinforce_loss: 0.11,
+    reference_kl: 0.1,
+    reference_kl_coefficient: 0.1,
+    reference_anchor_scope: "all_accepted_actions_including_greedy_prefix",
     gradient_norm: 0.34,
     training_examples: 8,
+    reference_examples: 24,
     effective_batch_weight: 2.5,
     informative_group_count: 1,
   },
@@ -329,6 +336,31 @@ describe("research trajectory", () => {
     expect(html).toContain("Hidden correctness");
     expect(html).toContain("Optimizer · applied");
     expect(html).toContain("update-5");
+    expect(html).toContain("Reference KL");
+    expect(html).toContain("8 / 24");
     expect(html).toContain("Batch weight");
+  });
+
+  it("distinguishes a restorative anchor-only optimizer step", () => {
+    const html = renderToStaticMarkup(
+      <ResearchBranchWorkspace
+        snapshot={{
+          ...multiStepSnapshot,
+          optimizer_update: {
+            ...multiStepSnapshot.optimizer_update!,
+            policy_signal_applied: false,
+            training_examples: 0,
+          },
+        }}
+        selectedSibling={multiStepSnapshot.siblings[0]}
+        selectedActionId="sibling-0-3"
+        view="outline"
+        selectSibling={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Optimizer · anchor only");
+    expect(html).toContain("0 / 24");
   });
 });

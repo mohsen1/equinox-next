@@ -10,8 +10,8 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-EXPECTED_WORKLOAD = "runpod-repository-repair-loo-reinforce@17"
-EXPECTED_OBJECTIVE = "leave-one-out-reference-anchored-reinforce@7"
+EXPECTED_WORKLOAD = "runpod-repository-repair-loo-reinforce@18"
+EXPECTED_OBJECTIVE = "leave-one-out-full-trajectory-anchor-reinforce@8"
 NUMBER_TYPES = (int, float)
 
 

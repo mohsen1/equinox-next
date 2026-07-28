@@ -76,6 +76,13 @@ selection, keeps a separate disjoint rotating window for curriculum evidence, ra
 clipped LoRA learning rate from `2e-5` to `8e-5`, and defines no-signal as twelve
 consecutive groups—three complete four-task updates.
 
+Revision 17 established that continuation-only reference KL at coefficient `0.02` did
+not prevent shared-prefix protocol collapse. Revision 18 now anchors every accepted
+policy action—including the greedy shared prefix and no-signal groups—against the base
+policy, raises the coefficient to `0.1`, and lowers the adapter learning rate to `4e-5`.
+The next paid run must demonstrate both protocol stability and a positive fixed paired
+result; either property alone is insufficient.
+
 ## What we learned
 
 ### From the current Equinox runs

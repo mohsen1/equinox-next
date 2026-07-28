@@ -22,6 +22,7 @@ from research.runpod.repository_repair_rl import (
     WORKLOAD_REVISION,
     BranchCollection,
     GeneratedAction,
+    accepted_reference_actions,
     action_protocol_counts,
     bounded_final_evaluation_reserve,
     checkpoint_target_disposition,
@@ -45,6 +46,7 @@ from research.runpod.repository_repair_rl import (
     positive_environment_integer,
     post_training_claim_strength,
     recent_action_protocol_summary,
+    reference_anchored_examples,
     remove_orphan_checkpoint_target,
     remove_stale_checkpoint_targets,
     render_action_prompt,
@@ -1016,6 +1018,7 @@ def test_training_prefix_is_greedy_while_siblings_remain_stochastic() -> None:
     )
 
     assert collection.solved_siblings == BRANCH_WIDTH
+    assert len(collection.generated_prefix) == 2
     assert calls[:2] == [False, False]
     assert all(calls[2:])
 
@@ -1100,6 +1103,62 @@ def test_policy_examples_exclude_rejected_post_branch_actions() -> None:
     assert len(examples) == 4
     assert all(example.generated is accepted for example in examples)
     assert [example.weight for example in examples] == [3.0, -1.0, -1.0, -1.0]
+
+
+def test_reference_anchor_covers_prefix_and_all_accepted_continuations() -> None:
+    task = make_task(0, seed=8)
+
+    def generated(token: int) -> GeneratedAction:
+        return GeneratedAction(
+            response='{"tool":"test"}',
+            input_ids=(1, token),
+            attention_mask=(1, 1),
+            completion_mask=(0, 1),
+        )
+
+    prefix_actions = [generated(10), generated(11)]
+    sibling_actions = [[generated(20 + index), generated(30 + index)] for index in range(4)]
+    collection = BranchCollection(
+        task=task,
+        snapshot=None,
+        prefix=SimpleNamespace(
+            steps=[
+                SimpleNamespace(accepted=True),
+                SimpleNamespace(accepted=False),
+            ]
+        ),  # type: ignore[arg-type]
+        siblings=[
+            SimpleNamespace(
+                steps=[
+                    object(),
+                    object(),
+                    SimpleNamespace(accepted=True),
+                    SimpleNamespace(accepted=False),
+                ]
+            )
+            for _ in range(4)
+        ],  # type: ignore[list-item]
+        generated_by_sibling=sibling_actions,
+        sampling_seeds=[1, 2, 3, 4],
+        returns=[1.0, 0.0, 0.0, 0.0],
+        advantages=[3.0, -1.0, -1.0, -1.0],
+        exclusion_reason=None,
+        replay=False,
+        generated_prefix=prefix_actions,
+    )
+
+    reference_actions = accepted_reference_actions(collection)
+    anchored, policy_example_count = reference_anchored_examples([collection])
+
+    assert reference_actions == [prefix_actions[0], *(actions[0] for actions in sibling_actions)]
+    assert policy_example_count == 4
+    assert [example.weight for example in anchored] == [0.0, 3.0, -1.0, -1.0, -1.0]
+    anchor_only, no_policy_examples = reference_anchored_examples(
+        [replace(collection, advantages=[0.0] * BRANCH_WIDTH)]
+    )
+    assert no_policy_examples == 0
+    assert len(anchor_only) == 5
+    assert all(example.weight == 0.0 for example in anchor_only)
 
 
 def test_representative_branch_prefers_informative_frontier_over_replay_and_exclusion() -> None:

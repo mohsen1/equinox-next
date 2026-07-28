@@ -362,12 +362,19 @@ export interface ResearchBranchSnapshot {
   replay?: boolean;
   optimizer_update?: {
     applied: boolean;
+    policy_signal_applied?: boolean;
+    reference_anchor_applied?: boolean;
     objective_id?: string;
     adapter_revision?: string;
     learning_rate?: number;
     policy_loss?: number;
+    reinforce_loss?: number;
+    reference_kl?: number;
+    reference_kl_coefficient?: number;
+    reference_anchor_scope?: string;
     gradient_norm?: number;
     training_examples?: number;
+    reference_examples?: number;
     effective_batch_weight?: number;
     informative_group_count?: number;
   } | null;

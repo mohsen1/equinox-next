@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 try:
@@ -82,8 +82,8 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@17"
-OBJECTIVE_ID = "leave-one-out-reference-anchored-reinforce@7"
+WORKLOAD_REVISION = "runpod-repository-repair-loo-reinforce@18"
+OBJECTIVE_ID = "leave-one-out-full-trajectory-anchor-reinforce@8"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -104,8 +104,10 @@ MAX_NEW_TOKENS = 192
 ACTION_RESPONSE_PREFIX = '{"tool":'
 SIBLING_SAMPLING_TEMPERATURE = 0.6
 SIBLING_SAMPLING_TOP_P = 0.9
-LEARNING_RATE = 8e-5
-REFERENCE_KL_COEFFICIENT = 0.02
+LEARNING_RATE = 4e-5
+REFERENCE_KL_COEFFICIENT = 0.1
+REFERENCE_KL_ESTIMATOR = "k3_log_ratio_penalty"
+REFERENCE_ANCHOR_SCOPE = "all_accepted_actions_including_greedy_prefix"
 ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
@@ -317,6 +319,7 @@ class BranchCollection:
     advantages: list[float]
     exclusion_reason: str | None
     replay: bool
+    generated_prefix: list[GeneratedAction] = field(default_factory=list)
 
     @property
     def solved_siblings(self) -> int:
@@ -898,6 +901,7 @@ def collect_branch_group(
     deadline_reached: Callable[[], bool] | None = None,
 ) -> BranchCollection:
     prefix = RepositoryRepairEnvironment(task)
+    generated_prefix: list[GeneratedAction] = []
     accepted_diagnostics = 0
     for attempt in range(PREFIX_MAX_ATTEMPTS):
         if deadline_reached is not None and deadline_reached():
@@ -912,12 +916,14 @@ def collect_branch_group(
                 advantages=[],
                 exclusion_reason="TRAINING_DEADLINE_REACHED",
                 replay=replay,
+                generated_prefix=generated_prefix,
             )
         generated = sample_one(
             prefix.policy_prompt("shared_prefix"),
             False,
             sampling_seed + attempt,
         )
+        generated_prefix.append(generated)
         step = prefix.step(generated.response, allowed_tools=DIAGNOSTIC_TOOLS)
         if step.accepted:
             accepted_diagnostics += 1
@@ -936,6 +942,7 @@ def collect_branch_group(
             advantages=[],
             exclusion_reason="PREFIX_CHECKPOINT_NOT_REACHED",
             replay=replay,
+            generated_prefix=generated_prefix,
         )
 
     snapshot = prefix.capture_snapshot()
@@ -958,6 +965,7 @@ def collect_branch_group(
                     advantages=[],
                     exclusion_reason="TRAINING_DEADLINE_REACHED",
                     replay=replay,
+                    generated_prefix=generated_prefix,
                 )
             action_index = len(generated_by_sibling[sibling_index])
             generated = sample_one(
@@ -980,6 +988,7 @@ def collect_branch_group(
         advantages=correctness_contrast_advantages(returns),
         exclusion_reason=None,
         replay=replay,
+        generated_prefix=generated_prefix,
     )
 
 
@@ -1058,6 +1067,58 @@ def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
             for generated in accepted_actions
         )
     return examples
+
+
+def accepted_reference_actions(collection: BranchCollection) -> list[GeneratedAction]:
+    accepted = [
+        generated
+        for generated, step in zip(
+            collection.generated_prefix,
+            collection.prefix.steps,
+            strict=True,
+        )
+        if step.accepted and generated.input_ids
+    ]
+    for sibling_index, generated_actions in enumerate(collection.generated_by_sibling):
+        post_branch_steps = collection.siblings[sibling_index].steps[len(collection.prefix.steps) :]
+        accepted.extend(
+            generated
+            for generated, step in zip(
+                generated_actions,
+                post_branch_steps,
+                strict=True,
+            )
+            if step.accepted and generated.input_ids
+        )
+    return accepted
+
+
+def reference_anchored_examples(
+    collections: list[BranchCollection],
+) -> tuple[list[WeightedAction], int]:
+    policy_training_examples = [
+        example for collection in collections for example in policy_examples(collection)
+    ]
+    policy_weights_by_identity: dict[int, list[float]] = {}
+    for example in policy_training_examples:
+        policy_weights_by_identity.setdefault(id(example.generated), []).append(example.weight)
+    reference_actions = [
+        generated
+        for collection in collections
+        for generated in accepted_reference_actions(collection)
+    ]
+    anchored: list[WeightedAction] = []
+    for generated in reference_actions:
+        weights = policy_weights_by_identity.get(id(generated), [])
+        anchored.append(
+            WeightedAction(
+                generated=generated,
+                weight=weights.pop(0) if weights else 0.0,
+            )
+        )
+    if any(weights for weights in policy_weights_by_identity.values()):
+        raise RuntimeError("policy training action is missing from the reference anchor")
+    return anchored, len(policy_training_examples)
 
 
 def serialize_step(step: Any) -> dict[str, Any]:
@@ -1390,8 +1451,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "minimum_protocol_validity_rate": MINIMUM_PROTOCOL_VALIDITY_RATE,
         "learning_rate": LEARNING_RATE,
         "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
-        "reference_kl_estimator": "sampled_k3",
+        "reference_kl_estimator": REFERENCE_KL_ESTIMATOR,
         "reference_policy": "disabled_adapter_base",
+        "reference_anchor_scope": REFERENCE_ANCHOR_SCOPE,
         "advantage_standard_deviation_floor": ADVANTAGE_STANDARD_DEVIATION_FLOOR,
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
@@ -2175,18 +2237,18 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             training_complete = True
             persist_training_checkpoint(updates_completed)
             break
-        policy_training_examples = [
-            example for collection in collections for example in policy_examples(collection)
-        ]
+        anchored_training_examples, policy_training_example_count = reference_anchored_examples(
+            collections
+        )
         informative_collections = sum(collection.informative for collection in collections)
 
         model.train()
         optimizer.zero_grad(set_to_none=True)
         reinforce_loss, reference_kl, policy_loss = train_policy(
-            policy_training_examples,
+            anchored_training_examples,
             max(1, informative_collections * BRANCH_WIDTH),
         )
-        if policy_training_examples:
+        if anchored_training_examples:
             gradient_norm = torch.nn.utils.clip_grad_norm_(
                 (parameter for parameter in model.parameters() if parameter.requires_grad),
                 max_norm=1.0,
@@ -2195,7 +2257,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             optimizer_update_count += 1
         else:
             gradient_norm = 0.0
-        if policy_training_examples:
+        if policy_training_example_count:
             policy_update_count += 1
 
         updates_completed = update
@@ -2238,7 +2300,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             representative_collection,
             update=update,
             optimizer_update={
-                "applied": bool(policy_training_examples),
+                "applied": bool(anchored_training_examples),
+                "policy_signal_applied": bool(policy_training_example_count),
+                "reference_anchor_applied": bool(anchored_training_examples),
                 "objective_id": OBJECTIVE_ID,
                 "adapter_revision": f"update-{update}",
                 "learning_rate": LEARNING_RATE,
@@ -2246,10 +2310,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 "reinforce_loss": round(reinforce_loss, 6),
                 "reference_kl": round(reference_kl, 6),
                 "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
+                "reference_anchor_scope": REFERENCE_ANCHOR_SCOPE,
                 "gradient_norm": round(float(gradient_norm), 6),
-                "training_examples": len(policy_training_examples),
+                "training_examples": policy_training_example_count,
+                "reference_examples": len(anchored_training_examples),
                 "effective_batch_weight": round(
-                    sum(abs(example.weight) for example in policy_training_examples),
+                    sum(abs(example.weight) for example in anchored_training_examples),
                     8,
                 ),
                 "informative_group_count": informative_collections,
@@ -2861,8 +2927,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "learning_rate": LEARNING_RATE,
             "maximum_gradient_norm": 1.0,
             "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
-            "reference_kl_estimator": "sampled_k3",
+            "reference_kl_estimator": REFERENCE_KL_ESTIMATOR,
             "reference_policy": "disabled_adapter_base",
+            "reference_anchor_scope": REFERENCE_ANCHOR_SCOPE,
             "advantage_standard_deviation_floor": (ADVANTAGE_STANDARD_DEVIATION_FLOOR),
             "sequence_reduction": "mean_completion_token_log_probabilities",
         },
@@ -3020,11 +3087,15 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         informative_group_rate=result["informative_group_rate"],
         action_protocol_validity_rate=result["action_protocol_validity_rate"],
         recent_malformed_action_rate=result["recent_action_protocol"]["malformed_rate"],
+        recent_action_protocol_groups=result["recent_action_protocol"]["groups"],
+        recent_action_protocol_window_complete=result["recent_action_protocol"]["window_complete"],
+        consecutive_malformed_windows=consecutive_malformed_windows,
         best_validation=best_validation,
         rollback_applied=rollback_applied,
         validation_history=lightweight_validation_history(history),
         curriculum_history=promotions,
         total_sampled_actions=total_sampled_actions,
+        optimizer_update_count=optimizer_update_count,
         policy_update_count=policy_update_count,
         hypothesis_passed=hypothesis_passed,
         paired_test_change=paired_test_change,

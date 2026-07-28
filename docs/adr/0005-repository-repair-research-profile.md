@@ -313,6 +313,23 @@ records the REINFORCE term, sampled KL, coefficient, and combined loss. The base
 already passes the greedy protocol gate, so this regularizer is intended to preserve its
 action language while sibling-relative rewards modify repair choices.
 
+The seed `109` revision-17 run showed that a continuation-only coefficient of `0.02` is
+too weak. Five policy updates were applied. Sampled KL rose from `0.011714` at update 7
+to `0.072603` at update 8; the next two updates could not establish their greedy shared
+prefix. The final complete eight-group window contained 40 malformed actions out of 40,
+and aggregate protocol validity fell to `91.9463%`. Equinox stopped after two breaches,
+restored update 0, produced 24 unchanged paired test outcomes, persisted the proof, and
+confirmed teardown. Estimated cost was `$0.395688`.
+
+Objective v8 is `leave-one-out-full-trajectory-anchor-reinforce@8` under workload
+revision `runpod-repository-repair-loo-reinforce@18`. It lowers the adapter learning rate
+to `4e-5`, raises the K3 log-ratio coefficient to `0.1`, and anchors every accepted
+policy action, including the greedy shared prefix and actions from otherwise
+uninformative groups. A no-signal batch can therefore apply a restorative reference-only
+optimizer step while policy-update counts remain limited to batches with sibling credit.
+The observer distinguishes policy and anchor examples and publishes the terminal
+malformed-window count instead of retaining stale pre-finalization telemetry.
+
 The v2 run ended at update 26 when a local API restart interrupted the ingestion
 transport. The launcher fail-safe deleted the RunPod worker. Equinox retains the run as
 partial evidence with `LOCAL_INGESTION_TRANSPORT_INTERRUPTION`, confirmed teardown, and

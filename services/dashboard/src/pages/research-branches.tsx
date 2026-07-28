@@ -735,7 +735,11 @@ function BranchInspector({
               <details>
                 <summary>
                   Optimizer ·{" "}
-                  {snapshot.optimizer_update.applied ? "applied" : "skipped"}
+                  {!snapshot.optimizer_update.applied
+                    ? "skipped"
+                    : snapshot.optimizer_update.policy_signal_applied === false
+                      ? "anchor only"
+                      : "applied"}
                 </summary>
                 <dl className="branch-evidence-facts">
                   <Fact
@@ -757,16 +761,29 @@ function BranchInspector({
                     }
                   />
                   <Fact
-                    label="Policy loss"
+                    label="Total loss"
                     value={
                       snapshot.optimizer_update.policy_loss?.toFixed(3) ?? "—"
                     }
                   />
                   <Fact
-                    label="Examples"
-                    value={String(
-                      snapshot.optimizer_update.training_examples ?? 0,
-                    )}
+                    label="REINFORCE"
+                    value={
+                      snapshot.optimizer_update.reinforce_loss?.toFixed(3) ??
+                      "—"
+                    }
+                  />
+                  <Fact
+                    label="Reference KL"
+                    value={
+                      snapshot.optimizer_update.reference_kl?.toFixed(3) ?? "—"
+                    }
+                  />
+                  <Fact
+                    label="Policy / anchor examples"
+                    value={`${snapshot.optimizer_update.training_examples ?? 0} / ${
+                      snapshot.optimizer_update.reference_examples ?? 0
+                    }`}
                   />
                   <Fact
                     label="Effective weight"
