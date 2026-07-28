@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repository_root"
+"$repository_root/scripts/ensure-local-env"
+"$repository_root/.venv/bin/python" - <<'PY'
+import json
+from pathlib import Path
+
+from research.external.revision31_task_pack import pack_manifest
+
+expected = json.loads(
+    Path("research/frozen/revision31-external-pack.json").read_text(encoding="utf-8")
+)
+observed = pack_manifest()
+if observed != expected:
+    raise SystemExit("revision 31 external pack does not match its sealed manifest")
+print("revision 31 external task pack verified")
+PY

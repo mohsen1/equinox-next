@@ -8,6 +8,7 @@ cd "$repository_root"
 ./scripts/verify-revision30-freeze
 ./scripts/verify-revision31-freeze
 ./scripts/verify-revision30-external-pack
+./scripts/verify-revision31-external-pack
 docker compose config --quiet
 docker compose build
 docker compose run --rm --build test \

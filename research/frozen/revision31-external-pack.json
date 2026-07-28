@@ -1,0 +1,29 @@
+{
+  "audit": {
+    "audit_revision": "baseline-fails-golden-passes-unique-safe@1",
+    "audited_task_count": 120,
+    "baseline_failures_confirmed": 120,
+    "golden_repairs_confirmed": 120,
+    "unique_fixture_digests": 120,
+    "unique_task_ids": 120
+  },
+  "authored_at": "2026-07-29",
+  "candidate_execution": {
+    "cli": "fixed_allowlisted_argv_with_two_second_timeout",
+    "credentials": "not_available_to_action_protocol",
+    "network": "not_available_to_action_protocol",
+    "python": "restricted_ast_interpreter",
+    "sqlite": "authorizer_denies_attach_detach_and_pragma"
+  },
+  "domains": {
+    "filesystem_cli": 40,
+    "micro_repository": 40,
+    "sqlite_data_repair": 40
+  },
+  "pack_id": "revision31-post-freeze-external-pack@1",
+  "schema_version": 1,
+  "source_sha256": "2271fc7c6f6dbec87cf18390cb5e9c9b5742ccae8a1ed142cdfc31177abe57d7",
+  "task_count": 120,
+  "task_descriptor_digest": "d7378fb75e3f5525810a47ff545f98887e2cca0826ddcf21644cdb47425b9ea0",
+  "trainer_freeze_commit": "e6f08aa34ea183302159db68ff6abcdea68e4e6e"
+}
