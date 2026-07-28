@@ -358,6 +358,35 @@ generator, counts, pairing, zero-regression rule, and exact McNemar threshold do
 change. It prevents iterative checkpoint work from being evaluated only against the
 already-observed multi-fault combinations.
 
+The completed seed `113` revision-30 run met the predeclared learning and retention
+gates. Update 15 was the best retained checkpoint and promoted the curriculum from
+level 0 to level 1. The wider fixed guard then detected one regression in the
+update-20 candidate (`+10/−1`) and one in the update-25 candidate (`+14/−1`), even
+though the latter candidate's disjoint rotating window improved `+3/−0`. Two
+consecutive guard failures stopped training and restored update 15. This is the
+intended safety behavior: a larger apparent gain did not override a detected
+regression.
+
+On the fresh 48-pair test suite, the restored adapter improved exact completion from
+`15/48` to `24/48`: nine improvements, zero regressions, 39 unchanged pairs, and exact
+McNemar `p=0.00390625`. The run completed 25 training updates, 15 policy updates, 17
+optimizer updates, 110 static-`K=4` groups, one curriculum promotion, and adaptive
+sampling through complexity level 2. It stopped for `validation_regression`, applied
+rollback, and still passed both the final learning and zero-regression retention gates.
+This is meaningful post-training evidence for the frozen single seed, not yet a
+replicated generalization claim.
+
+Run `runpod-proof-20260728T142404Z` used one secure RTX PRO 4500 Blackwell for
+5,533.779 seconds at `$0.74/hour`, an estimated `$1.137499`. Proof
+`research_proof_370a381b3bff49159b6e38963d789f72`, receipt digest
+`sha256:a4a6c592d9debc66809061c56727813697d06689afa824588c62112b78b65e97`,
+the verified adapter archive, 40 persisted branch snapshots, provider teardown, zero
+pods, and zero ongoing spend were confirmed. The launcher initially rejected the valid
+result because its proof assertion still named objective v14. The assertion now derives
+`OBJECTIVE_ID` from the bundled workload, and proof ingestion can recover only this
+exact post-contract failure when provider identity, workload, model, start time, and
+confirmed teardown all match.
+
 ## What we learned
 
 ### From the current Equinox runs

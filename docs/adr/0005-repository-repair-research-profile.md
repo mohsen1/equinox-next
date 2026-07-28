@@ -548,6 +548,23 @@ outcomes have been inspected, revision 30 also freezes a fresh test seed base of
 `190000`. Test families, counts, baseline/final pairing, static `K=4`, dynamic
 complexity, and the zero-regression significance gate remain unchanged.
 
+The seed `113` revision-30 run validated that decision. The family-balanced guard
+retained update 15, rejected the update-20 and update-25 candidates after each
+introduced one fixed-suite regression, stopped after the second consecutive failure,
+and restored update 15. The restored adapter improved a fresh paired test suite from
+`15/48` to `24/48`, with nine improvements, zero regressions, and exact McNemar
+`p=0.00390625`. Training completed 25 updates, 15 policy updates, 17 optimizer updates,
+110 static-`K=4` groups, one promotion to level 1, and adaptive sampling through level
+2. The result passes the frozen learning and retention gates for this exploratory
+single seed.
+
+Proof `research_proof_370a381b3bff49159b6e38963d789f72`, the adapter and receipt
+digests, 40 branch snapshots, the `$1.137499` estimated cost, teardown, zero pods, and
+zero ongoing spend were verified. A stale launcher literal initially rejected the
+valid objective-v15 result after artifact download. The launcher now derives the
+objective revision from the bundled workload, and the proof-ingestion recovery path is
+restricted to a matching post-contract failure with already-confirmed teardown.
+
 ## Non-goals
 
 - Dynamic branch width.
