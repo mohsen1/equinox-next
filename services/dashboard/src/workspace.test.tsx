@@ -124,6 +124,11 @@ describe("Runs and Proofs workspaces", () => {
             policy_update_count: 4,
             current_level: 0,
             maximum_level: 3,
+            curriculum_decision: {
+              frontier_probe_level_used: 1,
+              next_frontier_probe_level: 2,
+              frontier_probe_decision: "all_siblings_solved_raise_probe",
+            },
             exact_rate: 0.75,
             exact_rate_95ci: [0.40927, 0.928522],
             validation_examples: 8,
@@ -216,6 +221,7 @@ describe("Runs and Proofs workspaces", () => {
     });
 
     expect(container.textContent).toContain("6 / 120 · 4 policy");
+    expect(container.textContent).toContain("Level 1 → 2 · 4/4 solved");
     expect(container.textContent).toContain("+12.5 pts vs baseline");
     expect(container.textContent).toContain("99.0% valid");
     expect(container.textContent).toContain("1.0% malformed recent");

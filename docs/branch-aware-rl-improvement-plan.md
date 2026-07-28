@@ -177,7 +177,7 @@ toward declared train-split analogues of the active validation failure families.
 test tasks remain isolated from this curriculum feedback.
 
 Objective v12, `verified-fix-accumulated-retention-policy-gradient@12`, implements that
-change under workload revision `runpod-repository-repair-causal-credit@24`. Positive
+change under workload revision `runpod-repository-repair-causal-credit@25`. Positive
 policy credit is limited to accepted edits that increase the verified fixed-fault count
 on a sibling that ultimately solves the task. Successful tests and finishes no longer
 dilute the learning signal. Failed siblings still receive zero policy weight, while all
@@ -215,9 +215,29 @@ counter even though the exported policy remained update 5. Update 15 then became
 second retained mastery checkpoint without triggering promotion, and level-0 branch
 contrast disappeared before another checkpoint. Revision 24 counts mastery windows only
 when a zero-regression candidate is retained. Rejected transient candidates neither
-advance nor erase retained mastery. This should promote the update-15 policy to level 1
-and direct subsequent branch learning toward the higher levels where revision 23 made
-no test gains.
+advance nor erase retained mastery.
+
+The completed seed `113` revision-24 run showed that retained mastery accounting was
+necessary but not sufficient. GPU generation diverged from revision 23 despite the
+same application-level seed. Update 5 was safe but unchanged and was not retained.
+Update 10 improved active validation by one task and its 16-task fixed guard by two,
+but its rotating guard contained one improvement and one regression, so the candidate
+was rejected. The contrast-exhaustion gate stopped training at update 13 after nine
+policy updates and ten optimizer steps. The retained baseline then produced `17/48`
+solves before and after training, with zero paired changes. Estimated cost was
+`$0.465480`; proof `research_proof_8de8e51d663e47c0a155e05579cdda13`, artifact hashes,
+teardown, zero pods, and zero ongoing spend were verified.
+
+Revision 24 also localized the sampling failure. Late level-0 groups were often `4/4`
+correct while level-2 probes were `0/4`; level-1 probes still produced mixed outcomes.
+The prior fixed allocation therefore skipped the learnable complexity frontier and
+allowed twelve consecutive homogeneous groups to accrue. Revision 25 keeps static
+`K=4` but makes probe difficulty respond to branch contrast. Each four-task update is
+split evenly between the current level and one probe level. The probe starts at the
+nearest harder level, remains there while sibling correctness is mixed, increases after
+all four siblings solve, and decreases after all four fail. Retained-checkpoint
+promotion, validation-derived family targeting, base-policy anchoring, and every
+zero-regression gate are unchanged.
 
 ## What we learned
 

@@ -416,7 +416,7 @@ credit-assignment defect: positive weight was divided across successful repair, 
 and finish actions even though only fault-fixing edits caused the verified state change.
 
 Objective v12 is `verified-fix-accumulated-retention-policy-gradient@12` under workload
-revision `runpod-repository-repair-causal-credit@24`. A mixed-correctness group is still
+revision `runpod-repository-repair-causal-credit@25`. A mixed-correctness group is still
 required, but positive policy credit is limited to accepted edits that increase the
 verified fixed-fault count on a sibling that ultimately solves the task. All accepted
 actions—including diagnostics, tests, finishes, failed-sibling actions, and no-signal
@@ -441,6 +441,23 @@ to `21/48` with zero regressions, but four discordant improvements yield `p=0.12
 do not pass the hypothesis gate. Revision 24 changes only dynamic-complexity accounting:
 mastery is accumulated across retained zero-regression checkpoints. A rejected
 transient candidate does not reset evidence attached to the still-retained policy.
+
+The seed `113` revision-24 run retained no trained checkpoint. Update 5 tied the
+retained policy; update 10 improved active and fixed validation but introduced one
+rotating regression and was rejected. Training stopped at update 13 after the
+within-group correctness signal became homogeneous. Final paired testing was unchanged
+at `17/48`, estimated cost was `$0.465480`, and verified teardown returned RunPod to
+zero pods and zero hourly spend.
+
+The branch record showed a learnability gap in the fixed probe allocation: late
+level-0 groups were usually solved by all four siblings, level-2 probes were usually
+solved by none, and level-1 probes retained mixed correctness. Revision 25 routes a
+single adaptive probe using those K=4 outcomes. A four-task update samples two groups
+at the current level and two at the probe. The probe begins at the nearest harder
+level, stays where mixed correctness supplies contrast, moves up after all siblings
+solve, and moves down after all siblings fail. This changes task difficulty selection,
+not branch width, reward, credit assignment, checkpoint retention, or the held-out
+hypothesis gate.
 
 ## Non-goals
 

@@ -751,7 +751,7 @@ else
     and .post_training_completed == true
     and .adapter_persisted == true
     and .workload == "repository-repair-restored-continuation-post-training"
-    and .workload_revision == "runpod-repository-repair-causal-credit@24"
+    and .workload_revision == "runpod-repository-repair-causal-credit@25"
     and .algorithm == "verified-fix-group-conditioned-policy-gradient"
     and .objective_id == "verified-fix-accumulated-retention-policy-gradient@12"
     and .objective_sequence_reduction == "mean_completion_token_log_probabilities"
@@ -819,7 +819,8 @@ else
     and .training_configuration.minimum_informative_groups_per_policy_update == 2
     and .training_configuration.policy_batching == "durable_cross_update_verified_fix_accumulation"
     and .training_configuration.frontier_probe_offset == 2
-    and .training_configuration.training_level_allocation == "frontier_majority_with_adjacent_probes"
+    and .training_configuration.frontier_probe_routing == "mixed_correctness_branch_contrast_feedback"
+    and .training_configuration.training_level_allocation == "current_and_adaptive_probe_even_split"
     and .training_configuration.task_sampling == "validation_failure_structural_analogues"
     and .training_configuration.checkpoint_retention_guard == "paired_active_adjacent_and_rotating_zero_regressions"
     and .training_configuration.learning_signal == "verified_fault_fixing_edits_from_mixed_correctness_sibling_group"

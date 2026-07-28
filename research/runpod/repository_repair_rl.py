@@ -85,7 +85,7 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@24"
+WORKLOAD_REVISION = "runpod-repository-repair-causal-credit@25"
 OBJECTIVE_ID = "verified-fix-accumulated-retention-policy-gradient@12"
 DEPENDENCIES = (
     "transformers==5.14.1",
@@ -731,28 +731,90 @@ def correctness_contrast_advantages(returns: list[float]) -> list[float]:
     return sibling_advantages(returns)
 
 
+def adaptive_frontier_probe_decision(
+    current_level: int,
+    prior_probe_level: int,
+    collections: list[BranchCollection],
+    *,
+    maximum_level: int = MAXIMUM_COMPLEXITY_LEVEL,
+) -> tuple[int, str]:
+    if not 0 <= current_level <= maximum_level:
+        raise ValueError("current level is outside the curriculum")
+    if current_level == maximum_level:
+        if prior_probe_level != current_level:
+            raise ValueError("the maximum curriculum level cannot have a harder probe")
+        return current_level, "maximum_level_reached"
+    minimum_probe_level = current_level + 1
+    maximum_probe_level = min(
+        maximum_level,
+        current_level + MAXIMUM_FRONTIER_PROBE_OFFSET,
+    )
+    if not minimum_probe_level <= prior_probe_level <= maximum_probe_level:
+        raise ValueError("frontier probe level is outside the adaptive probe range")
+
+    probe_collections = [
+        collection
+        for collection in collections
+        if collection.curriculum_role == "adjacent_complexity_probe"
+        and collection.task.level == prior_probe_level
+    ]
+    if not probe_collections:
+        return prior_probe_level, "insufficient_probe_evidence"
+    if any(collection.informative for collection in probe_collections):
+        return prior_probe_level, "mixed_correctness_contrast_retained"
+    if all(collection.solved_siblings == BRANCH_WIDTH for collection in probe_collections):
+        next_level = min(maximum_probe_level, prior_probe_level + 1)
+        return (
+            next_level,
+            (
+                "all_siblings_solved_raise_probe"
+                if next_level > prior_probe_level
+                else "hardest_probe_all_solved"
+            ),
+        )
+    if all(collection.solved_siblings == 0 for collection in probe_collections):
+        next_level = max(minimum_probe_level, prior_probe_level - 1)
+        return (
+            next_level,
+            (
+                "no_siblings_solved_lower_probe"
+                if next_level < prior_probe_level
+                else "nearest_probe_all_failed"
+            ),
+        )
+    return prior_probe_level, "heterogeneous_saturation_hold_probe"
+
+
 def training_level_allocation(
     current_level: int,
     task_count: int,
     *,
+    probe_level: int | None = None,
     maximum_level: int = MAXIMUM_COMPLEXITY_LEVEL,
 ) -> list[int]:
     if not 0 <= current_level <= maximum_level:
         raise ValueError("current level is outside the curriculum")
     if task_count < 1:
         raise ValueError("task count must be positive")
-    allocation = [current_level] * task_count
-    probe_levels = list(
-        range(
-            current_level + 1,
-            min(maximum_level, current_level + MAXIMUM_FRONTIER_PROBE_OFFSET) + 1,
+    if current_level == maximum_level:
+        if probe_level not in (None, current_level):
+            raise ValueError("the maximum curriculum level cannot have a harder probe")
+        return [current_level] * task_count
+    if probe_level is None:
+        probe_level = current_level + 1
+    if not (
+        current_level
+        < probe_level
+        <= min(
+            maximum_level,
+            current_level + MAXIMUM_FRONTIER_PROBE_OFFSET,
         )
-    )
-    for index, probe_level in enumerate(
-        probe_levels[: task_count // 2],
-        start=1,
     ):
-        allocation[-index] = probe_level
+        raise ValueError("frontier probe level is outside the adaptive probe range")
+    allocation = [current_level] * task_count
+    probe_task_count = min(task_count // 2, task_count - 1)
+    if probe_task_count:
+        allocation[-probe_task_count:] = [probe_level] * probe_task_count
     return sorted(allocation)
 
 
@@ -1795,7 +1857,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         ),
         "policy_batching": "durable_cross_update_verified_fix_accumulation",
         "frontier_probe_offset": MAXIMUM_FRONTIER_PROBE_OFFSET,
-        "training_level_allocation": "frontier_majority_with_adjacent_probes",
+        "frontier_probe_routing": "mixed_correctness_branch_contrast_feedback",
+        "training_level_allocation": "current_and_adaptive_probe_even_split",
         "task_sampling": "validation_failure_structural_analogues",
         "maximum_consecutive_uninformative_groups": (MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS),
         "maximum_consecutive_regression_windows": (MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS),
@@ -2386,6 +2449,33 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     frontier_probe_task_groups = (
         int(resume_state.get("frontier_probe_task_groups", 0)) if resume_state else 0
     )
+    frontier_probe_level = (
+        int(
+            resume_state.get(
+                "frontier_probe_level",
+                min(MAXIMUM_COMPLEXITY_LEVEL, level + 1),
+            )
+        )
+        if resume_state
+        else min(MAXIMUM_COMPLEXITY_LEVEL, level + 1)
+    )
+    frontier_probe_decision = (
+        str(resume_state.get("frontier_probe_decision", "nearest_unmeasured_probe"))
+        if resume_state
+        else "nearest_unmeasured_probe"
+    )
+    if (level == MAXIMUM_COMPLEXITY_LEVEL and frontier_probe_level != level) or (
+        level < MAXIMUM_COMPLEXITY_LEVEL
+        and not (
+            level
+            < frontier_probe_level
+            <= min(
+                MAXIMUM_COMPLEXITY_LEVEL,
+                level + MAXIMUM_FRONTIER_PROBE_OFFSET,
+            )
+        )
+    ):
+        raise RuntimeError("training checkpoint frontier probe level is invalid")
     maximum_sampled_complexity_level = (
         int(resume_state.get("maximum_sampled_complexity_level", level)) if resume_state else level
     )
@@ -2522,6 +2612,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "total_task_groups": total_task_groups,
             "replay_task_groups": replay_task_groups,
             "frontier_probe_task_groups": frontier_probe_task_groups,
+            "frontier_probe_level": frontier_probe_level,
+            "frontier_probe_decision": frontier_probe_decision,
             "maximum_sampled_complexity_level": maximum_sampled_complexity_level,
             "informative_task_groups": informative_task_groups,
             "excluded_task_groups": excluded_task_groups,
@@ -2575,7 +2667,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         training_allocation = training_level_allocation(
             level,
             runtime.training_tasks_per_update,
+            probe_level=frontier_probe_level,
         )
+        frontier_probe_level_used = frontier_probe_level
         tasks_by_level: dict[int, list[RepairTask]] = {}
         for task_level in sorted(set(training_allocation)):
             tasks_by_level[task_level] = failure_directed_training_tasks(
@@ -2659,6 +2753,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             minimum_informative_groups=MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE,
         )
         informative_collections = sum(collection.informative for collection in collections)
+        (
+            frontier_probe_level,
+            frontier_probe_decision,
+        ) = adaptive_frontier_probe_decision(
+            level,
+            frontier_probe_level_used,
+            collections,
+        )
         policy_signal_accumulating = (
             bool(pending_informative_group_ids) and not policy_signal_group_ids
         )
@@ -2812,6 +2914,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     for candidate_level in set(training_allocation)
                     if candidate_level > level
                 ),
+                "frontier_probe_level_used": frontier_probe_level_used,
+                "next_frontier_probe_level": frontier_probe_level,
+                "frontier_probe_decision": frontier_probe_decision,
                 "baseline_failure_family_ids": baseline_failure_family_ids,
                 "targeted_training_family_ids": targeted_training_family_ids,
                 "replay_probability": round(
@@ -3299,6 +3404,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 )
                 level += 1
                 mastery_streak = 0
+                frontier_probe_level = min(
+                    MAXIMUM_COMPLEXITY_LEVEL,
+                    level + 1,
+                )
+                frontier_probe_decision = "curriculum_promotion_reset_to_nearest_probe"
             maximum_level_mastered = (
                 level == MAXIMUM_COMPLEXITY_LEVEL and mastery_streak >= runtime.mastery_windows
             )
@@ -3640,6 +3750,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "total_task_groups": total_task_groups,
         "replay_task_groups": replay_task_groups,
         "frontier_probe_task_groups": frontier_probe_task_groups,
+        "frontier_probe_level": frontier_probe_level,
+        "frontier_probe_decision": frontier_probe_decision,
         "informative_task_groups": informative_task_groups,
         "excluded_task_groups": excluded_task_groups,
         "discarded_task_groups": discarded_task_groups,

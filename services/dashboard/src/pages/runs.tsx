@@ -24,6 +24,7 @@ import {
   numberValue,
   observerStages,
   percent,
+  recordValue,
   resultItems,
   runPercentage,
   shortModelName,
@@ -278,6 +279,16 @@ function progressItems(run: ResearchComputeExecution) {
   const maximumSampledLevel = numberValue(
     progress.maximum_sampled_complexity_level,
   );
+  const curriculumDecision = recordValue(progress.curriculum_decision);
+  const frontierProbeLevel = numberValue(
+    curriculumDecision?.frontier_probe_level_used,
+  );
+  const nextFrontierProbeLevel = numberValue(
+    curriculumDecision?.next_frontier_probe_level,
+  );
+  const frontierProbeSignal = probeSignal(
+    stringValue(curriculumDecision?.frontier_probe_decision),
+  );
   const validationRate = numberValue(progress.exact_rate);
   const validationInterval = intervalValue(progress.exact_rate_95ci);
   const validationExamples = numberValue(progress.validation_examples);
@@ -360,6 +371,19 @@ function progressItems(run: ResearchComputeExecution) {
                 : ""
             }`,
     },
+    ...(frontierProbeLevel === null
+      ? []
+      : [
+          {
+            label: "Probe",
+            value: `Level ${frontierProbeLevel}${
+              nextFrontierProbeLevel !== null &&
+              nextFrontierProbeLevel !== frontierProbeLevel
+                ? ` → ${nextFrontierProbeLevel}`
+                : ""
+            }${frontierProbeSignal ? ` · ${frontierProbeSignal}` : ""}`,
+          },
+        ]),
     {
       label: aggregateTestMean
         ? "Test mean"
@@ -435,6 +459,29 @@ function progressItems(run: ResearchComputeExecution) {
       value: elapsed === null ? "—" : formatDuration(elapsed),
     },
   ];
+}
+
+function probeSignal(reason: string | null) {
+  switch (reason) {
+    case "mixed_correctness_contrast_retained":
+      return "mixed K=4";
+    case "all_siblings_solved_raise_probe":
+    case "hardest_probe_all_solved":
+      return "4/4 solved";
+    case "no_siblings_solved_lower_probe":
+    case "nearest_probe_all_failed":
+      return "0/4 solved";
+    case "heterogeneous_saturation_hold_probe":
+      return "split extremes";
+    case "curriculum_promotion_reset_to_nearest_probe":
+      return "promoted";
+    case "maximum_level_reached":
+      return "maximum";
+    case "insufficient_probe_evidence":
+      return "awaiting K=4";
+    default:
+      return null;
+  }
 }
 
 function validationRows(

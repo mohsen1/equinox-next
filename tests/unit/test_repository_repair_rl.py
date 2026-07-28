@@ -25,6 +25,7 @@ from research.runpod.repository_repair_rl import (
     accepted_reference_actions,
     accumulated_reference_anchored_examples,
     action_protocol_counts,
+    adaptive_frontier_probe_decision,
     bounded_final_evaluation_reserve,
     checkpoint_target_disposition,
     checkpoint_validation_seed,
@@ -119,15 +120,56 @@ def test_correctness_contrast_is_required_for_policy_signal() -> None:
     assert correctness_contrast_advantages([0.97, 0.0, 0.0, 0.0])[0] > 0
 
 
-def test_training_allocation_keeps_a_majority_on_frontier_and_probes_two_levels() -> None:
-    assert training_level_allocation(0, 4) == [0, 0, 1, 2]
-    assert training_level_allocation(1, 4) == [1, 1, 2, 3]
-    assert training_level_allocation(2, 4) == [2, 2, 2, 3]
+def test_training_allocation_evenly_splits_current_and_adaptive_probe_levels() -> None:
+    assert training_level_allocation(0, 4) == [0, 0, 1, 1]
+    assert training_level_allocation(0, 4, probe_level=2) == [0, 0, 2, 2]
+    assert training_level_allocation(1, 4) == [1, 1, 2, 2]
+    assert training_level_allocation(2, 4) == [2, 2, 3, 3]
     assert training_level_allocation(3, 4) == [3, 3, 3, 3]
     assert training_level_allocation(0, 1) == [0]
 
     with pytest.raises(ValueError, match="outside"):
         training_level_allocation(4, 4)
+    with pytest.raises(ValueError, match="adaptive probe range"):
+        training_level_allocation(0, 4, probe_level=3)
+
+
+def test_frontier_probe_follows_static_k_branch_contrast() -> None:
+    informative = SimpleNamespace(
+        curriculum_role="adjacent_complexity_probe",
+        task=SimpleNamespace(level=1),
+        informative=True,
+        solved_siblings=2,
+    )
+    all_solved = SimpleNamespace(
+        curriculum_role="adjacent_complexity_probe",
+        task=SimpleNamespace(level=1),
+        informative=False,
+        solved_siblings=BRANCH_WIDTH,
+    )
+    all_failed = SimpleNamespace(
+        curriculum_role="adjacent_complexity_probe",
+        task=SimpleNamespace(level=2),
+        informative=False,
+        solved_siblings=0,
+    )
+
+    assert adaptive_frontier_probe_decision(0, 1, [informative]) == (
+        1,
+        "mixed_correctness_contrast_retained",
+    )
+    assert adaptive_frontier_probe_decision(0, 1, [all_solved]) == (
+        2,
+        "all_siblings_solved_raise_probe",
+    )
+    assert adaptive_frontier_probe_decision(0, 2, [all_failed]) == (
+        1,
+        "no_siblings_solved_lower_probe",
+    )
+    assert adaptive_frontier_probe_decision(3, 3, []) == (
+        3,
+        "maximum_level_reached",
+    )
 
 
 def test_training_analogues_follow_declared_cross_split_relationships() -> None:
