@@ -22,7 +22,14 @@ except ImportError:  # pragma: no cover - exercised by the macOS Python 3.9 oper
     UTC = timezone.utc  # noqa: UP017 - Python 3.9 compatibility.
 
 STUDY_ID = "repository-repair-confirmatory-study@1"
-DEPENDENT_BUDGET = "k4_train_seed211.total_sampled_completions"
+DEPENDENT_BUDGET_SUFFIX = ".total_sampled_completions"
+RUNNABLE_ROLES = frozenset(
+    {
+        "fresh_replication",
+        "matched_frozen_policy_control",
+        "branch_width_ablation",
+    }
+)
 
 
 def utc_now() -> str:
@@ -48,8 +55,8 @@ def condition_by_id(manifest: dict[str, Any], condition_id: str) -> dict[str, An
     if len(matches) != 1:
         raise ValueError(f"unknown or duplicate study condition: {condition_id}")
     condition = matches[0]
-    if condition.get("role") == "frozen_reference":
-        raise ValueError("the frozen reference is already complete and cannot be rerun")
+    if condition.get("role") not in RUNNABLE_ROLES:
+        raise ValueError("the study condition is recorded but is not runnable")
     return condition
 
 
@@ -97,22 +104,24 @@ def resolve_completion_budget(
         return None
     if isinstance(declared, int) and not isinstance(declared, bool) and declared > 0:
         return declared
-    if declared != DEPENDENT_BUDGET:
+    optimization_seed = condition.get("optimization_seed")
+    expected_dependency = f"k4_train_seed{optimization_seed}{DEPENDENT_BUDGET_SUFFIX}"
+    if declared != expected_dependency:
         raise ValueError("the study condition has an unknown completion-budget dependency")
     source_condition = {
-        "condition_id": "k4_train_seed211",
-        "optimization_seed": 211,
-        "validation_seed_base": 20_000_000,
-        "test_seed_base": 50_000_000,
+        "condition_id": f"k4_train_seed{optimization_seed}",
+        "optimization_seed": optimization_seed,
+        "validation_seed_base": condition.get("validation_seed_base"),
+        "test_seed_base": condition.get("test_seed_base"),
     }
     sources = matching_success_results(receipt_directory, source_condition)
     if len(sources) != 1:
         raise RuntimeError(
-            "matched controls require exactly one completed seed-211 K=4 training result"
+            "matched controls require exactly one completed source K=4 training result"
         )
     budget = sources[0][1].get("total_sampled_completions")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
-        raise RuntimeError("the seed-211 K=4 result has no valid continuation budget")
+        raise RuntimeError("the source K=4 result has no valid continuation budget")
     return budget
 
 

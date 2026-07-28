@@ -55,7 +55,14 @@ def manifest() -> dict:
     }
 
 
-def write_result(path: Path, *, completions: int = 516) -> None:
+def write_result(
+    path: Path,
+    *,
+    completions: int = 516,
+    seed: int = 211,
+    validation_seed: int = 20_000_000,
+    test_seed: int = 50_000_000,
+) -> None:
     path.write_text(
         json.dumps(
             {
@@ -66,9 +73,9 @@ def write_result(path: Path, *, completions: int = 516) -> None:
                 "study": {
                     "study_id": "repository-repair-confirmatory-study@1",
                     "condition": "k4_train",
-                    "optimization_seed": 211,
-                    "validation_seed_base": 20_000_000,
-                    "test_seed_base": 50_000_000,
+                    "optimization_seed": seed,
+                    "validation_seed_base": validation_seed,
+                    "test_seed_base": test_seed,
                 },
             }
         ),
@@ -82,7 +89,7 @@ def test_operator_selects_conditions_and_refuses_frozen_reference(tmp_path: Path
     loaded = load_manifest(path)
 
     assert condition_by_id(loaded, "k4_train_seed211")["optimization_seed"] == 211
-    with pytest.raises(ValueError, match="already complete"):
+    with pytest.raises(ValueError, match="not runnable"):
         condition_by_id(loaded, "k4_train_seed113")
 
 
@@ -107,6 +114,26 @@ def test_dependent_conditions_resolve_exactly_one_successful_budget(
     write_result(tmp_path / "runpod-proof-duplicate.result.json")
     with pytest.raises(RuntimeError, match="exactly one"):
         resolve_completion_budget(condition, tmp_path)
+
+
+def test_dependent_budget_follows_the_shared_causal_seed(tmp_path: Path) -> None:
+    condition = {
+        "condition_id": "k4_no_update_seed307",
+        "role": "matched_frozen_policy_control",
+        "optimization_seed": 307,
+        "validation_seed_base": 220_000_000,
+        "test_seed_base": 260_000_000,
+        "completion_budget": "k4_train_seed307.total_sampled_completions",
+    }
+    write_result(
+        tmp_path / "runpod-proof-seed307.result.json",
+        completions=444,
+        seed=307,
+        validation_seed=220_000_000,
+        test_seed=260_000_000,
+    )
+
+    assert resolve_completion_budget(condition, tmp_path) == 444
 
 
 def test_launcher_environment_matches_preregistered_k1(monkeypatch: pytest.MonkeyPatch) -> None:

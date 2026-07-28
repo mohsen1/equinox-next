@@ -20,7 +20,7 @@ except ModuleNotFoundError:
 SCREEN_REVISION = "revision30-protocol-eligibility@1"
 
 
-class EligibilityScreenComplete(Exception):
+class EligibilityScreenComplete(BaseException):
     def __init__(self, result: dict[str, Any]) -> None:
         self.result = result
         super().__init__("the protocol-eligibility screen completed")

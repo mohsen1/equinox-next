@@ -1418,7 +1418,8 @@ if [[ "$study_eligibility_only" == "1" ]]; then
     jq -c \
       '. + {
         phase: "complete",
-        message: "Protocol eligibility recorded and provider teardown confirmed."
+        message: "Protocol eligibility recorded and provider teardown confirmed.",
+        error: null
       }' <<<"$last_progress"
   )"
   failure_message="The completed eligibility screen could not be published."
