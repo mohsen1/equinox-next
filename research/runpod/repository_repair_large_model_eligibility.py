@@ -600,6 +600,18 @@ def validate_runtime_configuration(runtime: Any, manifest: dict[str, Any]) -> No
         raise ValueError("larger-model eligibility must not load or persist an adapter")
 
 
+def disarm_empty_adapter_path() -> None:
+    """Ignore the runner's empty conventional path, but reject resumable state."""
+
+    raw_path = os.environ.get("EQUINOX_ADAPTER_PATH")
+    if not raw_path:
+        return
+    adapter_path = Path(raw_path)
+    if adapter_path.exists() and (not adapter_path.is_dir() or any(adapter_path.iterdir())):
+        raise ValueError("larger-model eligibility found pre-existing adapter state")
+    os.environ.pop("EQUINOX_ADAPTER_PATH", None)
+
+
 def install_environment_hooks(
     evidence: ScreenEvidence,
     manifest: dict[str, Any],
@@ -863,6 +875,7 @@ def prepare_runtime(
     evidence: ScreenEvidence,
     manifest: dict[str, Any],
 ) -> Any:
+    disarm_empty_adapter_path()
     install_environment_hooks(evidence, manifest)
     runtime = frozen.configure_from_environment()
     validate_runtime_configuration(runtime, manifest)

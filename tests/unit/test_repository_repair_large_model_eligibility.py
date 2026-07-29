@@ -329,6 +329,22 @@ def test_runtime_configuration_is_bound_to_exact_model_and_screen_shape(
         eligibility.validate_runtime_configuration(runtime, manifest)
 
 
+def test_runner_adapter_path_is_disarmed_only_when_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    empty_path = tmp_path / "adapter"
+    monkeypatch.setenv("EQUINOX_ADAPTER_PATH", str(empty_path))
+    eligibility.disarm_empty_adapter_path()
+    assert "EQUINOX_ADAPTER_PATH" not in eligibility.os.environ
+
+    empty_path.mkdir()
+    (empty_path / "checkpoint.json").write_text("state", encoding="utf-8")
+    monkeypatch.setenv("EQUINOX_ADAPTER_PATH", str(empty_path))
+    with pytest.raises(ValueError, match="pre-existing adapter state"):
+        eligibility.disarm_empty_adapter_path()
+
+
 def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
