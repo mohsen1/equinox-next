@@ -19,16 +19,15 @@ except ModuleNotFoundError:
     import repository_repair_env_v31 as revision31  # type: ignore[no-redef]
 
 
-ENVIRONMENT_REVISION = "repository-repair-simulator@6"
-ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@5"
+ENVIRONMENT_REVISION = "repository-repair-simulator@7"
+ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@6"
 SYSTEM_PROMPT = """OUTPUT CONTRACT
 Return exactly one JSON object and no other text. The object is one repository action.
 
-DECISION RULES
+DECISION ORDER
 - If no accepted list, search, or read has exposed a repository path, return exactly {"tool":"list","path":""}.
-- If the latest transcript entry is rejected and its JSON observation contains "next_action", copy that object's tool and arguments exactly.
-- Use a non-empty path only when that exact path was exposed by an accepted list, search, or read in this trajectory. Copy it character-for-character from the latest relevant observation; never guess.
-- Before every edit, read that path. A rejected edit makes the prior read stale, so copy its read "next_action" and wait for the fresh read observation before editing again.
+- If the latest rejected observation has "next_action", copy that object exactly. If it has "next_actions", copy one complete listed object.
+- Otherwise choose from "mechanical_action_space" in the current interface state.
 
 TOOLS AND EXACT KEYS
 - list: "tool", "path". Use an empty path to list the repository root.
@@ -38,14 +37,16 @@ TOOLS AND EXACT KEYS
 - test: "tool" only.
 - finish: "tool" only.
 
-EDIT RULES
-- Copy "old" exactly from the latest accepted read of the same path.
-- Paths are relative and cannot contain "..".
+PATH, EDIT, AND PROGRESS RULES
+- Use a non-empty path only if that exact path appears in "observed_paths"; copy it character-for-character.
+- Before editing, read that path and copy "old" exactly from its latest accepted read. A rejected edit makes that read stale.
+- Do not repeat an accepted diagnostic when it would return unchanged evidence; the interface rejects no-progress repeats.
+- Paths are relative and never contain "..".
 
 CANONICAL DECISION EXAMPLES
 These are syntax and decision examples only. They expose no reusable non-empty repository path. P and A below are notation, never literal response text.
 - No accepted path evidence -> {"tool":"list","path":""}
-- Latest rejected observation contains "next_action": A -> return the JSON object A with the same tool and arguments.
+- Rejection contains "next_action": A -> return A. Rejection contains "next_actions": [A, ...] -> return one listed A.
 - Latest accepted list or search exposes path P -> a read may use exactly P, not a guessed alternative.
 - Rejected edit for P supplies a read "next_action" -> return that action; edit P only after the read is accepted.
 
@@ -57,15 +58,15 @@ SAFETY
 - Do not add keys outside the selected action schema.
 
 BEFORE RESPONDING
-- With no accepted path evidence, list the root.
-- After a rejection, copy the supplied "next_action".
-- Otherwise, use only an observed path and reread it after any rejected edit."""
+- Follow the decision order.
+- Use only an observed path.
+- Return one bare JSON action."""
 
 ACTION_REMINDER = """Choose one allowed JSON action from the latest transcript state.
-- No accepted list, search, or read path evidence: return exactly {"tool":"list","path":""}.
-- Latest entry rejected with a JSON "next_action": copy that object's tool and arguments exactly.
-- Otherwise use only a non-empty path exposed by accepted trajectory evidence.
-A rejected edit invalidates its prior read; perform the supplied read action before editing again.
+- With no path evidence, return exactly {"tool":"list","path":""}.
+- After rejection, copy "next_action" or one complete object from "next_actions".
+- Otherwise use "mechanical_action_space"; "read_paths" lists every accepted read path.
+Do not repeat unchanged evidence. Reread after a rejected edit.
 The response already begins with {"tool":. Complete that object and stop after its closing }."""
 
 
@@ -133,6 +134,7 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
         environment_data = {
             "phase": phase,
             "task": json.loads(self.initial_observation()),
+            "interface_state": self._interface_state(phase),
             "transcript": transcript,
         }
         return (
@@ -143,6 +145,109 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
             + "\n</untrusted-environment-data>\n\n"
             + ACTION_REMINDER
         )
+
+    def _read_would_refresh_after_edit(self, path: str) -> bool:
+        """Permit the recovery read required after any attempted edit."""
+
+        return not self._has_fresh_read(path) and any(
+            step.tool == "edit"
+            and step.action is not None
+            and step.action.get("path") == path
+            for step in self.steps
+        )
+
+    def _diagnostic_would_repeat_without_progress(self, action: dict[str, str]) -> bool:
+        tool = action["tool"]
+        if tool not in frozen_environment.DIAGNOSTIC_TOOLS:
+            return False
+        if tool == "read" and self._read_would_refresh_after_edit(action.get("path", "")):
+            return False
+        prior = [
+            step for step in self.steps if step.accepted and step.action == action
+        ]
+        if not prior:
+            return False
+        if tool == "test":
+            return any(step.state_digest_before == self.state_digest for step in prior)
+
+        accepted, current_observation = super()._execute(action)
+        return accepted and any(
+            step.observation == frozen_environment._bounded(current_observation)
+            for step in prior
+        )
+
+    def _interface_state(
+        self,
+        phase: Literal["shared_prefix", "continuation"],
+    ) -> dict[str, Any]:
+        """Expose protocol progress and mechanically admissible action arguments.
+
+        Every path comes only from accepted trajectory evidence. The scaffold
+        intentionally does not rank paths or expose task faults.
+        """
+
+        observed_paths = sorted(self._observed_paths())
+        read_paths = sorted(
+            {
+                str(step.action["path"])
+                for step in self.steps
+                if step.accepted
+                and step.tool == "read"
+                and step.action is not None
+                and isinstance(step.action.get("path"), str)
+                and step.action["path"]
+            }
+        )
+        available_read_paths = [
+            path
+            for path in observed_paths
+            if not self._diagnostic_would_repeat_without_progress(
+                {"tool": "read", "path": path}
+            )
+        ]
+        root_list_action = {"tool": "list", "path": ""}
+        test_action = {"tool": "test"}
+        has_path_evidence = bool(observed_paths)
+        fresh_edit_paths = (
+            [path for path in observed_paths if self._has_fresh_read(path)]
+            if phase == "continuation"
+            else []
+        )
+        return {
+            "progress": {
+                "accepted_diagnostic_actions": sum(
+                    step.accepted and step.tool in frozen_environment.DIAGNOSTIC_TOOLS
+                    for step in self.steps
+                ),
+                "observed_path_count": len(observed_paths),
+                "read_path_count": len(read_paths),
+                "steps_remaining": max(
+                    0,
+                    self.task.complexity.repair_horizon - len(self.steps),
+                ),
+            },
+            "observed_paths": observed_paths,
+            "read_paths": read_paths,
+            "mechanical_action_space": {
+                "list_paths": (
+                    [""]
+                    if not self._diagnostic_would_repeat_without_progress(root_list_action)
+                    else []
+                ),
+                "read_paths": available_read_paths,
+                "search": {
+                    "allowed": has_path_evidence,
+                    "query_constraint": "non-empty literal string of at most 120 characters",
+                    "unchanged_query_repeats_rejected": True,
+                },
+                "test_allowed": (
+                    has_path_evidence
+                    and not self._diagnostic_would_repeat_without_progress(test_action)
+                ),
+                "edit_paths_with_fresh_read": fresh_edit_paths,
+                "finish_allowed": phase == "continuation",
+            },
+        }
 
     def _observed_paths(self) -> frozenset[str]:
         observed: set[str] = set()
@@ -196,6 +301,25 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
                         "next_action": {"tool": "list", "path": ""},
                     }
                 ),
+            )
+        if self._diagnostic_would_repeat_without_progress(action):
+            next_actions = [
+                {"tool": "read", "path": candidate}
+                for candidate in sorted(observed_paths)
+                if not self._diagnostic_would_repeat_without_progress(
+                    {"tool": "read", "path": candidate}
+                )
+            ]
+            recovery: dict[str, Any] = {"error": "NO_PROGRESS_REPEAT"}
+            if next_actions:
+                recovery["next_actions"] = next_actions
+            else:
+                recovery["recovery"] = (
+                    "Choose a new search query or another action enabled by interface_state."
+                )
+            return (
+                False,
+                _canonical_json(recovery),
             )
         if tool in {"list", "read", "edit"} and path and path not in observed_paths:
             return (
