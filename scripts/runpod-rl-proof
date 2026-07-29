@@ -764,10 +764,11 @@ if [[ -n "$larger_model_mode" ]]; then
     echo "The configured RunPod network volume could not be verified." >&2
     exit 1
   fi
-  if ! jq -e \
-    --arg volume_id "$network_volume_id" \
-    --argjson minimum_size "$persistent_volume_in_gb" \
-    '
+  if [[ -z "$network_volume" ]] ||
+    ! jq -e \
+      --arg volume_id "$network_volume_id" \
+      --argjson minimum_size "$persistent_volume_in_gb" \
+      '
       (.networkVolume // .) as $volume
       | ($volume.id // $volume.networkVolumeId // "") == $volume_id
         and ($volume.size | type) == "number"
@@ -813,10 +814,11 @@ if [[ -n "$larger_model_mode" ]]; then
     exit 1
   fi
   data_center_inventory="$(run_provider_command 30 runpodctl datacenter list)"
-  if ! jq -e \
-    --arg data_center_id "$network_volume_data_center_id" \
-    --arg gpu_id "$gpu_id" \
-    '
+  if [[ -z "$data_center_inventory" ]] ||
+    ! jq -e \
+      --arg data_center_id "$network_volume_data_center_id" \
+      --arg gpu_id "$gpu_id" \
+      '
       any(.[];
         .id == $data_center_id
         and any(.gpuAvailability[];
@@ -877,11 +879,12 @@ if [[ -n "$larger_model_mode" ]]; then
     fi
   fi
   gpu_inventory="$(run_provider_command 30 runpodctl gpu list --include-unavailable)"
-  if ! jq -e \
-    --arg gpu_id "$gpu_id" \
-    --arg cloud_type "$cloud_type" \
-    --argjson minimum_memory "$minimum_gpu_memory_gb" \
-    '
+  if [[ -z "$gpu_inventory" ]] ||
+    ! jq -e \
+      --arg gpu_id "$gpu_id" \
+      --arg cloud_type "$cloud_type" \
+      --argjson minimum_memory "$minimum_gpu_memory_gb" \
+      '
       any(.[];
         .gpuId == $gpu_id
         and .displayName == "H100 SXM"
@@ -1086,7 +1089,8 @@ provider_pods() {
   if ! pods="$(run_provider_command 15 runpodctl pod list --all)"; then
     return 1
   fi
-  if ! jq -e \
+  if [[ -z "$pods" ]] ||
+    ! jq -e \
     'type == "array"
       and all(.[];
         type == "object"
@@ -1106,6 +1110,9 @@ provider_current_spend() {
   if ! account="$(run_provider_command 15 runpodctl user)"; then
     return 1
   fi
+  if [[ -z "$account" ]]; then
+    return 1
+  fi
   jq -er \
     'if (.currentSpendPerHr | type) == "number" and .currentSpendPerHr >= 0
      then .currentSpendPerHr
@@ -1119,7 +1126,8 @@ provider_network_volumes() {
   if ! volumes="$(run_provider_command 15 runpodctl network-volume list)"; then
     return 1
   fi
-  if ! jq -e \
+  if [[ -z "$volumes" ]] ||
+    ! jq -e \
     'type == "array"
       and all(.[];
         type == "object"
@@ -1505,14 +1513,14 @@ fetch_and_publish_remote_progress() {
     curl --fail --silent --show-error --max-time 10 \
       -H "$remote_authorization" "$progress_url" 2>/dev/null || true
   )"
-  if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$observed_progress" ||
-    [[ "$observed_progress" == "$last_remote_progress" ]]; then
-    if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$observed_progress"; then
-      last_remote_progress_fetch_valid=true
-    fi
+  if [[ -z "$observed_progress" ]] ||
+    ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$observed_progress"; then
     return 0
   fi
   last_remote_progress_fetch_valid=true
+  if [[ "$observed_progress" == "$last_remote_progress" ]]; then
+    return 0
+  fi
   last_progress_change_epoch="$observed_epoch"
   remote_phase="$(jq -r '.phase // empty' <<<"$observed_progress")"
   if [[ -z "$preparation_started_epoch" ]] &&
@@ -1941,7 +1949,8 @@ while readiness_poll_timeout="$(
     curl --fail --silent --show-error --max-time "$readiness_poll_timeout" \
       -H "$remote_authorization" "$bootstrap_health_url" 2>/dev/null || true
   )"
-  if jq -e \
+  if [[ -n "$bootstrap_health" ]] &&
+    jq -e \
     'type == "object" and .status == "awaiting_bundle"' \
     >/dev/null 2>&1 <<<"$bootstrap_health"; then
     bootstrap_transport_ready=true
@@ -2017,6 +2026,7 @@ fi
 bundle_upload_acknowledged=false
 if [[ "$bundle_upload_exit_code" == "0" &&
   "$bundle_upload_status" =~ ^2[0-9][0-9]$ ]] &&
+  [[ -n "$bundle_upload_body" ]] &&
   jq -e \
     'type == "object" and .status == "bundle_installed"' \
     >/dev/null 2>&1 <<<"$bundle_upload_body"; then
@@ -2047,7 +2057,8 @@ while readiness_poll_timeout="$(
     curl --fail --silent --show-error --max-time "$readiness_poll_timeout" \
       -H "$remote_authorization" "$progress_url" 2>/dev/null || true
   )"
-  if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
+  if [[ -n "$remote_progress" ]] &&
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
     last_progress_change_epoch="$(date +%s)"
     remote_phase="$(jq -r '.phase // empty' <<<"$remote_progress")"
     if [[ "$remote_phase" == "dependency_setup" || "$remote_phase" == "model_loading" ]]; then
@@ -2185,7 +2196,8 @@ metrics="$(
   curl --fail --silent --show-error --max-time 60 \
     -H "$remote_authorization" "$proxy_root/result.json"
 )"
-if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
+if [[ -z "$metrics" ]] ||
+  ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
   failure_message="The remote workload result was missing or invalid."
   echo "The remote workload did not return a valid metrics object." >&2
   exit 1

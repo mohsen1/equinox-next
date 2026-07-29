@@ -1168,6 +1168,16 @@ if kind == "curl":
 """
     _write_executable(binary_directory / "curl", advancing_command)
     _write_executable(binary_directory / "sleep", advancing_command)
+    _write_executable(
+        binary_directory / "jq",
+        """#!/usr/bin/env python3
+import sys
+
+# jq 1.6 exits successfully when its filter receives no JSON values.
+sys.stdin.read()
+raise SystemExit(0)
+""",
+    )
 
     helper = _shell_function(source, "seconds_until_deadline")
     harness = f"""set -euo pipefail
@@ -1209,3 +1219,63 @@ date +%s
     assert sum(event["seconds"] for event in trace) == 12
     assert all(event["seconds"] > 0 for event in trace)
     assert any(event["kind"] == "curl" for event in trace)
+
+
+def test_empty_remote_progress_is_invalid_even_when_jq_reports_success(
+    tmp_path: Path,
+) -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    helper = _shell_function(source, "fetch_and_publish_remote_progress")
+    binary_directory = tmp_path / "bin"
+    binary_directory.mkdir()
+    _write_executable(
+        binary_directory / "curl",
+        """#!/usr/bin/env python3
+""",
+    )
+    _write_executable(
+        binary_directory / "jq",
+        """#!/usr/bin/env python3
+import sys
+
+sys.stdin.read()
+raise SystemExit(0)
+""",
+    )
+    harness = f"""set -euo pipefail
+last_remote_progress_fetch_valid=false
+last_remote_progress=''
+last_progress='{{}}'
+last_progress_change_epoch=0
+preparation_started_epoch=''
+remote_authorization='Authorization: Bearer test'
+progress_url=https://worker.invalid/progress.json
+publish_execution() {{ return 0; }}
+{helper}
+fetch_and_publish_remote_progress 1000
+printf '%s\\n' "$last_remote_progress_fetch_valid"
+"""
+    environment = os.environ.copy()
+    environment["PATH"] = f"{binary_directory}{os.pathsep}{environment['PATH']}"
+
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "false"
+
+
+def test_remote_json_acceptance_guards_require_nonempty_bodies() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+
+    assert 'if [[ -n "$bootstrap_health" ]] &&' in source
+    assert '[[ -n "$bundle_upload_body" ]] &&' in source
+    assert 'if [[ -n "$remote_progress" ]] &&' in source
+    assert 'if [[ -z "$metrics" ]] ||' in source
