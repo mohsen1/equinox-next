@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import json
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,12 +67,15 @@ def passing_evidence() -> eligibility.ScreenEvidence:
         restored_parameter_tensors=64,
         optimizer_state_restored=True,
         capacity_smoke_completed=True,
+        capacity_smoke_completed_at=10.0,
+        baseline_completed_at=110.0,
         gradient_checkpointing_enabled=True,
         pinned_snapshot_ready=True,
+        pinned_snapshot_digest=gate.expected_snapshot_digest(manifest),
         offline_mode_active=True,
         gpu_name=manifest["hardware"]["gpu_id"],
-        gpu_total_memory_bytes=manifest["hardware"]["minimum_gpu_memory_gb"] * 1024**3,
-        peak_reserved_vram_bytes=int(manifest["hardware"]["minimum_gpu_memory_gb"] * 1024**3 * 0.8),
+        gpu_total_memory_bytes=manifest["hardware"]["minimum_cuda_memory_bytes"],
+        peak_reserved_vram_bytes=int(manifest["hardware"]["minimum_cuda_memory_bytes"] * 0.8),
         bf16_supported=True,
         base_parameter_count=manifest["model"]["parameter_count"],
         base_bf16_parameter_count=manifest["model"]["parameter_count"],
@@ -106,6 +108,13 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["test_split_accessed"] is False
     assert result["training_microbatch_size"] == 1
     assert result["maximum_input_tokens"] == 1_536
+    assert result["environment_revision"] == manifest["interface"]["environment_revision"]
+    assert result["action_protocol_revision"] == manifest["interface"]["action_protocol_revision"]
+    assert result["pinned_snapshot_digest"] == (
+        "sha256:bb69dcfbff5e882148de91296f0cfedceea6e07ecbd9d5b5689cdad0ec209f90"
+    )
+    assert result["baseline_runtime_seconds"] == 100.0
+    assert result["predicted_final_evaluation_seconds"] == 450.0
     assert result["gate_results"] == dict.fromkeys(gate.REQUIRED_GATE_RESULTS, True)
     assert result["digest"] == gate.result_digest(result)
     authorization = gate.verify_pilot_authorization(
@@ -122,10 +131,12 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
             "result_digest": gate.result_digest(result),
             "teardown_confirmed": True,
             "completed_at": "2026-07-29T12:00:00Z",
+            "resource_profile": {"network_volume_id": "volume-123"},
         },
         now=datetime(2026, 7, 29, 13, 0, tzinfo=UTC),
     )
     assert authorization["screen_result_digest"] == result["digest"]
+    assert authorization["pinned_snapshot_digest"] == result["pinned_snapshot_digest"]
 
 
 def test_every_level_must_pass_even_when_overall_checkpoint_rate_passes() -> None:
@@ -150,6 +161,45 @@ def test_accepted_action_gate_rejects_repeated_rejected_action_loops() -> None:
     assert result["action_protocol_validity"] == 0.995
     assert result["gate_results"]["action_protocol_validity"] is False
     assert result["ineligible_reasons"] == ["action_protocol_validity"]
+
+
+def test_runtime_gate_is_derived_from_capacity_and_baseline_timestamps() -> None:
+    manifest = gate.load_manifest()
+    evidence = passing_evidence()
+    maximum_predicted = manifest["screen"]["thresholds"][
+        "maximum_predicted_final_evaluation_seconds"
+    ]
+
+    evidence.baseline_completed_at = evidence.capacity_smoke_completed_at
+    missing_measurement = eligibility.build_screen_result(evidence, manifest)
+    assert missing_measurement["predicted_final_evaluation_seconds"] == 0.0
+    assert missing_measurement["gate_results"]["pilot_runtime_feasible"] is False
+
+    multiplier = (
+        manifest["pilot"]["test_examples"]
+        * len(eligibility.SCREEN_LEVELS)
+        * 2
+        * manifest["pilot"]["final_evaluation_safety_factor"]
+        / (manifest["screen"]["baseline_examples_per_level"] * len(eligibility.SCREEN_LEVELS))
+    )
+    evidence.baseline_completed_at = (
+        evidence.capacity_smoke_completed_at + maximum_predicted / multiplier + 0.001
+    )
+    too_slow = eligibility.build_screen_result(evidence, manifest)
+    assert too_slow["predicted_final_evaluation_seconds"] > maximum_predicted
+    assert too_slow["gate_results"]["pilot_runtime_feasible"] is False
+
+
+def test_hardware_gate_uses_the_exact_cuda_byte_floor() -> None:
+    manifest = gate.load_manifest()
+    evidence = passing_evidence()
+    assert evidence.gpu_total_memory_bytes == 47_000_000_000
+    assert eligibility.build_screen_result(evidence, manifest)["gate_results"]["hardware_verified"]
+
+    evidence.gpu_total_memory_bytes -= 1
+    result = eligibility.build_screen_result(evidence, manifest)
+    assert result["gate_results"]["hardware_verified"] is False
+    assert result["eligible"] is False
 
 
 def test_baseline_stops_only_after_twelve_when_a_level_gate_is_impossible() -> None:
@@ -194,33 +244,44 @@ def test_incomplete_branch_collection_is_not_counted_as_a_checkpoint() -> None:
     assert result["eligible"] is False
 
 
-def test_snapshot_readiness_requires_four_exact_local_shards(tmp_path: Path) -> None:
+def test_snapshot_readiness_propagates_the_exact_snapshot_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     manifest = profile()
     manifest["artifact_readiness"]["cache_directory"] = str(tmp_path)
-    manifest["model"]["safetensors_bytes"] = 10
     model_cache = "models--" + manifest["model"]["id"].replace("/", "--")
     snapshot = tmp_path / "hub" / model_cache / "snapshots" / manifest["model"]["revision"]
     snapshot.mkdir(parents=True)
-    for index, size in enumerate((1, 2, 3, 4), start=1):
-        (snapshot / f"model-{index:05d}-of-00004.safetensors").write_bytes(b"x" * size)
-    shard_names = {f"model-{index:05d}-of-00004.safetensors" for index in range(1, 5)}
-    for name in eligibility.REQUIRED_SNAPSHOT_FILES - {"model.safetensors.index.json"}:
-        (snapshot / name).write_text("ready", encoding="utf-8")
-    (snapshot / "model.safetensors.index.json").write_text(
-        json.dumps(
-            {
-                "weight_map": {
-                    f"layer.{index}": name for index, name in enumerate(sorted(shard_names))
-                }
-            }
-        ),
-        encoding="utf-8",
+    expected_digest = "sha256:bb69dcfbff5e882148de91296f0cfedceea6e07ecbd9d5b5689cdad0ec209f90"
+
+    def verify_exact(
+        observed_manifest: dict[str, object],
+        observed_snapshot: Path,
+    ) -> dict[str, object]:
+        assert observed_manifest == manifest
+        assert observed_snapshot == snapshot
+        assert gate.expected_snapshot_digest(observed_manifest) == expected_digest
+        return {
+            "snapshot_path": str(snapshot),
+            "snapshot_digest": expected_digest,
+        }
+
+    monkeypatch.setattr(eligibility.gate, "verify_local_snapshot", verify_exact)
+    assert eligibility.verify_pinned_snapshot(manifest) == (
+        True,
+        str(snapshot),
+        expected_digest,
     )
 
-    assert eligibility.verify_pinned_snapshot(manifest) == (True, str(snapshot))
-
-    (snapshot / "model-00004-of-00004.safetensors").write_bytes(b"xxxxx")
-    assert eligibility.verify_pinned_snapshot(manifest) == (False, None)
+    monkeypatch.setattr(
+        eligibility.gate,
+        "verify_local_snapshot",
+        lambda _manifest, _snapshot: (_ for _ in ()).throw(
+            gate.GateError("snapshot digest mismatch")
+        ),
+    )
+    assert eligibility.verify_pinned_snapshot(manifest) == (False, None, None)
 
 
 def test_offline_mode_requires_both_huggingface_guards(
@@ -394,6 +455,16 @@ def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
             "BRANCH_WIDTH",
             eligibility.frozen_environment.BRANCH_WIDTH,
         )
+        restore.setattr(
+            eligibility.frozen_environment,
+            "ENVIRONMENT_REVISION",
+            eligibility.frozen_environment.ENVIRONMENT_REVISION,
+        )
+        restore.setattr(
+            eligibility.frozen_environment,
+            "ACTION_PROTOCOL_REVISION",
+            eligibility.frozen_environment.ACTION_PROTOCOL_REVISION,
+        )
         evidence = eligibility.ScreenEvidence()
         runtime = eligibility.prepare_runtime(evidence, manifest)
         count = eligibility.frozen.fixed_retention_guard_example_count(
@@ -407,6 +478,21 @@ def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
         assert eligibility.frozen.BRANCH_WIDTH == 4
         assert eligibility.frozen.TRAINING_MICROBATCH_SIZE == 1
         assert eligibility.frozen.MAX_INPUT_TOKENS == 1_536
+        assert (
+            manifest["interface"]["environment_revision"] == eligibility.frozen.ENVIRONMENT_REVISION
+        )
+        assert (
+            manifest["interface"]["action_protocol_revision"]
+            == eligibility.frozen.ACTION_PROTOCOL_REVISION
+        )
+        assert (
+            manifest["interface"]["environment_revision"]
+            == eligibility.frozen_environment.ENVIRONMENT_REVISION
+        )
+        assert (
+            manifest["interface"]["action_protocol_revision"]
+            == eligibility.frozen_environment.ACTION_PROTOCOL_REVISION
+        )
         assert (
             eligibility.frozen.RepositoryRepairEnvironment.__mro__[1]
             is eligibility.revision32.RepositoryRepairEnvironment
