@@ -19,14 +19,14 @@ except ModuleNotFoundError:
     import repository_repair_env_v31 as revision31  # type: ignore[no-redef]
 
 
-ENVIRONMENT_REVISION = "repository-repair-simulator@7"
-ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@6"
+ENVIRONMENT_REVISION = "repository-repair-simulator@8"
+ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@7"
 SYSTEM_PROMPT = """OUTPUT CONTRACT
 Return exactly one JSON object and no other text. The object is one repository action.
 
 DECISION ORDER
 - If no accepted list, search, or read has exposed a repository path, return exactly {"tool":"list","path":""}.
-- If the latest rejected observation has "next_action", copy that object exactly. If it has "next_actions", copy one complete listed object.
+- If "recovery_state.action_choices" is non-empty, return one listed action with the same tool and argument values. JSON key order does not matter.
 - Otherwise choose from "mechanical_action_space" in the current interface state.
 
 TOOLS AND EXACT KEYS
@@ -46,7 +46,7 @@ PATH, EDIT, AND PROGRESS RULES
 CANONICAL DECISION EXAMPLES
 These are syntax and decision examples only. They expose no reusable non-empty repository path. P and A below are notation, never literal response text.
 - No accepted path evidence -> {"tool":"list","path":""}
-- Rejection contains "next_action": A -> return A. Rejection contains "next_actions": [A, ...] -> return one listed A.
+- Recovery action A -> return the same tool and argument values as A; key order does not matter.
 - Latest accepted list or search exposes path P -> a read may use exactly P, not a guessed alternative.
 - Rejected edit for P supplies a read "next_action" -> return that action; edit P only after the read is accepted.
 
@@ -64,8 +64,8 @@ BEFORE RESPONDING
 
 ACTION_REMINDER = """Choose one allowed JSON action from the latest transcript state.
 - With no path evidence, return exactly {"tool":"list","path":""}.
-- After rejection, copy "next_action" or one complete object from "next_actions".
-- Otherwise use "mechanical_action_space"; "read_paths" lists every accepted read path.
+- If "recovery_state.action_choices" is non-empty, return one choice with the same tool and argument values; key order does not matter.
+- Otherwise use "mechanical_action_space". Top-level "read_paths" is history; "mechanical_action_space.read_paths" contains currently available read arguments.
 Do not repeat unchanged evidence. Reread after a rejected edit.
 The response already begins with {"tool":. Complete that object and stop after its closing }."""
 
@@ -80,6 +80,15 @@ def _json_object(value: str) -> dict[str, Any] | None:
     except (TypeError, json.JSONDecodeError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _structured_observation(value: str) -> Any:
+    """Expose machine-readable observations without double-encoding JSON."""
+
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return value
 
 
 class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
@@ -127,7 +136,7 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
                 "index": step.index,
                 "action": step.action,
                 "accepted": step.accepted,
-                "observation": step.observation,
+                "observation": _structured_observation(step.observation),
             }
             for step in self.steps[-8:]
         ]
@@ -228,6 +237,7 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
             },
             "observed_paths": observed_paths,
             "read_paths": read_paths,
+            "recovery_state": self._recovery_state(),
             "mechanical_action_space": {
                 "list_paths": (
                     [""]
@@ -247,6 +257,31 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
                 "edit_paths_with_fresh_read": fresh_edit_paths,
                 "finish_allowed": phase == "continuation",
             },
+        }
+
+    def _recovery_state(self) -> dict[str, Any]:
+        """Return task-generic action values from the latest rejected observation."""
+
+        if not self.steps or self.steps[-1].accepted:
+            return {"action_choices": []}
+        observation = _json_object(self.steps[-1].observation)
+        if observation is None:
+            return {"action_choices": []}
+        candidates: list[Any] = []
+        if "next_action" in observation:
+            candidates.append(observation["next_action"])
+        next_actions = observation.get("next_actions")
+        if isinstance(next_actions, list):
+            candidates.extend(next_actions)
+        choices = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict)
+            and frozen_environment.parse_action(_canonical_json(candidate)) is not None
+        ]
+        return {
+            "action_choices": choices,
+            "error": observation.get("error"),
         }
 
     def _observed_paths(self) -> frozenset[str]:

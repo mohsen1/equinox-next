@@ -23,12 +23,12 @@ def test_prompt_encodes_evidence_and_recovery_decisions_without_example_paths() 
     assert "examples only" in SYSTEM_PROMPT
     assert "expose no reusable non-empty repository path" in SYSTEM_PROMPT
     assert '{"tool":"list","path":""}' in SYSTEM_PROMPT
-    assert '"next_action"' in ACTION_REMINDER
-    assert '"next_actions"' in ACTION_REMINDER
+    assert '"recovery_state.action_choices"' in ACTION_REMINDER
+    assert "key order does not matter" in ACTION_REMINDER
     assert "Reread after a rejected edit" in ACTION_REMINDER
     assert "Do not repeat unchanged evidence" in ACTION_REMINDER
-    assert ACTION_PROTOCOL_REVISION == "repository-repair-json-tools@6"
-    assert ENVIRONMENT_REVISION == "repository-repair-simulator@7"
+    assert ACTION_PROTOCOL_REVISION == "repository-repair-json-tools@7"
+    assert ENVIRONMENT_REVISION == "repository-repair-simulator@8"
 
 
 def test_existing_but_unobserved_path_recovers_through_exact_root_listing() -> None:
@@ -182,6 +182,7 @@ def test_prompt_scaffold_exposes_unranked_mechanical_progress_without_fault_answ
 
     assert interface_state["observed_paths"] == sorted(repair_task.files)
     assert interface_state["read_paths"] == [first_observed_path]
+    assert interface_state["recovery_state"] == {"action_choices": []}
     assert interface_state["progress"] == {
         "accepted_diagnostic_actions": 2,
         "observed_path_count": len(repair_task.files),
@@ -199,6 +200,70 @@ def test_prompt_scaffold_exposes_unranked_mechanical_progress_without_fault_answ
         fault.old not in json.dumps(interface_state) and fault.new not in json.dumps(interface_state)
         for fault in repair_task.faults
     )
+
+
+def test_json_recovery_observation_is_structured_and_tool_first_compatible() -> None:
+    repair_task = task()
+    environment = RepositoryRepairEnvironment(repair_task)
+    rejected = environment.step(action({"tool": "test"}))
+
+    prompt = environment.policy_prompt("shared_prefix")
+    opening_tag = prompt.index("<untrusted-environment-data>")
+    environment_data = json.loads(prompt[opening_tag:].splitlines()[1])
+    latest = environment_data["transcript"][-1]
+
+    assert rejected.accepted is False
+    assert latest["observation"] == {
+        "error": "PATH_EVIDENCE_REQUIRED",
+        "next_action": {"path": "", "tool": "list"},
+    }
+    assert environment_data["interface_state"]["recovery_state"] == {
+        "action_choices": [{"path": "", "tool": "list"}],
+        "error": "PATH_EVIDENCE_REQUIRED",
+    }
+    assert action(environment_data["interface_state"]["recovery_state"]["action_choices"][0]).startswith(
+        '{"path":'
+    )
+    assert action({"tool": "list", "path": ""}).startswith('{"tool":')
+    assert json.loads(action({"tool": "list", "path": ""})) == environment_data[
+        "interface_state"
+    ]["recovery_state"]["action_choices"][0]
+
+
+def test_multiple_recovery_choices_are_structured_without_fault_or_fix_leakage() -> None:
+    repair_task = task()
+    environment = RepositoryRepairEnvironment(repair_task)
+    listing_action = {"tool": "list", "path": ""}
+    environment.step(action(listing_action))
+    environment.step(action(listing_action))
+
+    prompt = environment.policy_prompt("continuation")
+    opening_tag = prompt.index("<untrusted-environment-data>")
+    environment_data = json.loads(prompt[opening_tag:].splitlines()[1])
+    choices = environment_data["interface_state"]["recovery_state"]["action_choices"]
+    serialized_choices = json.dumps(choices, sort_keys=True)
+
+    assert choices == [
+        {"path": path, "tool": "read"} for path in sorted(repair_task.files)
+    ]
+    assert isinstance(environment_data["transcript"][-1]["observation"], dict)
+    assert all(fault.old not in serialized_choices for fault in repair_task.faults)
+    assert all(fault.new not in serialized_choices for fault in repair_task.faults)
+
+
+def test_non_json_observation_remains_plain_text_in_transcript() -> None:
+    repair_task = task()
+    environment = RepositoryRepairEnvironment(repair_task)
+    environment.step(action({"tool": "list", "path": ""}))
+    path = sorted(repair_task.files)[0]
+    read = environment.step(action({"tool": "read", "path": path}))
+
+    prompt = environment.policy_prompt("continuation")
+    opening_tag = prompt.index("<untrusted-environment-data>")
+    environment_data = json.loads(prompt[opening_tag:].splitlines()[1])
+
+    assert isinstance(read.observation, str)
+    assert environment_data["transcript"][-1]["observation"] == read.observation
 
 
 def test_repeated_accepted_diagnostics_are_rejected_with_unranked_recovery_choices() -> None:
