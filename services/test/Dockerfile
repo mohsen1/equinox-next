@@ -5,6 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/workspace/packages:/workspace
 
 WORKDIR /workspace
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends jq \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY packages packages
