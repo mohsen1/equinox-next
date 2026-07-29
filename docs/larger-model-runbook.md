@@ -14,18 +14,19 @@ revision, profile, and hardware combination may enter the pilot.
 
 The versioned
 [larger-model eligibility profile](../research/studies/larger-model-eligibility.json) is
-the source of truth:
+the source of truth. It pins optimization seed `137` and the SHA-256 digest of every
+larger-model scientific wrapper and interface source used by the screen and pilot:
 
-| Guard | Screen | Pilot |
-| --- | ---: | ---: |
-| GPU | L40, at least 48 GB | L40, at least 48 GB |
-| Maximum hourly cost | $1.00 | $1.00 |
-| Maximum total cost | $0.75 | $4.00 |
-| Model-load timeout | 20 minutes | 20 minutes |
-| No-progress watchdog | 10 minutes | 15 minutes |
-| Paid launcher lifetime | 43 minutes | 238 minutes |
-| Cleanup cost reserve | 120 seconds | 120 seconds |
-| Workload attempts | 1 | 1 |
+| Guard                  |              Screen |               Pilot |
+| ---------------------- | ------------------: | ------------------: |
+| GPU                    | L40, at least 48 GB | L40, at least 48 GB |
+| Maximum hourly cost    |               $1.00 |               $1.00 |
+| Maximum total cost     |               $0.75 |               $4.00 |
+| Model-load timeout     |          20 minutes |          20 minutes |
+| No-progress watchdog   |          10 minutes |          15 minutes |
+| Paid launcher lifetime |          43 minutes |         238 minutes |
+| Cleanup cost reserve   |         120 seconds |         120 seconds |
+| Workload attempts      |                   1 |                   1 |
 
 The paid cost envelope is therefore at most 45 minutes for the screen and 240 minutes for
 the pilot. The 120-second reserve is not training time.
@@ -64,6 +65,7 @@ Use the connection shown by `runpodctl ssh info PREWARM_POD_ID`. On that CPU pod
 
 ```bash
 python3 -m pip install \
+  --no-deps \
   --target /workspace/equinox-state/python \
   accelerate==1.14.0 \
   peft==0.19.1 \
@@ -177,6 +179,10 @@ initialization. It also requires the exact dependency versions from the volume. 
 L40 sets `HF_HUB_OFFLINE=1`,
 `TRANSFORMERS_OFFLINE=1`, and `PIP_NO_INDEX=1`: it never installs packages or downloads
 model weights. Missing or changed artifacts fail immediately.
+
+The six-minute readiness limit is one wall-clock deadline beginning immediately before
+the create request. Pod creation, provider inspection, observer updates, proxy probes,
+retries, and sleeps all consume that same budget.
 
 The screen runs fixed baseline and `K=4` branch probes with no policy mutation. It does
 not access the sealed final-test pack or persist a trained adapter. Its result records:
