@@ -292,6 +292,14 @@ larger_model_screen_workload_revision=""
 larger_model_admission_levels="null"
 larger_model_expected_baseline_examples="null"
 larger_model_expected_branch_groups="null"
+larger_model_screen_fail_fast_reasons='[
+  "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+  "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE",
+  "SOLVED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE",
+  "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE",
+  "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE",
+  "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE"
+]'
 larger_model_localization_telemetry_strategy=""
 larger_model_policy_credit_scope=""
 verified_image_digest=""
@@ -1559,6 +1567,63 @@ larger_model_screen_progress_complete() {
     ' >/dev/null
 }
 
+larger_model_screen_progress_matches_result() {
+  local result="$1"
+  jq -e \
+    --argjson result "$result" \
+    --argjson expected_branch_groups "$larger_model_expected_branch_groups" \
+    --argjson fail_fast_reasons "$larger_model_screen_fail_fast_reasons" \
+    '
+      ($result.eligible | type) == "boolean"
+      and ($result.branch_groups | type) == "number"
+      and ($result.branch_groups | floor) == $result.branch_groups
+      and $result.branch_groups >= 1
+      and $result.branch_groups <= $expected_branch_groups
+      and .branch_groups_completed == $result.branch_groups
+      and .branch_groups_total == $expected_branch_groups
+      and (.branch_snapshots | type) == "array"
+      and (.branch_snapshots | length) == $result.branch_groups
+      and .latest_branch_snapshot == .branch_snapshots[-1]
+      and (
+        $result.branch_groups == $expected_branch_groups
+        or (
+          $result.eligible == false
+          and (
+            $fail_fast_reasons | index($result.early_stop_reason)
+          ) != null
+          and (
+            (
+              $result.early_stop_reason
+              == "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
+              and $result.gate_results.branch_checkpoint_rate == false
+            )
+            or (
+              $result.early_stop_reason
+              == "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"
+              and $result.gate_results.informative_group_rate == false
+            )
+            or (
+              (
+                $result.early_stop_reason
+                == "SOLVED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                or $result.early_stop_reason
+                == "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                or $result.early_stop_reason
+                == "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE"
+              )
+              and $result.gate_results.solved_sibling_rate == false
+            )
+            or (
+              $result.early_stop_reason
+              == "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE"
+              and $result.gate_results.action_protocol_validity == false
+            )
+          )
+        )
+      )
+    ' >/dev/null
+}
+
 reconcile_pod_id_by_name() {
   local pods
   local matches
@@ -2186,12 +2251,6 @@ if [[ "$exit_code" != "0" ]]; then
     tail -40 >&2 || true
   exit 1
 fi
-if [[ "$larger_model_mode" == "screen" ]] &&
-  [[ "$terminal_progress_complete" != true ]]; then
-  failure_message="The completed eligibility screen did not expose its full terminal branch tree."
-  echo "The eligibility screen exited without exact cumulative terminal branch progress." >&2
-  exit 1
-fi
 metrics="$(
   curl --fail --silent --show-error --max-time 60 \
     -H "$remote_authorization" "$proxy_root/result.json"
@@ -2200,6 +2259,12 @@ if [[ -z "$metrics" ]] ||
   ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
   failure_message="The remote workload result was missing or invalid."
   echo "The remote workload did not return a valid metrics object." >&2
+  exit 1
+fi
+if [[ "$larger_model_mode" == "screen" ]] &&
+  ! larger_model_screen_progress_matches_result "$metrics" <<<"$last_progress"; then
+  failure_message="The completed eligibility screen result did not match its cumulative terminal branch progress."
+  echo "The eligibility result and authenticated terminal branch progress did not match." >&2
   exit 1
 fi
 result_path="$receipt_directory/$proof_id.result.json"
@@ -2278,7 +2343,48 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     and .test_split_accessed == false
     and .test_examples_accessed == 0
     and .branch_width == 4
-    and .branch_groups == $expected_branch_groups
+    and (
+      .branch_groups == $expected_branch_groups
+      or (
+        .eligible == false
+        and (.branch_groups | type) == "number"
+        and (.branch_groups | floor) == .branch_groups
+        and .branch_groups >= 1
+        and .branch_groups < $expected_branch_groups
+        and (
+          .early_stop_reason as $early_stop_reason
+          | $screen_fail_fast_reasons | index($early_stop_reason)
+        ) != null
+        and (
+          (
+            .early_stop_reason
+            == "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
+            and .gate_results.branch_checkpoint_rate == false
+          )
+          or (
+            .early_stop_reason
+            == "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"
+            and .gate_results.informative_group_rate == false
+          )
+          or (
+            (
+              .early_stop_reason
+              == "SOLVED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+              or .early_stop_reason
+              == "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+              or .early_stop_reason
+              == "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE"
+            )
+            and .gate_results.solved_sibling_rate == false
+          )
+          or (
+            .early_stop_reason
+            == "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE"
+            and .gate_results.action_protocol_validity == false
+          )
+        )
+      )
+    )
     and .maximum_input_tokens == 2048
     and .capacity_smoke_sequence_tokens == 2240
     and .gpu_id == "NVIDIA H100 80GB HBM3"
@@ -2769,6 +2875,7 @@ if ! jq -e \
   --argjson expected_admission_levels "$larger_model_admission_levels" \
   --argjson expected_baseline_examples "$larger_model_expected_baseline_examples" \
   --argjson expected_branch_groups "$larger_model_expected_branch_groups" \
+  --argjson screen_fail_fast_reasons "$larger_model_screen_fail_fast_reasons" \
   --argjson expected_branch_width "$expected_branch_width" \
   --argjson expected_optimization_seed "$optimization_seed" \
   --argjson expected_validation_seed_base "${study_validation_seed_base:-null}" \

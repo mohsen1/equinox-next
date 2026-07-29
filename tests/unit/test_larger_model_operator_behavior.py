@@ -22,6 +22,14 @@ VOLUME_ID = "network-volume-123"
 DATA_CENTER_ID = "EU-RO-1"
 IMAGE_TAG = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
 IMAGE_DIGEST = "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851"
+SCREEN_FAIL_FAST_REASONS = [
+    "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "SOLVED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE",
+]
 
 
 def _write_executable(path: Path, source: str) -> None:
@@ -176,6 +184,10 @@ elif transport and url.endswith("/exit_code"):
     response = sequenced_response("exit_code_responses", "/exit_code", "1")
     if response is not None:
         print(response)
+elif transport and url.endswith("/result.json"):
+    response = sequenced_response("result_responses", "/result.json", None)
+    if response is not None:
+        print(json.dumps(response, separators=(",", ":")))
 elif url.startswith("http://operator-test.invalid/internal/"):
     if arguments[arguments.index("--data-binary") + 1] == "@-":
         payload = sys.stdin.read()
@@ -874,6 +886,76 @@ def test_exit_visibility_cannot_drop_the_final_remote_progress(tmp_path: Path) -
     assert terminal_tree_payloads[0]["progress"]["latest_branch_snapshot"] == branch_snapshots[-1]
 
 
+def test_successful_screen_exit_fetches_result_before_terminal_tree_decision(
+    tmp_path: Path,
+) -> None:
+    branch_snapshots = [
+        {
+            "snapshot_id": f"screen-branch-{index}",
+            "update": index + 1,
+            "level": 0,
+            "siblings": [{"index": sibling, "steps": []} for sibling in range(4)],
+        }
+        for index in range(7)
+    ]
+    progress = {
+        "phase": "eligibility_branch_collection",
+        "branch_groups_completed": 7,
+        "branch_groups_total": 8,
+        "branch_snapshots": branch_snapshots,
+        "latest_branch_snapshot": branch_snapshots[-1],
+    }
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "transport": "accept",
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+            ],
+            "progress_responses": [progress],
+            "exit_code_responses": ["0"],
+            "result_responses": [
+                {
+                    "eligible": False,
+                    "branch_groups": 6,
+                    "early_stop_reason": ("INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"),
+                    "gate_results": {"informative_group_rate": False},
+                }
+            ],
+        },
+    )
+
+    assert result.returncode != 0
+    assert (
+        "eligibility result and authenticated terminal branch progress did not match"
+        in result.stderr
+    )
+    exit_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:1] == ["curl"]
+        and any(argument.endswith("/exit_code") for argument in command[1:])
+    ]
+    result_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:1] == ["curl"]
+        and any(argument.endswith("/result.json") for argument in command[1:])
+    ]
+    delete_indexes = [
+        index for index, command in enumerate(commands) if command[:2] == ["pod", "delete"]
+    ]
+    assert len(exit_indexes) == 1
+    assert len(result_indexes) == 1
+    assert exit_indexes[0] < result_indexes[0] < min(delete_indexes)
+    result_request = commands[result_indexes[0]]
+    assert any(argument.startswith("Authorization: Bearer ") for argument in result_request)
+
+
 @pytest.mark.parametrize(
     ("branch_groups_completed", "branch_snapshot_count", "expected_complete"),
     [
@@ -916,9 +998,88 @@ JSON
     )
 
     assert (result.returncode == 0) is expected_complete
-    assert '[[ "$terminal_progress_complete" != true ]]' in source, (
-        "successful screens must fail closed when terminal progress is incomplete"
+    assert 'larger_model_screen_progress_matches_result "$metrics" <<<"$last_progress"' in source, (
+        "screen results must fail closed when terminal progress disagrees"
     )
+
+
+@pytest.mark.parametrize(
+    ("eligible", "result_groups", "progress_groups", "reason", "expected_match"),
+    [
+        (True, 8, 8, None, True),
+        (
+            False,
+            7,
+            7,
+            "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            True,
+        ),
+        (
+            True,
+            7,
+            7,
+            "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            False,
+        ),
+        (False, 7, 7, "screen_collection_deadline", False),
+        (
+            False,
+            7,
+            6,
+            "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            False,
+        ),
+    ],
+    ids=(
+        "eligible-exact-budget",
+        "ineligible-whitelisted-fail-fast",
+        "eligible-cannot-stop-short",
+        "ineligible-non-mathematical-stop",
+        "result-progress-count-mismatch",
+    ),
+)
+def test_terminal_screen_progress_matches_only_exact_or_whitelisted_fail_fast_results(
+    eligible: bool,
+    result_groups: int,
+    progress_groups: int,
+    reason: str | None,
+    expected_match: bool,
+) -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    helper = _shell_function(source, "larger_model_screen_progress_matches_result")
+    snapshots = [{"snapshot_id": f"screen-branch-{index}"} for index in range(progress_groups)]
+    progress = {
+        "branch_groups_completed": progress_groups,
+        "branch_groups_total": 8,
+        "branch_snapshots": snapshots,
+        "latest_branch_snapshot": snapshots[-1] if snapshots else None,
+    }
+    screen_result = {
+        "eligible": eligible,
+        "branch_groups": result_groups,
+        "early_stop_reason": reason,
+        "gate_results": {"informative_group_rate": False},
+    }
+    harness = f"""set -euo pipefail
+larger_model_expected_branch_groups=8
+larger_model_screen_fail_fast_reasons='{json.dumps(SCREEN_FAIL_FAST_REASONS)}'
+{helper}
+screen_result='{json.dumps(screen_result, separators=(",", ":"))}'
+larger_model_screen_progress_matches_result "$screen_result" <<'JSON'
+{json.dumps(progress, separators=(",", ":"))}
+JSON
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert (result.returncode == 0) is expected_match
 
 
 def test_rejected_bundle_upload_deletes_the_exact_pod_without_retry(

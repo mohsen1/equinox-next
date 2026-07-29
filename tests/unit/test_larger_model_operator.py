@@ -13,6 +13,14 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = REPOSITORY_ROOT / "scripts/runpod-rl-proof"
 SCREEN = REPOSITORY_ROOT / "scripts/screen-larger-model"
 PILOT = REPOSITORY_ROOT / "scripts/run-larger-model-pilot"
+SCREEN_FAIL_FAST_REASONS = [
+    "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "SOLVED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE",
+]
 
 
 def screen_proof_assertion() -> str:
@@ -74,6 +82,9 @@ def run_screen_proof_assertion(payload: dict[str, object]) -> subprocess.Complet
             "--argjson",
             "expected_branch_groups",
             str(manifest["screen"]["branch_groups"]),
+            "--argjson",
+            "screen_fail_fast_reasons",
+            json.dumps(SCREEN_FAIL_FAST_REASONS),
             screen_proof_assertion(),
         ],
         input=json.dumps(payload),
@@ -313,6 +324,31 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
     }
 
     assert run_screen_proof_assertion(payload).returncode == 0
+
+    fail_fast_payload = json.loads(json.dumps(payload))
+    fail_fast_gates = {
+        gate_name: True for gate_name in manifest["authorization"]["required_gate_results"]
+    }
+    fail_fast_gates["informative_group_rate"] = False
+    fail_fast_payload.update(
+        {
+            "branch_groups": 7,
+            "early_stop_reason": ("INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"),
+            "informative_groups": 0,
+            "informative_group_rate": 0.0,
+            "gate_results": fail_fast_gates,
+            "ineligibility_reasons": ["informative_group_rate"],
+            "ineligible_reasons": ["informative_group_rate"],
+        }
+    )
+    assert run_screen_proof_assertion(fail_fast_payload).returncode == 0
+
+    fail_fast_payload["eligible"] = True
+    assert run_screen_proof_assertion(fail_fast_payload).returncode != 0
+    fail_fast_payload["eligible"] = False
+    fail_fast_payload["early_stop_reason"] = "screen_collection_deadline"
+    assert run_screen_proof_assertion(fail_fast_payload).returncode != 0
+
     payload["ineligibility_reasons"] = ["pilot_runtime_feasible"]
     payload["ineligible_reasons"] = ["pilot_runtime_feasible"]
     assert run_screen_proof_assertion(payload).returncode != 0
