@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import json
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -136,6 +137,12 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
     assert result["environment_revision"] == manifest["interface"]["environment_revision"]
     assert result["action_protocol_revision"] == manifest["interface"]["action_protocol_revision"]
+    assert result["action_counts_by_tool"] == {}
+    assert result["accepted_action_counts_by_tool"] == {}
+    assert result["rejected_action_counts_by_tool"] == {}
+    assert result["rejection_reason_counts"] == {}
+    assert result["repeated_rejected_pair_counts_by_tool"] == {}
+    assert result["terminal_reason_counts"] == {}
     assert result["pinned_snapshot_digest"] == gate.expected_snapshot_digest(manifest)
     assert result["baseline_runtime_seconds"] == 100.0
     assert result["predicted_final_evaluation_seconds"] == 450.0
@@ -209,6 +216,127 @@ def test_protocol_gate_keeps_repeated_semantic_rejection_loops_as_telemetry() ->
     assert result["repeated_rejected_loop_count"] == 1
     assert result["gate_results"]["action_protocol_validity"] is True
     assert result["eligible"] is True
+
+
+def test_action_diagnostics_are_bounded_aggregate_counts_without_task_data() -> None:
+    evidence = passing_evidence()
+    secret_path = "src/private_fault.py"
+    secret_content = "return secret_fix"
+    invalid = SimpleNamespace(
+        tool=None,
+        action=None,
+        accepted=False,
+        observation="Invalid action. Return exactly one allowed JSON object.",
+        terminal=False,
+        terminal_reason=None,
+    )
+    rejected_list = SimpleNamespace(
+        tool="list",
+        action={"tool": "list", "path": secret_path},
+        accepted=False,
+        observation=json.dumps(
+            {
+                "error": "PATH_EVIDENCE_REQUIRED",
+                "detail": secret_content,
+            }
+        ),
+        terminal=False,
+        terminal_reason=None,
+    )
+    unknown_structured = SimpleNamespace(
+        tool="edit",
+        action={
+            "tool": "edit",
+            "path": secret_path,
+            "old": secret_content,
+            "new": "fixed",
+        },
+        accepted=False,
+        observation=json.dumps({"error": secret_content}),
+        terminal=False,
+        terminal_reason=None,
+    )
+    unknown_plain = SimpleNamespace(
+        tool="search",
+        action={"tool": "search", "query": secret_content},
+        accepted=False,
+        observation=secret_content,
+        terminal=False,
+        terminal_reason=None,
+    )
+    solved = SimpleNamespace(
+        tool="finish",
+        action={"tool": "finish"},
+        accepted=True,
+        observation="{}",
+        terminal=True,
+        terminal_reason="solved",
+    )
+
+    previous = None
+    for result in (
+        invalid,
+        invalid,
+        rejected_list,
+        rejected_list,
+        unknown_structured,
+        unknown_plain,
+        solved,
+    ):
+        eligibility._record_action_telemetry(evidence, result, previous)
+        previous = result
+
+    result = eligibility.build_screen_result(evidence, gate.load_manifest())
+    telemetry = {
+        key: result[key]
+        for key in (
+            "action_counts_by_tool",
+            "accepted_action_counts_by_tool",
+            "rejected_action_counts_by_tool",
+            "rejection_reason_counts",
+            "repeated_rejected_pair_counts_by_tool",
+            "terminal_reason_counts",
+        )
+    }
+
+    assert telemetry == {
+        "action_counts_by_tool": {
+            "edit": 1,
+            "finish": 1,
+            "invalid": 2,
+            "list": 2,
+            "search": 1,
+        },
+        "accepted_action_counts_by_tool": {"finish": 1},
+        "rejected_action_counts_by_tool": {
+            "edit": 1,
+            "invalid": 2,
+            "list": 2,
+            "search": 1,
+        },
+        "rejection_reason_counts": {
+            "INVALID_ACTION": 2,
+            "OTHER_REJECTION": 1,
+            "OTHER_STRUCTURED_ERROR": 1,
+            "PATH_EVIDENCE_REQUIRED": 2,
+        },
+        "repeated_rejected_pair_counts_by_tool": {
+            "invalid": 1,
+            "list": 1,
+        },
+        "terminal_reason_counts": {"solved": 1},
+    }
+    serialized = json.dumps(telemetry, sort_keys=True)
+    assert secret_path not in serialized
+    assert secret_content not in serialized
+
+
+def test_action_diagnostics_reject_unbounded_keys_at_result_boundary() -> None:
+    evidence = passing_evidence()
+    evidence.rejection_reason_counts = {"task-content-as-key": 1}
+
+    with pytest.raises(RuntimeError, match="unbounded key"):
+        eligibility.build_screen_result(evidence, gate.load_manifest())
 
 
 def test_runtime_gate_is_derived_from_capacity_and_baseline_timestamps() -> None:
@@ -667,6 +795,10 @@ def test_runtime_hooks_install_l0_root_checkpoint_v32_k4_screen_and_isolate_test
         read_result = environment.step(f'{{"tool":"read","path":"{fault_path}"}}')
         assert read_result.accepted is True
         assert eligibility.all_fault_sources_observed(tasks[0], environment) is True
+        assert evidence.action_counts_by_tool == {"list": 1, "read": 1}
+        assert evidence.accepted_action_counts_by_tool == {"list": 1, "read": 1}
+        assert evidence.rejected_action_counts_by_tool == {}
+        assert evidence.rejection_reason_counts == {}
         environment.terminal = True
         assert eligibility.frozen.branch_checkpoint_reached(tasks[0], environment) is False
         with pytest.raises(RuntimeError, match="test split"):

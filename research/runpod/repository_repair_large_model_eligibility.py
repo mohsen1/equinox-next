@@ -44,6 +44,56 @@ ROOT_CHECKPOINT_PHASE_INSTRUCTION = (
     "after that root listing is accepted; localization and repair happen independently "
     "inside each sibling."
 )
+ACTION_TELEMETRY_TOOLS = frozenset(frozen_environment.ACTION_KEYS) | {"invalid"}
+REJECTION_REASON_CODES = frozenset(
+    {
+        "EDIT_REJECTED",
+        "EDIT_TARGET_AMBIGUOUS",
+        "EDIT_TARGET_MISMATCH",
+        "EDIT_TARGET_NOT_FOUND",
+        "FILE_NOT_FOUND_OR_PATH_REJECTED",
+        "FRESH_READ_REQUIRED",
+        "INVALID_ACTION",
+        "NO_FILES_FOUND",
+        "NO_PROGRESS_REPEAT",
+        "OTHER_REJECTION",
+        "OTHER_STRUCTURED_ERROR",
+        "PATH_EVIDENCE_REQUIRED",
+        "PATH_NOT_OBSERVED",
+        "PATH_NOT_OBSERVED_OR_NOT_FOUND",
+        "SEARCH_QUERY_REJECTED",
+        "TOOL_NOT_ALLOWED",
+        "UNSAFE_PATH",
+    }
+)
+STRUCTURED_REJECTION_REASON_CODES = frozenset(
+    {
+        "EDIT_TARGET_AMBIGUOUS",
+        "EDIT_TARGET_NOT_FOUND",
+        "FRESH_READ_REQUIRED",
+        "NO_PROGRESS_REPEAT",
+        "PATH_EVIDENCE_REQUIRED",
+        "PATH_NOT_OBSERVED",
+        "PATH_NOT_OBSERVED_OR_NOT_FOUND",
+    }
+)
+PLAIN_REJECTION_REASONS = {
+    "Edit rejected.": "EDIT_REJECTED",
+    "Edit rejected: old text must match exactly once.": "EDIT_TARGET_MISMATCH",
+    "File not found or path rejected.": "FILE_NOT_FOUND_OR_PATH_REJECTED",
+    "Invalid action. Return exactly one allowed JSON object.": "INVALID_ACTION",
+    "No files found.": "NO_FILES_FOUND",
+    "Rejected unsafe path.": "UNSAFE_PATH",
+    "Search query rejected.": "SEARCH_QUERY_REJECTED",
+}
+TERMINAL_REASON_CODES = frozenset(
+    {
+        "finished_with_failures",
+        "horizon_exhausted",
+        "other",
+        "solved",
+    }
+)
 
 
 class EligibilityScreenComplete(BaseException):
@@ -74,6 +124,12 @@ class ScreenEvidence:
     accepted_actions: int = 0
     schema_valid_actions: int = 0
     repeated_rejected_loop_count: int = 0
+    action_counts_by_tool: dict[str, int] = field(default_factory=dict)
+    accepted_action_counts_by_tool: dict[str, int] = field(default_factory=dict)
+    rejected_action_counts_by_tool: dict[str, int] = field(default_factory=dict)
+    rejection_reason_counts: dict[str, int] = field(default_factory=dict)
+    repeated_rejected_pair_counts_by_tool: dict[str, int] = field(default_factory=dict)
+    terminal_reason_counts: dict[str, int] = field(default_factory=dict)
     optimizer_step_calls: int = 0
     restored_parameter_tensors: int = 0
     policy_mutation_detected: bool = False
@@ -117,6 +173,88 @@ def _maximum_successes(rate: float, total: int) -> int:
     return math.floor(rate * total)
 
 
+def _increment_count(counts: dict[str, int], key: str) -> None:
+    counts[key] = counts.get(key, 0) + 1
+
+
+def _telemetry_tool(result: Any) -> str:
+    tool = result.tool
+    if tool is None:
+        return "invalid"
+    if tool not in ACTION_TELEMETRY_TOOLS:
+        raise RuntimeError("eligibility telemetry observed an unknown action tool")
+    return str(tool)
+
+
+def _rejection_reason(result: Any) -> str:
+    """Reduce a rejected observation to a bounded non-content reason code."""
+
+    if result.action is None:
+        return "INVALID_ACTION"
+    try:
+        observation = json.loads(result.observation)
+    except (TypeError, json.JSONDecodeError):
+        observation = None
+    if isinstance(observation, dict) and isinstance(observation.get("error"), str):
+        error = str(observation["error"])
+        return error if error in STRUCTURED_REJECTION_REASON_CODES else "OTHER_STRUCTURED_ERROR"
+    if result.observation in PLAIN_REJECTION_REASONS:
+        return PLAIN_REJECTION_REASONS[result.observation]
+    if (
+        isinstance(result.observation, str)
+        and result.observation.startswith("Action ")
+        and result.observation.endswith(" is not allowed in this trajectory phase.")
+    ):
+        return "TOOL_NOT_ALLOWED"
+    return "OTHER_REJECTION"
+
+
+def _terminal_reason(result: Any) -> str:
+    reason = result.terminal_reason
+    return str(reason) if reason in TERMINAL_REASON_CODES else "other"
+
+
+def _record_action_telemetry(
+    evidence: ScreenEvidence,
+    result: Any,
+    previous: Any | None,
+) -> None:
+    """Record bounded aggregate behavior without retaining policy or task data."""
+
+    tool = _telemetry_tool(result)
+    _increment_count(evidence.action_counts_by_tool, tool)
+    if result.accepted:
+        _increment_count(evidence.accepted_action_counts_by_tool, tool)
+    else:
+        _increment_count(evidence.rejected_action_counts_by_tool, tool)
+        _increment_count(evidence.rejection_reason_counts, _rejection_reason(result))
+
+    if (
+        previous is not None
+        and not previous.accepted
+        and not result.accepted
+        and previous.action == result.action
+    ):
+        evidence.repeated_rejected_loop_count += 1
+        _increment_count(evidence.repeated_rejected_pair_counts_by_tool, tool)
+
+    if result.terminal:
+        _increment_count(evidence.terminal_reason_counts, _terminal_reason(result))
+
+
+def _validated_telemetry_counts(
+    counts: dict[str, int],
+    *,
+    allowed_keys: frozenset[str],
+    name: str,
+) -> dict[str, int]:
+    if not set(counts).issubset(allowed_keys):
+        raise RuntimeError(f"eligibility {name} contains an unbounded key")
+    if any(type(value) is not int or value < 0 for value in counts.values()):
+        raise RuntimeError(f"eligibility {name} contains an invalid count")
+    return {key: counts[key] for key in sorted(counts) if counts[key]}
+
+
 def repository_root_observed(prefix: Any) -> bool:
     """Return whether an accepted action exposed the repository root."""
 
@@ -148,8 +286,7 @@ def _localized_sibling_count(collection: Any) -> int:
     if collection.snapshot is None or collection.exclusion_reason is not None:
         return 0
     return sum(
-        all_fault_sources_observed(collection.task, sibling)
-        for sibling in collection.siblings
+        all_fault_sources_observed(collection.task, sibling) for sibling in collection.siblings
     )
 
 
@@ -396,9 +533,7 @@ def _baseline_counts(evidence: ScreenEvidence) -> dict[str, dict[str, int]]:
         counts[level]["examples"] += 1
         counts[level]["checkpoints"] += int(outcome.checkpoint_reached)
         counts[level]["solved"] += int(outcome.solved)
-        counts[level]["all_fault_sources_observed"] += int(
-            outcome.all_fault_sources_observed
-        )
+        counts[level]["all_fault_sources_observed"] += int(outcome.all_fault_sources_observed)
     return counts
 
 
@@ -750,6 +885,36 @@ def build_screen_result(
         "semantic_acceptance_rate": semantic_acceptance_rate,
         "accepted_action_rate": semantic_acceptance_rate,
         "repeated_rejected_loop_count": evidence.repeated_rejected_loop_count,
+        "action_counts_by_tool": _validated_telemetry_counts(
+            evidence.action_counts_by_tool,
+            allowed_keys=ACTION_TELEMETRY_TOOLS,
+            name="action counts by tool",
+        ),
+        "accepted_action_counts_by_tool": _validated_telemetry_counts(
+            evidence.accepted_action_counts_by_tool,
+            allowed_keys=ACTION_TELEMETRY_TOOLS,
+            name="accepted action counts by tool",
+        ),
+        "rejected_action_counts_by_tool": _validated_telemetry_counts(
+            evidence.rejected_action_counts_by_tool,
+            allowed_keys=ACTION_TELEMETRY_TOOLS,
+            name="rejected action counts by tool",
+        ),
+        "rejection_reason_counts": _validated_telemetry_counts(
+            evidence.rejection_reason_counts,
+            allowed_keys=REJECTION_REASON_CODES,
+            name="rejection reason counts",
+        ),
+        "repeated_rejected_pair_counts_by_tool": _validated_telemetry_counts(
+            evidence.repeated_rejected_pair_counts_by_tool,
+            allowed_keys=ACTION_TELEMETRY_TOOLS,
+            name="repeated rejected pair counts by tool",
+        ),
+        "terminal_reason_counts": _validated_telemetry_counts(
+            evidence.terminal_reason_counts,
+            allowed_keys=TERMINAL_REASON_CODES,
+            name="terminal reason counts",
+        ),
         "checkpoint_admission_rate": branch_checkpoint_rate,
         "branch_checkpoint_rate": branch_checkpoint_rate,
         "all_fault_sources_observed_branch_groups": localized_branch_groups,
@@ -843,10 +1008,7 @@ def install_environment_hooks(
     screen = manifest["screen"]
     if screen["admission_levels"] != [0]:
         raise RuntimeError("larger-model eligibility must screen only the entry level")
-    if (
-        screen["shared_prefix_checkpoint_strategy"]
-        != SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY
-    ):
+    if screen["shared_prefix_checkpoint_strategy"] != SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY:
         raise RuntimeError("larger-model eligibility checkpoint strategy drifted")
     if screen["localization_telemetry_strategy"] != "all_fault_sources_observed":
         raise RuntimeError("larger-model eligibility localization telemetry drifted")
@@ -897,14 +1059,8 @@ def install_environment_hooks(
             evidence.total_actions += 1
             evidence.accepted_actions += int(result.accepted)
             evidence.schema_valid_actions += int(result.action is not None)
-            if len(self.steps) >= 2:
-                previous = self.steps[-2]
-                if (
-                    not previous.accepted
-                    and not result.accepted
-                    and previous.action == result.action
-                ):
-                    evidence.repeated_rejected_loop_count += 1
+            previous = self.steps[-2] if len(self.steps) >= 2 else None
+            _record_action_telemetry(evidence, result, previous)
             if all_fault_sources_observed(self.task, self):
                 evidence.all_fault_source_task_ids.add(str(self.task.task_id))
             return result
