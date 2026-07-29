@@ -39,9 +39,14 @@ function largerModelEligibilityExecution(eligible: boolean) {
       model_revision: "c03e6d358207e414f1eca0bb1891e29f1db0e242",
       checkpoint_admission_rate: 0.875,
       informative_group_rate: 0.25,
-      peak_cuda_memory_bytes: 19_750_000_000,
-      policy_mutation_verified: true,
+      peak_reserved_vram_fraction: 0.411,
+      policy_mutation_detected: false,
       policy_mutation_enabled: false,
+      gate_results: {
+        policy_unchanged: true,
+        optimizer_state_restored: true,
+        test_split_isolated: true,
+      },
       elapsed_seconds: 521,
     },
     proof_id: null,
@@ -335,7 +340,7 @@ describe("Runs and Proofs workspaces", () => {
         "Informative branching25.0%",
       );
       expect(eligibilitySection?.textContent).toContain(
-        "Peak GPU memory19.8 GB",
+        "Peak GPU memory41.1% reserved",
       );
       expect(eligibilitySection?.textContent).toContain(
         "Policy mutationNone · verified",

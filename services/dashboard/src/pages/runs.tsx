@@ -38,8 +38,10 @@ import type {
 } from "../types";
 import { ResearchRunTabs } from "./research-trajectory";
 
-const LARGER_MODEL_ELIGIBILITY_WORKLOAD =
-  "repository-repair-larger-model-eligibility";
+const LARGER_MODEL_ELIGIBILITY_WORKLOADS = new Set([
+  "repository-repair-larger-model-eligibility",
+  "repository-repair-larger-model-eligibility-screen",
+]);
 
 export function RunsPage() {
   const runs = useApi<RunsResponse>("/v1/runs", 2_000, decodeRunsResponse);
@@ -153,7 +155,9 @@ export function ResearchRunPage() {
   const claimStrength = stringValue(run?.progress.claim_strength);
   const attempt = numberValue(run?.progress.attempt);
   const isEligibilityScreen =
-    run?.workload_id === LARGER_MODEL_ELIGIBILITY_WORKLOAD;
+    run !== null &&
+    run !== undefined &&
+    LARGER_MODEL_ELIGIBILITY_WORKLOADS.has(run.workload_id);
   const eligibility = run ? largerModelEligibility(run) : null;
   const stages = run
     ? observerStages(
@@ -352,11 +356,17 @@ function largerModelEligibility(run: ResearchComputeExecution) {
       value("peak_reserved_vram_bytes"),
     ),
   );
+  const peakReservedVramFraction = firstNumber(
+    value("peak_reserved_vram_fraction"),
+  );
+  const gateResults = recordValue(value("gate_results"));
+  const mutationDetected = firstBoolean(value("policy_mutation_detected"));
   const mutationVerified = firstBoolean(
     value("policy_mutation_verified"),
     value("no_policy_mutation_verified"),
     value("policy_parameters_unchanged"),
     value("policy_unchanged"),
+    gateResults?.policy_unchanged,
   );
   const mutationEnabled = firstBoolean(value("policy_mutation_enabled"));
 
@@ -383,20 +393,26 @@ function largerModelEligibility(run: ResearchComputeExecution) {
       {
         label: "Peak GPU memory",
         value:
-          peakGpuMemoryGb === null
-            ? "Awaiting model load"
-            : `${formatDecimal(peakGpuMemoryGb)} GB`,
+          peakReservedVramFraction !== null
+            ? `${percent(peakReservedVramFraction)} reserved`
+            : peakGpuMemoryGb === null
+              ? "Awaiting model load"
+              : `${formatDecimal(peakGpuMemoryGb)} GB`,
       },
       {
         label: "Policy mutation",
         value:
-          mutationVerified === true
+          mutationDetected === false && mutationVerified === true
             ? "None · verified"
-            : mutationVerified === false || mutationEnabled === true
+            : mutationDetected === true ||
+                mutationVerified === false ||
+                mutationEnabled === true
               ? "Detected"
-              : mutationEnabled === false
-                ? "Disabled · verification pending"
-                : "Verification pending",
+              : mutationDetected === false
+                ? "None · verification pending"
+                : mutationEnabled === false
+                  ? "Disabled · verification pending"
+                  : "Verification pending",
       },
     ],
   };

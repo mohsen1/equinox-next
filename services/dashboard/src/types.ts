@@ -134,11 +134,14 @@ export interface ResearchComputeExecution {
     peak_cuda_memory_bytes?: number;
     peak_reserved_vram_gb?: number;
     peak_reserved_vram_bytes?: number;
+    peak_reserved_vram_fraction?: number;
+    policy_mutation_detected?: boolean;
     policy_mutation_verified?: boolean;
     no_policy_mutation_verified?: boolean;
     policy_parameters_unchanged?: boolean;
     policy_unchanged?: boolean;
     policy_mutation_enabled?: boolean;
+    gate_results?: Record<string, boolean>;
     [key: string]: unknown;
   };
   proof_id: string | null;
