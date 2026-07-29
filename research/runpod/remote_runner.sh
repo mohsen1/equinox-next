@@ -157,6 +157,29 @@ payload = {
     "attempt": int(attempt),
     "error": error_code or None,
 }
+bundle_digest = os.environ.get("EQUINOX_BUNDLE_SHA256", "")
+if bundle_digest:
+    try:
+        bundle_size_bytes = int(os.environ["EQUINOX_BUNDLE_SIZE_BYTES"])
+    except (KeyError, ValueError):
+        bundle_size_bytes = None
+    payload.update(
+        {
+            "bundle_handoff_revision": os.environ.get(
+                "EQUINOX_BUNDLE_HANDOFF_REVISION"
+            ),
+            "workload_bundle_digest": bundle_digest,
+            "workload_bundle_size_bytes": bundle_size_bytes,
+            "workload_bundle_path": os.environ.get("EQUINOX_BUNDLE_VOLUME_PATH"),
+            "bundle_stage_receipt_digest": os.environ.get(
+                "EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256"
+            ),
+            "bootstrap_source_digest": os.environ.get(
+                "EQUINOX_BOOTSTRAP_SOURCE_SHA256"
+            ),
+            "network_volume_id": os.environ.get("EQUINOX_RUNPOD_NETWORK_VOLUME_ID"),
+        }
+    )
 if preserve_context == "true" and os.path.isfile(live_path):
     try:
         with open(live_path, encoding="utf-8") as handle:

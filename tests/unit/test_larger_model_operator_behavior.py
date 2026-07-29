@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import io
 import json
 import os
 import subprocess
-import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from research.runpod.bootstrap_server import expected_bundle_files
 from research.runpod.larger_model_gate import (
     canonical_json,
     expected_snapshot_digest,
     load_manifest,
+)
+from research.runpod.workload_bundle import (
+    build_larger_model_bundle,
+    stage_bundle_on_mounted_volume,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -159,6 +159,32 @@ url = next(
     arguments[-1],
 )
 
+def handoff_attestation():
+    with open(os.environ["FAKE_RUNPOD_LOG"], encoding="utf-8") as handle:
+        creates = [
+            entry
+            for line in handle
+            if (entry := json.loads(line))[0:2] == ["pod", "create"]
+            and entry != ["pod", "create", "--help"]
+        ]
+    if not creates:
+        return {}
+    create = creates[-1]
+    environment = json.loads(create[create.index("--env") + 1])
+    return {
+        "bundle_handoff_revision": environment.get("EQUINOX_BUNDLE_HANDOFF_REVISION"),
+        "workload_bundle_digest": environment.get("EQUINOX_BUNDLE_SHA256"),
+        "workload_bundle_size_bytes": int(
+            environment.get("EQUINOX_BUNDLE_SIZE_BYTES", "0")
+        ),
+        "workload_bundle_path": environment.get("EQUINOX_BUNDLE_VOLUME_PATH"),
+        "bundle_stage_receipt_digest": environment.get(
+            "EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256"
+        ),
+        "bootstrap_source_digest": environment.get("EQUINOX_BOOTSTRAP_SOURCE_SHA256"),
+        "network_volume_id": "network-volume-123",
+    }
+
 def sequenced_response(key, suffix, default):
     responses = scenario.get(key)
     if responses is None:
@@ -193,7 +219,7 @@ elif transport and url.endswith("/progress.json"):
         {"phase": "running"},
     )
     if response is not None:
-        print(json.dumps(response, separators=(",", ":")))
+        print(json.dumps({**handoff_attestation(), **response}, separators=(",", ":")))
 elif transport and url.endswith("/exit_code"):
     response = sequenced_response("exit_code_responses", "/exit_code", "1")
     if response is not None:
@@ -307,6 +333,18 @@ def _preflight_environment(
             environment.pop(key)
     receipt = tmp_path / "volume-receipt.json"
     _write_volume_receipt(receipt)
+    manifest = load_manifest()
+    bundle, _ = build_larger_model_bundle(REPOSITORY_ROOT, manifest)
+    stage_receipt = stage_bundle_on_mounted_volume(
+        bundle,
+        manifest,
+        mount_root=tmp_path / "mounted-volume",
+        volume_id=VOLUME_ID,
+        data_center_id=DATA_CENTER_ID,
+        volume_size_gb=50,
+    )
+    stage_receipt_path = tmp_path / "bundle-stage-receipt.json"
+    stage_receipt_path.write_bytes(canonical_json(stage_receipt) + b"\n")
     environment.update(
         {
             "PATH": f"{binary_directory}{os.pathsep}{environment['PATH']}",
@@ -317,6 +355,7 @@ def _preflight_environment(
             "EQUINOX_API_ROOT": "http://operator-test.invalid",
             "EQUINOX_DASHBOARD_ROOT": "http://dashboard-test.invalid",
             "EQUINOX_LARGER_MODEL_MODE": "screen",
+            "EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT": str(stage_receipt_path),
             "EQUINOX_LARGER_MODEL_VOLUME_RECEIPT": str(receipt),
             "EQUINOX_RUNPOD_OPERATOR_STATE_DIR": str(tmp_path / "operator-state"),
             "EQUINOX_RUNPOD_PREFLIGHT_ONLY": "1",
@@ -356,6 +395,8 @@ def _run_preflight(
     scenario: dict[str, object] | None = None,
     missing_volume: bool = False,
     missing_receipt: bool = False,
+    missing_stage_receipt: bool = False,
+    mismatched_stage_receipt: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
     binary_directory, command_log = _install_fake_commands(tmp_path)
     environment = _preflight_environment(
@@ -368,6 +409,21 @@ def _run_preflight(
         environment.pop("EQUINOX_RUNPOD_NETWORK_VOLUME_ID")
     if missing_receipt:
         environment["EQUINOX_LARGER_MODEL_VOLUME_RECEIPT"] = str(tmp_path / "missing.json")
+    if missing_stage_receipt:
+        environment["EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT"] = str(
+            tmp_path / "missing-stage.json"
+        )
+    if mismatched_stage_receipt:
+        stage_path = Path(environment["EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT"])
+        stage_receipt = json.loads(stage_path.read_text(encoding="utf-8"))
+        stage_receipt["bundle_handoff_revision"] = "old-handoff@1"
+        stage_content = {
+            key: value for key, value in stage_receipt.items() if key != "receipt_digest"
+        }
+        stage_receipt["receipt_digest"] = (
+            "sha256:" + hashlib.sha256(canonical_json(stage_content)).hexdigest()
+        )
+        stage_path.write_bytes(canonical_json(stage_receipt) + b"\n")
     result = subprocess.run(
         [str(LAUNCHER)],
         cwd=REPOSITORY_ROOT,
@@ -637,9 +693,40 @@ def test_valid_preflight_is_read_only_and_reports_the_pinned_profile(tmp_path: P
     assert payload["image_digest"] == IMAGE_DIGEST
     assert payload["optimization_seed"] == 137
     assert payload["workload_bundle_compression"] == "xz"
-    assert 0 < payload["workload_bundle_size_bytes"] <= 80 * 1024
+    assert 0 < payload["workload_bundle_size_bytes"] <= 2 * 1024 * 1024
     assert payload["workload_bundle_digest"].startswith("sha256:")
     assert len(payload["workload_bundle_digest"]) == len("sha256:") + 64
+    assert payload["workload_bundle_path"].endswith(
+        f"/{payload['workload_bundle_digest'].removeprefix('sha256:')}.tar.xz"
+    )
+    assert payload["bundle_stage_receipt_digest"].startswith("sha256:")
+    assert payload["bootstrap_source_digest"].startswith("sha256:")
+    assert payload["bundle_handoff_revision"] == "runpod-volume-bundle-handoff@1"
+    _assert_no_paid_create(commands)
+
+
+@pytest.mark.parametrize(
+    ("missing", "mismatched", "message"),
+    [
+        (True, False, "no local workload-bundle stage receipt"),
+        (False, True, "does not match the profile or provider volume"),
+    ],
+)
+def test_bundle_stage_evidence_fails_before_paid_allocation(
+    tmp_path: Path,
+    missing: bool,
+    mismatched: bool,
+    message: str,
+) -> None:
+    result, commands = _run_preflight(
+        tmp_path,
+        scenario={"spend": 0.005},
+        missing_stage_receipt=missing,
+        mismatched_stage_receipt=mismatched,
+    )
+
+    assert result.returncode != 0
+    assert message in result.stderr
     _assert_no_paid_create(commands)
 
 
@@ -769,7 +856,7 @@ def test_larger_model_launch_allows_only_the_pinned_storage_baseline(
     assert paid_creates[0][paid_creates[0].index("--image") + 1] == (f"{IMAGE_TAG}@{IMAGE_DIGEST}")
 
 
-def test_paid_create_carries_one_digest_verified_inline_bundle_without_post(
+def test_paid_create_carries_only_digest_verified_volume_bundle_identity(
     tmp_path: Path,
 ) -> None:
     result, commands = _run_launch(
@@ -793,23 +880,35 @@ def test_paid_create_carries_one_digest_verified_inline_bundle_without_post(
     create = commands[paid_create_indexes[0]]
     assert create[create.index("--image") + 1] == f"{IMAGE_TAG}@{IMAGE_DIGEST}"
     serialized_environment = create[create.index("--env") + 1]
-    assert len(serialized_environment.encode()) <= 120 * 1024
+    assert len(serialized_environment.encode()) <= 4 * 1024
     create_environment = json.loads(create[create.index("--env") + 1])
     assert set(create_environment) == {
         "EQUINOX_RESULT_TOKEN",
-        "EQUINOX_BUNDLE_B64",
+        "EQUINOX_BUNDLE_VOLUME_PATH",
         "EQUINOX_BUNDLE_SHA256",
+        "EQUINOX_BUNDLE_SIZE_BYTES",
+        "EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256",
+        "EQUINOX_BOOTSTRAP_SOURCE_SHA256",
+        "EQUINOX_BUNDLE_HANDOFF_REVISION",
     }
     assert len(create_environment["EQUINOX_RESULT_TOKEN"]) == 64
-    bundle = base64.b64decode(create_environment["EQUINOX_BUNDLE_B64"], validate=True)
-    assert len(bundle) <= 80 * 1024
-    assert create_environment["EQUINOX_BUNDLE_SHA256"] == (
-        f"sha256:{hashlib.sha256(bundle).hexdigest()}"
+    assert create_environment["EQUINOX_BUNDLE_VOLUME_PATH"].endswith(
+        "/" + create_environment["EQUINOX_BUNDLE_SHA256"].removeprefix("sha256:") + ".tar.xz"
     )
-    with tarfile.open(fileobj=io.BytesIO(bundle), mode="r:xz") as archive:
-        assert {member.name for member in archive.getmembers()} == expected_bundle_files(
-            "repository_repair_large_model_eligibility.py"
-        )
+    assert int(create_environment["EQUINOX_BUNDLE_SIZE_BYTES"]) > 0
+    assert create_environment["EQUINOX_BUNDLE_HANDOFF_REVISION"] == (
+        "runpod-volume-bundle-handoff@1"
+    )
+    assert create_environment["EQUINOX_BOOTSTRAP_SOURCE_SHA256"].startswith("sha256:")
+    assert create_environment["EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256"].startswith("sha256:")
+    assert "EQUINOX_BUNDLE_B64" not in create_environment
+    docker_arguments = create[create.index("--docker-args") + 1]
+    assert "sha256sum -c -" in docker_arguments
+    assert ".bootstrap_server.py.pending" in docker_arguments
+    assert (
+        create_environment["EQUINOX_BOOTSTRAP_SOURCE_SHA256"].removeprefix("sha256:")
+        in docker_arguments
+    )
 
     image_precheck_index = max(
         index for index, command in enumerate(commands) if command[:1] == ["docker"]
@@ -836,18 +935,25 @@ def test_paid_create_carries_one_digest_verified_inline_bundle_without_post(
     assert image_precheck_index < paid_create_indexes[0] < progress_indexes[0]
     assert create_environment["EQUINOX_RESULT_TOKEN"] not in result.stdout
     assert create_environment["EQUINOX_RESULT_TOKEN"] not in result.stderr
-    assert create_environment["EQUINOX_BUNDLE_B64"] not in result.stdout
-    assert create_environment["EQUINOX_BUNDLE_B64"] not in result.stderr
+    assert create_environment["EQUINOX_BUNDLE_VOLUME_PATH"] not in result.stdout
+    assert create_environment["EQUINOX_BUNDLE_VOLUME_PATH"] not in result.stderr
     observer_payloads = (tmp_path / "observer-payloads.jsonl").read_text(encoding="utf-8")
     assert create_environment["EQUINOX_RESULT_TOKEN"] not in observer_payloads
-    assert create_environment["EQUINOX_BUNDLE_B64"] not in observer_payloads
     observed_resource_profiles = [
         json.loads(line)["resource_profile"] for line in observer_payloads.splitlines() if line
     ]
     assert any(
         profile.get("workload_bundle_digest") == create_environment["EQUINOX_BUNDLE_SHA256"]
-        and profile.get("workload_bundle_size_bytes") == len(bundle)
+        and profile.get("workload_bundle_size_bytes")
+        == int(create_environment["EQUINOX_BUNDLE_SIZE_BYTES"])
         and profile.get("workload_bundle_compression") == "xz"
+        and profile.get("workload_bundle_path") == create_environment["EQUINOX_BUNDLE_VOLUME_PATH"]
+        and profile.get("bundle_stage_receipt_digest")
+        == create_environment["EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256"]
+        and profile.get("bootstrap_source_digest")
+        == create_environment["EQUINOX_BOOTSTRAP_SOURCE_SHA256"]
+        and profile.get("bundle_handoff_revision")
+        == create_environment["EQUINOX_BUNDLE_HANDOFF_REVISION"]
         for profile in observed_resource_profiles
     )
 
@@ -857,6 +963,30 @@ def test_paid_create_carries_one_digest_verified_inline_bundle_without_post(
     assert delete_indexes
     assert all(commands[index] == ["pod", "delete", "fake-paid-pod"] for index in delete_indexes)
     assert progress_indexes[0] < min(delete_indexes)
+
+
+def test_first_remote_progress_must_attest_the_exact_staged_handoff(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "transport": "accept",
+            "image_indexes": [_image_index(IMAGE_DIGEST), _image_index(IMAGE_DIGEST)],
+            "progress_responses": [
+                {
+                    "phase": "container_starting",
+                    "workload_bundle_digest": "sha256:" + "0" * 64,
+                }
+            ],
+        },
+    )
+
+    assert result.returncode != 0
+    assert "did not match the preallocated workload handoff" in result.stderr
+    assert ["pod", "delete", "fake-paid-pod"] in commands
 
 
 def test_exit_visibility_cannot_drop_the_final_remote_progress(tmp_path: Path) -> None:
@@ -1293,7 +1423,7 @@ JSON
 
 
 @pytest.mark.parametrize("transport", ("reject", "drop"))
-def test_proxy_post_behavior_cannot_affect_inline_bundle_handoff(
+def test_proxy_post_behavior_cannot_affect_volume_bundle_handoff(
     tmp_path: Path,
     transport: str,
 ) -> None:

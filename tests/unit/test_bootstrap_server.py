@@ -18,6 +18,7 @@ from research.runpod.bootstrap_server import (
     expected_bundle_files,
     install_bundle,
     install_environment_bundle,
+    install_volume_bundle,
 )
 
 
@@ -234,6 +235,70 @@ def test_install_environment_bundle_rejects_invalid_base64(tmp_path: Path) -> No
         )
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_install_volume_bundle_verifies_content_address_and_exact_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workload_file = "repository_repair_rl.py"
+    files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+    payload = bundle_payload(files, mode="w:xz")
+    digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    volume_root = tmp_path / "volume/workload-bundles"
+    monkeypatch.setattr("research.runpod.bootstrap_server.BUNDLE_VOLUME_ROOT", volume_root)
+    bundle = volume_root / "profile@1" / f"{digest.removeprefix('sha256:')}.tar.xz"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_bytes(payload)
+    bundle.chmod(0o644)
+    work_directory = tmp_path / "work"
+    work_directory.mkdir()
+
+    install_volume_bundle(
+        bundle,
+        work_directory=work_directory,
+        workload_file=workload_file,
+        expected_digest=digest,
+        expected_size_bytes=len(payload),
+    )
+
+    assert {path.name for path in work_directory.iterdir()} == set(files)
+
+
+@pytest.mark.parametrize("failure", ("digest", "size", "symlink", "path"))
+def test_install_volume_bundle_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    workload_file = "repository_repair_rl.py"
+    files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+    payload = bundle_payload(files, mode="w:xz")
+    digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    volume_root = tmp_path / "volume/workload-bundles"
+    monkeypatch.setattr("research.runpod.bootstrap_server.BUNDLE_VOLUME_ROOT", volume_root)
+    filename_digest = digest if failure != "path" else "sha256:" + "1" * 64
+    bundle = volume_root / "profile@1" / f"{filename_digest.removeprefix('sha256:')}.tar.xz"
+    bundle.parent.mkdir(parents=True)
+    target = tmp_path / "target.tar.xz"
+    target.write_bytes(payload)
+    if failure == "symlink":
+        bundle.symlink_to(target)
+    else:
+        bundle.write_bytes(payload)
+    work_directory = tmp_path / "work"
+    work_directory.mkdir()
+
+    with pytest.raises((OSError, ValueError)):
+        install_volume_bundle(
+            bundle,
+            work_directory=work_directory,
+            workload_file=workload_file,
+            expected_digest=("sha256:" + "0" * 64 if failure == "digest" else digest),
+            expected_size_bytes=(len(payload) + 1 if failure == "size" else len(payload)),
+        )
+
+    assert list(work_directory.iterdir()) == []
 
 
 def test_bootstrap_accepts_authenticated_bundle_on_proxy_rewritten_post_path(

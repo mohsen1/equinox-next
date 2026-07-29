@@ -161,6 +161,12 @@ def test_paid_larger_model_worker_is_offline_and_cannot_invoke_pip() -> None:
     assert 'deployment_image="$image@$verified_image_digest"' in source
     assert '--image "$deployment_image"' in source
     assert "EQUINOX_BUNDLE_SHA256" in source
+    assert "EQUINOX_BUNDLE_VOLUME_PATH" in source
+    assert "EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256" in source
+    assert "EQUINOX_BOOTSTRAP_SOURCE_SHA256" in source
+    assert 'bundle_handoff_revision="runpod-volume-bundle-handoff@1"' in source
+    assert "sha256sum -c -" in source
+    assert "EQUINOX_BUNDLE_B64" in source
     assert "HF_HUB_OFFLINE=1" in source
     assert "TRANSFORMERS_OFFLINE=1" in source
     assert "PIP_NO_INDEX=1" in source

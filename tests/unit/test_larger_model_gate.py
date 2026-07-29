@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from research.runpod.larger_model_gate import (
+    BUNDLE_HANDOFF_REVISION,
     CLEANUP_COST_RESERVE_SECONDS,
     DEFAULT_MANIFEST_PATH,
     MODEL_ID,
@@ -46,6 +47,9 @@ NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
 IMAGE_TAG = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
 IMAGE_DIGEST = "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851"
 IMAGE_INDEX_DIGEST = "sha256:" + "1" * 64
+WORKLOAD_BUNDLE_DIGEST = "sha256:" + "2" * 64
+BUNDLE_STAGE_RECEIPT_DIGEST = "sha256:" + "3" * 64
+BOOTSTRAP_SOURCE_DIGEST = "sha256:" + "4" * 64
 EXPECTED_SNAPSHOT_HASHES = {
     "config.json": "c0242402ad6a13b331ea320feea8c7e3776ffb7a4eff0757b9cd667e116d9a28",
     "generation_config.json": "1a628a5775bc69cde01c6749a531150ca4d3189652c618a174f7077923acf3b1",
@@ -180,6 +184,16 @@ def receipt_for(result: dict[str, object], **overrides: object) -> dict[str, obj
             "image": IMAGE_TAG,
             "image_digest": IMAGE_DIGEST,
             "network_volume_id": "network-volume-123",
+            "bundle_handoff_revision": BUNDLE_HANDOFF_REVISION,
+            "workload_bundle_digest": WORKLOAD_BUNDLE_DIGEST,
+            "workload_bundle_size_bytes": 80_000,
+            "workload_bundle_compression": "xz",
+            "workload_bundle_path": (
+                f"/workspace/equinox-state/workload-bundles/{PROFILE_ID}/"
+                f"{WORKLOAD_BUNDLE_DIGEST.removeprefix('sha256:')}.tar.xz"
+            ),
+            "bundle_stage_receipt_digest": BUNDLE_STAGE_RECEIPT_DIGEST,
+            "bootstrap_source_digest": BOOTSTRAP_SOURCE_DIGEST,
         },
     }
     receipt.update(overrides)
@@ -866,8 +880,42 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
     assert authorization["image"] == IMAGE_TAG
     assert authorization["image_digest"] == IMAGE_DIGEST
     assert authorization["network_volume_id"] == "network-volume-123"
+    assert authorization["bundle_handoff_revision"] == BUNDLE_HANDOFF_REVISION
+    assert authorization["workload_bundle_digest"] == WORKLOAD_BUNDLE_DIGEST
+    assert authorization["workload_bundle_size_bytes"] == 80_000
+    assert authorization["workload_bundle_compression"] == "xz"
+    assert authorization["bundle_stage_receipt_digest"] == BUNDLE_STAGE_RECEIPT_DIGEST
+    assert authorization["bootstrap_source_digest"] == BOOTSTRAP_SOURCE_DIGEST
     assert authorization["provider_handle"] == "runpod://pods/pod-123"
     assert authorization["digest"].startswith("sha256:")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("bundle_handoff_revision", "inline-bundle@1", "handoff revision"),
+        ("workload_bundle_digest", "sha256:" + "0" * 64, "bundle path"),
+        ("workload_bundle_digest", "not-a-digest", "SHA-256"),
+        ("workload_bundle_size_bytes", 0, "bundle size"),
+        ("workload_bundle_compression", "gzip", "compression"),
+        ("workload_bundle_path", "/workspace/wrong.tar.xz", "bundle path"),
+        ("bundle_stage_receipt_digest", "not-a-digest", "SHA-256"),
+        ("bootstrap_source_digest", "not-a-digest", "SHA-256"),
+    ],
+)
+def test_pilot_authorization_binds_the_exact_operational_handoff(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    screen = eligible_screen()
+    receipt = receipt_for(screen)
+    resource_profile = dict(receipt["resource_profile"])
+    resource_profile[field] = value
+    receipt["resource_profile"] = resource_profile
+
+    with pytest.raises(GateError, match=message):
+        verify_pilot_authorization(load_manifest(), screen, receipt, now=NOW)
 
 
 def test_profile5_screen_and_provider_receipt_fail_closed_under_profile6() -> None:

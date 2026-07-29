@@ -240,6 +240,7 @@ workload_path="$repository_root/research/runpod/$workload_file"
 contract_workload_path="$repository_root/research/runpod/${contract_workload_file:-$workload_file}"
 environment_path="$repository_root/research/runpod/${environment_file:-$workload_file}"
 bootstrap_server_path="$repository_root/research/runpod/bootstrap_server.py"
+workload_bundle_tool_path="$repository_root/research/runpod/workload_bundle.py"
 remote_runner_path="$repository_root/research/runpod/remote_runner.sh"
 result_server_path="$repository_root/research/runpod/result_server.py"
 receipt_directory="$repository_root/var/research-proofs"
@@ -284,6 +285,12 @@ larger_model_authorization_digest="${EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST:-
 larger_model_screen_result="${EQUINOX_LARGER_MODEL_SCREEN_RESULT:-}"
 larger_model_screen_receipt="${EQUINOX_LARGER_MODEL_SCREEN_RECEIPT:-}"
 larger_model_screen_result_digest=""
+authorized_bundle_handoff_revision=""
+authorized_workload_bundle_digest=""
+authorized_workload_bundle_size_bytes=""
+authorized_workload_bundle_path=""
+authorized_bundle_stage_receipt_digest=""
+authorized_bootstrap_source_digest=""
 larger_model_expected_snapshot_digest=""
 larger_model_source_contract_digest=""
 larger_model_profile_id=""
@@ -312,6 +319,11 @@ verified_image_digest=""
 maximum_storage_only_hourly_spend=""
 volume_readiness_receipt="${EQUINOX_LARGER_MODEL_VOLUME_RECEIPT:-}"
 volume_readiness_receipt_digest=""
+bundle_stage_receipt="${EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT:-}"
+bundle_stage_receipt_digest=""
+bundle_volume_path=""
+bootstrap_source_digest=""
+bundle_handoff_revision="runpod-volume-bundle-handoff@1"
 maximum_lifetime_minutes="${EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES:-$default_maximum_lifetime_minutes}"
 boot_timeout_seconds="${EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS:-360}"
 container_disk_in_gb="${EQUINOX_RUNPOD_CONTAINER_DISK_GB:-$default_container_disk_in_gb}"
@@ -543,7 +555,7 @@ command -v jq >/dev/null
 command -v curl >/dev/null
 command -v timeout >/dev/null
 command -v base64 >/dev/null
-if ! command -v xz >/dev/null; then
+if [[ -z "$larger_model_mode" ]] && ! command -v xz >/dev/null; then
   echo "XZ Utils is required to build the bounded workload bundle." >&2
   exit 1
 fi
@@ -565,6 +577,7 @@ if [[ "$runpod_create_help" != *"--env string"* ||
 fi
 test -f "$workload_path"
 test -f "$bootstrap_server_path"
+test -f "$workload_bundle_tool_path"
 test -f "$remote_runner_path"
 test -f "$result_server_path"
 for support_file in "${support_files[@]}"; do
@@ -884,6 +897,24 @@ if [[ -n "$larger_model_mode" ]]; then
     authorized_optimization_seed="$(
       jq -r '.optimization_seed' <<<"$verified_authorization"
     )"
+    authorized_bundle_handoff_revision="$(
+      jq -r '.bundle_handoff_revision' <<<"$verified_authorization"
+    )"
+    authorized_workload_bundle_digest="$(
+      jq -r '.workload_bundle_digest' <<<"$verified_authorization"
+    )"
+    authorized_workload_bundle_size_bytes="$(
+      jq -r '.workload_bundle_size_bytes' <<<"$verified_authorization"
+    )"
+    authorized_workload_bundle_path="$(
+      jq -r '.workload_bundle_path' <<<"$verified_authorization"
+    )"
+    authorized_bundle_stage_receipt_digest="$(
+      jq -r '.bundle_stage_receipt_digest' <<<"$verified_authorization"
+    )"
+    authorized_bootstrap_source_digest="$(
+      jq -r '.bootstrap_source_digest' <<<"$verified_authorization"
+    )"
     if [[ ! "$larger_model_authorization_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
       echo "The larger-model gate returned an invalid authorization digest." >&2
       exit 1
@@ -1072,25 +1103,78 @@ bundle_source_path="$(
 )"
 trap 'rm -f -- "$bundle_source_path"' EXIT
 if [[ -n "$larger_model_mode" ]]; then
-  COPYFILE_DISABLE=1 tar -cf - \
-    -C "$repository_root/research/runpod" \
-    "${bundle_files[@]}" \
-    -C "$repository_root/research/studies" \
-    "$larger_model_profile_file" |
-    xz --threads=1 --check=crc64 -6 -c >"$bundle_source_path"
+  bundle_metadata="$(
+    PYTHONPATH="$repository_root${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 "$workload_bundle_tool_path" \
+      build \
+      --repository-root "$repository_root" \
+      --output "$bundle_source_path"
+  )"
+  bundle_size_bytes="$(jq -r '.bundle_size_bytes' <<<"$bundle_metadata")"
+  bundle_digest="$(jq -r '.bundle_digest' <<<"$bundle_metadata")"
+  expected_bundle_volume_path="$(jq -r '.bundle_path' <<<"$bundle_metadata")"
 else
   COPYFILE_DISABLE=1 tar -cf - \
     -C "$repository_root/research/runpod" \
     "${bundle_files[@]}" |
     xz --threads=1 --check=crc64 -6 -c >"$bundle_source_path"
+  bundle_size_bytes="$(wc -c <"$bundle_source_path" | tr -d ' ')"
+  if ((bundle_size_bytes > 80 * 1024)); then
+    echo "The compressed workload bundle exceeds the 80 KiB inline transport limit." >&2
+    exit 1
+  fi
+  bundle_digest="$(
+    python3 - "$bundle_source_path" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(f"sha256:{hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()}")
+PY
+  )"
+  expected_bundle_volume_path=""
 fi
-bundle_size_bytes="$(wc -c <"$bundle_source_path" | tr -d ' ')"
-if ((bundle_size_bytes > 80 * 1024)); then
-  echo "The compressed workload bundle exceeds the 80 KiB inline transport limit." >&2
+if [[ ! "$bundle_size_bytes" =~ ^[1-9][0-9]*$ ||
+  ! "$bundle_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "The workload bundle builder returned invalid identity evidence." >&2
   exit 1
 fi
-bundle_digest="$(
-  python3 - "$bundle_source_path" <<'PY'
+if [[ -n "$larger_model_mode" ]]; then
+  if [[ -z "$bundle_stage_receipt" ]]; then
+    bundle_stage_receipt="$receipt_directory/larger-model-bundle-stage-$network_volume_id.json"
+  fi
+  if [[ ! -f "$bundle_stage_receipt" ]]; then
+    echo "The configured network volume has no local workload-bundle stage receipt." >&2
+    exit 1
+  fi
+  if ! verified_bundle_stage="$(
+    printf '%s' "$network_volume" |
+      PYTHONPATH="$repository_root${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 "$workload_bundle_tool_path" \
+        verify-stage-receipt \
+        "$bundle_stage_receipt" \
+        - \
+        --bundle-digest "$bundle_digest" \
+        --bundle-size-bytes "$bundle_size_bytes" \
+        --bundle-path "$expected_bundle_volume_path"
+  )"; then
+    echo "The local workload-bundle stage receipt does not match the profile or provider volume." >&2
+    exit 1
+  fi
+  bundle_volume_path="$(jq -r '.bundle_path' <<<"$verified_bundle_stage")"
+  bundle_stage_receipt_digest="$(jq -r '.receipt_digest' <<<"$verified_bundle_stage")"
+  if [[ "$bundle_volume_path" != "$expected_bundle_volume_path" ||
+    ! "$bundle_stage_receipt_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "The verified workload-bundle stage evidence is invalid." >&2
+    exit 1
+  fi
+fi
+bootstrap_source_b64="$(
+  base64 <"$bootstrap_server_path" |
+    tr -d '\n'
+)"
+bootstrap_source_digest="$(
+  python3 - "$bootstrap_server_path" <<'PY'
 import hashlib
 import pathlib
 import sys
@@ -1098,29 +1182,67 @@ import sys
 print(f"sha256:{hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()}")
 PY
 )"
-bootstrap_source_b64="$(
-  base64 <"$bootstrap_server_path" |
-    tr -d '\n'
-)"
+if [[ ! "$bootstrap_source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "The operational bootstrap source digest is invalid." >&2
+  exit 1
+fi
+if [[ "$larger_model_mode" == "pilot" ]] &&
+  {
+    [[ "$authorized_bundle_handoff_revision" != "$bundle_handoff_revision" ]] ||
+      [[ "$authorized_workload_bundle_digest" != "$bundle_digest" ]] ||
+      [[ "$authorized_workload_bundle_size_bytes" != "$bundle_size_bytes" ]] ||
+      [[ "$authorized_workload_bundle_path" != "$bundle_volume_path" ]] ||
+      [[ "$authorized_bundle_stage_receipt_digest" != "$bundle_stage_receipt_digest" ]] ||
+      [[ "$authorized_bootstrap_source_digest" != "$bootstrap_source_digest" ]]
+  }; then
+  echo "The pilot workload handoff does not match the screened authorization." >&2
+  exit 1
+fi
 transport_token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-pod_environment="$(
-  base64 <"$bundle_source_path" |
-    tr -d '\n' |
-    jq -Rsc \
-    --arg token "$transport_token" \
-    --arg bundle_digest "$bundle_digest" \
-    '{
-      EQUINOX_RESULT_TOKEN: $token,
-      EQUINOX_BUNDLE_B64: .,
-      EQUINOX_BUNDLE_SHA256: $bundle_digest
-    }'
-)"
+if [[ -n "$larger_model_mode" ]]; then
+  pod_environment="$(
+    jq -cn \
+      --arg token "$transport_token" \
+      --arg bundle_path "$bundle_volume_path" \
+      --arg bundle_digest "$bundle_digest" \
+      --arg bundle_size_bytes "$bundle_size_bytes" \
+      --arg bundle_stage_receipt_digest "$bundle_stage_receipt_digest" \
+      --arg bootstrap_source_digest "$bootstrap_source_digest" \
+      --arg bundle_handoff_revision "$bundle_handoff_revision" \
+      '{
+        EQUINOX_RESULT_TOKEN: $token,
+        EQUINOX_BUNDLE_VOLUME_PATH: $bundle_path,
+        EQUINOX_BUNDLE_SHA256: $bundle_digest,
+        EQUINOX_BUNDLE_SIZE_BYTES: $bundle_size_bytes,
+        EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256: $bundle_stage_receipt_digest,
+        EQUINOX_BOOTSTRAP_SOURCE_SHA256: $bootstrap_source_digest,
+        EQUINOX_BUNDLE_HANDOFF_REVISION: $bundle_handoff_revision
+      }'
+  )"
+else
+  pod_environment="$(
+    base64 <"$bundle_source_path" |
+      tr -d '\n' |
+      jq -Rsc \
+      --arg token "$transport_token" \
+      --arg bundle_digest "$bundle_digest" \
+      '{
+        EQUINOX_RESULT_TOKEN: $token,
+        EQUINOX_BUNDLE_B64: .,
+        EQUINOX_BUNDLE_SHA256: $bundle_digest
+      }'
+  )"
+fi
 pod_environment_size_bytes="$(
   printf '%s' "$pod_environment" |
     wc -c |
     tr -d ' '
 )"
-if ((pod_environment_size_bytes > 120 * 1024)); then
+if [[ -n "$larger_model_mode" ]] && ((pod_environment_size_bytes > 4 * 1024)); then
+  echo "The volume-bundle pod environment exceeds the 4 KiB transport limit." >&2
+  exit 1
+fi
+if [[ -z "$larger_model_mode" ]] && ((pod_environment_size_bytes > 120 * 1024)); then
   echo "The serialized pod environment exceeds the 120 KiB process-argument limit." >&2
   exit 1
 fi
@@ -1134,7 +1256,8 @@ if [[ -n "$larger_model_mode" ]]; then
   hub_snapshot="$hub_model_cache/snapshots/$larger_model_revision"
   model_cache_setup="test -d /workspace/equinox-state/python; mkdir -p $model_cache_directory/hub; if [ ! -e $root_model_cache ] && [ ! -L $root_model_cache ]; then test -d $hub_snapshot; ln -s hub/$larger_model_cache_name $root_model_cache; fi; if [ ! -e $hub_model_cache ] && [ ! -L $hub_model_cache ]; then test -d $root_snapshot; ln -s ../$larger_model_cache_name $hub_model_cache; fi; test -d $root_snapshot; test -d $hub_snapshot; test $root_snapshot -ef $hub_snapshot;"
 fi
-docker_args="bash -lc \"set -e; mkdir -p $persistent_work_directory $model_cache_directory; $model_cache_setup echo $bootstrap_source_b64 | base64 -d > $persistent_work_directory/bootstrap_server.py; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds EQUINOX_STUDY_CONDITION=$study_condition EQUINOX_STUDY_VALIDATION_SEED_BASE=$study_validation_seed_base EQUINOX_STUDY_TEST_SEED_BASE=$study_test_seed_base EQUINOX_STUDY_COMPLETION_BUDGET=$study_completion_budget EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS=$maximum_workload_attempts EQUINOX_LARGER_MODEL_PROFILE_PATH=$persistent_work_directory/$larger_model_profile_file EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST=$larger_model_authorization_digest EQUINOX_LARGER_MODEL_EXPECTED_SNAPSHOT_DIGEST=$larger_model_expected_snapshot_digest EQUINOX_RUNPOD_NETWORK_VOLUME_ID=$network_volume_id EQUINOX_EXPECTED_GPU_ID='$gpu_id' EQUINOX_MINIMUM_GPU_MEMORY_GB=$minimum_gpu_memory_gb HF_HOME=$model_cache_directory HUGGINGFACE_HUB_CACHE=$model_cache_directory/hub HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PIP_NO_INDEX=1 PYTHONPATH=/workspace/equinox-state/python python3 $persistent_work_directory/bootstrap_server.py\""
+bootstrap_pending_path="$persistent_work_directory/.bootstrap_server.py.pending"
+docker_args="bash -lc \"set -e; mkdir -p $persistent_work_directory $model_cache_directory; $model_cache_setup rm -f $bootstrap_pending_path; echo $bootstrap_source_b64 | base64 -d > $bootstrap_pending_path; echo ${bootstrap_source_digest#sha256:}  $bootstrap_pending_path | sha256sum -c -; chmod 0444 $bootstrap_pending_path; mv $bootstrap_pending_path $persistent_work_directory/bootstrap_server.py; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds EQUINOX_STUDY_CONDITION=$study_condition EQUINOX_STUDY_VALIDATION_SEED_BASE=$study_validation_seed_base EQUINOX_STUDY_TEST_SEED_BASE=$study_test_seed_base EQUINOX_STUDY_COMPLETION_BUDGET=$study_completion_budget EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS=$maximum_workload_attempts EQUINOX_LARGER_MODEL_PROFILE_PATH=$persistent_work_directory/$larger_model_profile_file EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST=$larger_model_authorization_digest EQUINOX_LARGER_MODEL_EXPECTED_SNAPSHOT_DIGEST=$larger_model_expected_snapshot_digest EQUINOX_RUNPOD_NETWORK_VOLUME_ID=$network_volume_id EQUINOX_EXPECTED_GPU_ID='$gpu_id' EQUINOX_MINIMUM_GPU_MEMORY_GB=$minimum_gpu_memory_gb HF_HOME=$model_cache_directory HUGGINGFACE_HUB_CACHE=$model_cache_directory/hub HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PIP_NO_INDEX=1 PYTHONPATH=/workspace/equinox-state/python python3 $persistent_work_directory/bootstrap_server.py\""
 
 provider_pods() {
   local pods
@@ -1283,6 +1406,10 @@ if [[ "$preflight_only" == "1" ]]; then
     --arg network_volume_id "$network_volume_id" \
     --arg network_volume_data_center_id "$network_volume_data_center_id" \
     --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
+    --arg bundle_stage_receipt_digest "$bundle_stage_receipt_digest" \
+    --arg bootstrap_source_digest "$bootstrap_source_digest" \
+    --arg bundle_handoff_revision "$bundle_handoff_revision" \
+    --arg workload_bundle_path "$bundle_volume_path" \
     --arg source_contract_digest "$larger_model_source_contract_digest" \
     --arg workload_bundle_digest "$bundle_digest" \
     --arg workload_bundle_compression "xz" \
@@ -1349,6 +1476,18 @@ if [[ "$preflight_only" == "1" ]]; then
         else $volume_readiness_receipt_digest
         end
       ),
+      bundle_stage_receipt_digest: (
+        if $bundle_stage_receipt_digest == ""
+        then null
+        else $bundle_stage_receipt_digest
+        end
+      ),
+      bootstrap_source_digest: (
+        if $bootstrap_source_digest == "" then null else $bootstrap_source_digest end
+      ),
+      bundle_handoff_revision: (
+        if $larger_model_mode == "" then null else $bundle_handoff_revision end
+      ),
       source_contract_digest: (
         if $source_contract_digest == "" then null else $source_contract_digest end
       ),
@@ -1367,7 +1506,10 @@ if [[ "$preflight_only" == "1" ]]; then
       completion_budget: $completion_budget,
       workload_bundle_digest: $workload_bundle_digest,
       workload_bundle_size_bytes: $workload_bundle_size_bytes,
-      workload_bundle_compression: $workload_bundle_compression
+      workload_bundle_compression: $workload_bundle_compression,
+      workload_bundle_path: (
+        if $workload_bundle_path == "" then null else $workload_bundle_path end
+      )
     }'
   exit 0
 fi
@@ -1451,6 +1593,10 @@ resource_profile="$(
     --arg network_volume_id "$network_volume_id" \
     --arg network_volume_data_center_id "$network_volume_data_center_id" \
     --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
+    --arg bundle_stage_receipt_digest "$bundle_stage_receipt_digest" \
+    --arg bootstrap_source_digest "$bootstrap_source_digest" \
+    --arg bundle_handoff_revision "$bundle_handoff_revision" \
+    --arg workload_bundle_path "$bundle_volume_path" \
     --arg workload_bundle_digest "$bundle_digest" \
     --arg workload_bundle_compression "xz" \
     --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
@@ -1490,9 +1636,22 @@ resource_profile="$(
         else $volume_readiness_receipt_digest
         end
       ),
+      bundle_stage_receipt_digest: (
+        if $bundle_stage_receipt_digest == ""
+        then null
+        else $bundle_stage_receipt_digest
+        end
+      ),
+      bootstrap_source_digest: $bootstrap_source_digest,
+      bundle_handoff_revision: (
+        if $bundle_stage_receipt_digest == "" then null else $bundle_handoff_revision end
+      ),
       workload_bundle_digest: $workload_bundle_digest,
       workload_bundle_size_bytes: $workload_bundle_size_bytes,
       workload_bundle_compression: $workload_bundle_compression,
+      workload_bundle_path: (
+        if $workload_bundle_path == "" then null else $workload_bundle_path end
+      ),
       maximum_hourly_cost_usd: $maximum_hourly_cost,
       maximum_total_cost_usd: $maximum_total_cost,
       minimum_gpu_memory_gb: $minimum_gpu_memory_gb,
@@ -2028,6 +2187,10 @@ resource_profile="$(
     --arg network_volume_id "$network_volume_id" \
     --arg network_volume_data_center_id "$network_volume_data_center_id" \
     --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
+    --arg bundle_stage_receipt_digest "$bundle_stage_receipt_digest" \
+    --arg bootstrap_source_digest "$bootstrap_source_digest" \
+    --arg bundle_handoff_revision "$bundle_handoff_revision" \
+    --arg workload_bundle_path "$bundle_volume_path" \
     --arg workload_bundle_digest "$bundle_digest" \
     --arg workload_bundle_compression "xz" \
     --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
@@ -2068,9 +2231,22 @@ resource_profile="$(
         else $volume_readiness_receipt_digest
         end
       ),
+      bundle_stage_receipt_digest: (
+        if $bundle_stage_receipt_digest == ""
+        then null
+        else $bundle_stage_receipt_digest
+        end
+      ),
+      bootstrap_source_digest: $bootstrap_source_digest,
+      bundle_handoff_revision: (
+        if $bundle_stage_receipt_digest == "" then null else $bundle_handoff_revision end
+      ),
       workload_bundle_digest: $workload_bundle_digest,
       workload_bundle_size_bytes: $workload_bundle_size_bytes,
       workload_bundle_compression: $workload_bundle_compression,
+      workload_bundle_path: (
+        if $workload_bundle_path == "" then null else $workload_bundle_path end
+      ),
       hourly_cost_usd: $hourly_cost,
       maximum_hourly_cost_usd: $maximum_hourly_cost,
       maximum_total_cost_usd: $maximum_total_cost,
@@ -2110,6 +2286,28 @@ while readiness_poll_timeout="$(
   )"
   if [[ -n "$remote_progress" ]] &&
     jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
+    if [[ -n "$larger_model_mode" ]] &&
+      ! jq -e \
+        --arg bundle_handoff_revision "$bundle_handoff_revision" \
+        --arg workload_bundle_digest "$bundle_digest" \
+        --argjson workload_bundle_size_bytes "$bundle_size_bytes" \
+        --arg workload_bundle_path "$bundle_volume_path" \
+        --arg bundle_stage_receipt_digest "$bundle_stage_receipt_digest" \
+        --arg bootstrap_source_digest "$bootstrap_source_digest" \
+        --arg network_volume_id "$network_volume_id" \
+        '
+          .bundle_handoff_revision == $bundle_handoff_revision
+          and .workload_bundle_digest == $workload_bundle_digest
+          and .workload_bundle_size_bytes == $workload_bundle_size_bytes
+          and .workload_bundle_path == $workload_bundle_path
+          and .bundle_stage_receipt_digest == $bundle_stage_receipt_digest
+          and .bootstrap_source_digest == $bootstrap_source_digest
+          and .network_volume_id == $network_volume_id
+        ' >/dev/null <<<"$remote_progress"; then
+      failure_message="The worker did not attest the exact staged workload handoff."
+      echo "The first structured progress did not match the preallocated workload handoff; terminating." >&2
+      exit 1
+    fi
     last_progress_change_epoch="$(date +%s)"
     remote_phase="$(jq -r '.phase // empty' <<<"$remote_progress")"
     if [[ "$remote_phase" == "dependency_setup" || "$remote_phase" == "model_loading" ]]; then
@@ -2152,7 +2350,7 @@ done
 rm -f -- "$bundle_source_path"
 bundle_source_path=""
 if [[ "$workload_transport_ready" != true ]]; then
-  echo "The inline workload did not expose structured progress before timeout." >&2
+  echo "The workload did not expose structured progress before timeout." >&2
   exit 1
 fi
 
@@ -3029,7 +3227,14 @@ jq -n \
   --arg network_volume_id "$network_volume_id" \
   --arg network_volume_data_center_id "$network_volume_data_center_id" \
   --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
+  --arg bundle_stage_receipt_digest "$bundle_stage_receipt_digest" \
+  --arg bootstrap_source_digest "$bootstrap_source_digest" \
+  --arg bundle_handoff_revision "$bundle_handoff_revision" \
+  --arg workload_bundle_digest "$bundle_digest" \
+  --arg workload_bundle_compression "xz" \
+  --arg workload_bundle_path "$bundle_volume_path" \
   --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
+  --argjson workload_bundle_size_bytes "$bundle_size_bytes" \
   --argjson hourly_cost "$hourly_cost" \
   --arg started_at "$started_at" \
   --arg completed_at "$completed_at" \
@@ -3070,6 +3275,22 @@ jq -n \
         then null
         else $volume_readiness_receipt_digest
         end
+      ),
+      bundle_stage_receipt_digest: (
+        if $bundle_stage_receipt_digest == ""
+        then null
+        else $bundle_stage_receipt_digest
+        end
+      ),
+      bootstrap_source_digest: $bootstrap_source_digest,
+      bundle_handoff_revision: (
+        if $bundle_stage_receipt_digest == "" then null else $bundle_handoff_revision end
+      ),
+      workload_bundle_digest: $workload_bundle_digest,
+      workload_bundle_size_bytes: $workload_bundle_size_bytes,
+      workload_bundle_compression: $workload_bundle_compression,
+      workload_bundle_path: (
+        if $workload_bundle_path == "" then null else $workload_bundle_path end
       )
     },
     profile_id: ($result.profile_id // null),

@@ -7,7 +7,9 @@ import hmac
 import io
 import json
 import os
+import re
 import shutil
+import stat
 import tarfile
 import tempfile
 import time
@@ -16,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 MAXIMUM_BUNDLE_BYTES = 2 * 1024 * 1024
+BUNDLE_VOLUME_ROOT = Path("/workspace/equinox-state/workload-bundles")
 COMMON_BUNDLE_FILES = frozenset({"remote_runner.sh", "result_server.py"})
 WORKLOAD_SUPPORT_FILES = {
     "branching_sequence_ladder.py": frozenset(),
@@ -193,6 +196,57 @@ def install_environment_bundle(
     )
 
 
+def install_volume_bundle(
+    volume_path: Path,
+    *,
+    work_directory: Path,
+    workload_file: str,
+    expected_digest: str,
+    expected_size_bytes: int,
+) -> None:
+    if (
+        not volume_path.is_absolute()
+        or volume_path.parent.parent != BUNDLE_VOLUME_ROOT
+        or not re.fullmatch(r"[A-Za-z0-9._@-]+", volume_path.parent.name)
+        or volume_path.name != f"{expected_digest.removeprefix('sha256:')}.tar.xz"
+    ):
+        raise ValueError("Volume bundle path was not content-addressed.")
+    if (
+        not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest)
+        or type(expected_size_bytes) is not int
+        or not 0 < expected_size_bytes <= MAXIMUM_BUNDLE_BYTES
+    ):
+        raise ValueError("Volume bundle identity was invalid.")
+    path_metadata = os.lstat(volume_path)
+    if not stat.S_ISREG(path_metadata.st_mode):
+        raise ValueError("Volume bundle path was not a regular file.")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(volume_path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size != expected_size_bytes
+            or metadata.st_dev != path_metadata.st_dev
+            or metadata.st_ino != path_metadata.st_ino
+        ):
+            raise ValueError("Volume bundle file metadata was invalid.")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            payload = handle.read(expected_size_bytes + 1)
+    finally:
+        os.close(descriptor)
+    if len(payload) != expected_size_bytes:
+        raise ValueError("Volume bundle size did not match.")
+    observed_digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    if not hmac.compare_digest(observed_digest, expected_digest):
+        raise ValueError("Volume bundle digest did not match.")
+    install_bundle(
+        payload,
+        work_directory=work_directory,
+        workload_file=workload_file,
+    )
+
+
 class BootstrapServer(HTTPServer):
     bundle_ready = False
 
@@ -272,11 +326,20 @@ def main() -> None:
     if not os.environ.get("EQUINOX_RESULT_TOKEN"):
         raise SystemExit("EQUINOX_RESULT_TOKEN is required.")
     encoded_environment_bundle = os.environ.pop("EQUINOX_BUNDLE_B64", "")
+    volume_bundle_path = os.environ.pop("EQUINOX_BUNDLE_VOLUME_PATH", "")
     expected_environment_bundle_digest = os.environ.pop(
         "EQUINOX_BUNDLE_SHA256",
         "",
     )
+    expected_environment_bundle_size = os.environ.pop(
+        "EQUINOX_BUNDLE_SIZE_BYTES",
+        "",
+    )
+    if encoded_environment_bundle and volume_bundle_path:
+        raise SystemExit("Only one workload bundle transport may be configured.")
     if encoded_environment_bundle:
+        if expected_environment_bundle_size:
+            raise SystemExit("Inline bundles must not declare EQUINOX_BUNDLE_SIZE_BYTES.")
         if (
             len(expected_environment_bundle_digest) != len("sha256:") + 64
             or not expected_environment_bundle_digest.startswith("sha256:")
@@ -292,9 +355,26 @@ def main() -> None:
             workload_file=workload_file,
             expected_digest=expected_environment_bundle_digest,
         )
+    elif volume_bundle_path:
+        try:
+            expected_size_bytes = int(expected_environment_bundle_size)
+        except ValueError as error:
+            raise SystemExit("EQUINOX_BUNDLE_SIZE_BYTES is invalid.") from error
+        try:
+            install_volume_bundle(
+                Path(volume_bundle_path),
+                work_directory=work_directory,
+                workload_file=workload_file,
+                expected_digest=expected_environment_bundle_digest,
+                expected_size_bytes=expected_size_bytes,
+            )
+        except (OSError, tarfile.TarError, ValueError) as error:
+            raise SystemExit(f"Volume bundle could not be installed: {error}") from error
     else:
-        if expected_environment_bundle_digest:
-            raise SystemExit("EQUINOX_BUNDLE_SHA256 requires EQUINOX_BUNDLE_B64.")
+        if expected_environment_bundle_digest or expected_environment_bundle_size:
+            raise SystemExit(
+                "Bundle identity requires EQUINOX_BUNDLE_B64 or EQUINOX_BUNDLE_VOLUME_PATH."
+            )
         port = int(os.environ.get("EQUINOX_BOOTSTRAP_PORT", "8000"))
         server = BootstrapServer(("0.0.0.0", port), BootstrapHandler)
         while not server.bundle_ready:

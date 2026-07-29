@@ -99,6 +99,8 @@ SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
 SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@6"
 CAPPED_GENERATION_TOKENS = 192
 CLEANUP_COST_RESERVE_SECONDS = 120
+BUNDLE_HANDOFF_REVISION = "runpod-volume-bundle-handoff@1"
+MAXIMUM_WORKLOAD_BUNDLE_BYTES = 2 * 1024 * 1024
 DEFAULT_MANIFEST_PATH = (
     Path(__file__).resolve().parents[1] / "studies/larger-model-eligibility.json"
 )
@@ -854,6 +856,17 @@ def _receipt_digest(receipt: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical_json(content)).hexdigest()
 
 
+def _required_sha256(value: Any, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != len("sha256:") + 64
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise GateError(f"{name} must be a SHA-256 digest")
+    return value
+
+
 def verify_dependency_import_smoke(
     manifest: Mapping[str, Any],
     *,
@@ -1226,6 +1239,36 @@ def verify_pilot_authorization(
     network_volume_id = resource_profile.get("network_volume_id")
     if not isinstance(network_volume_id, str) or not network_volume_id:
         raise GateError("provider receipt does not bind a RunPod network volume")
+    bundle_handoff_revision = resource_profile.get("bundle_handoff_revision")
+    if bundle_handoff_revision != BUNDLE_HANDOFF_REVISION:
+        raise GateError("provider receipt bundle handoff revision is invalid")
+    workload_bundle_digest = _required_sha256(
+        resource_profile.get("workload_bundle_digest"),
+        "provider receipt workload bundle digest",
+    )
+    bundle_stage_receipt_digest = _required_sha256(
+        resource_profile.get("bundle_stage_receipt_digest"),
+        "provider receipt bundle stage receipt digest",
+    )
+    bootstrap_source_digest = _required_sha256(
+        resource_profile.get("bootstrap_source_digest"),
+        "provider receipt bootstrap source digest",
+    )
+    workload_bundle_size_bytes = resource_profile.get("workload_bundle_size_bytes")
+    if (
+        type(workload_bundle_size_bytes) is not int
+        or not 0 < workload_bundle_size_bytes <= MAXIMUM_WORKLOAD_BUNDLE_BYTES
+    ):
+        raise GateError("provider receipt workload bundle size is invalid")
+    if resource_profile.get("workload_bundle_compression") != "xz":
+        raise GateError("provider receipt workload bundle compression is invalid")
+    workload_bundle_path = resource_profile.get("workload_bundle_path")
+    expected_bundle_path = (
+        f"/workspace/equinox-state/workload-bundles/{manifest['profile_id']}/"
+        f"{workload_bundle_digest.removeprefix('sha256:')}.tar.xz"
+    )
+    if workload_bundle_path != expected_bundle_path:
+        raise GateError("provider receipt workload bundle path is invalid")
     provider_handle = provider_receipt.get("provider_handle")
     if not isinstance(provider_handle, str) or not provider_handle.startswith("runpod://pods/"):
         raise GateError("provider receipt has no valid RunPod handle")
@@ -1256,6 +1299,13 @@ def verify_pilot_authorization(
         "image": manifest["runtime"]["image"],
         "image_digest": manifest["runtime"]["image_digest"],
         "network_volume_id": network_volume_id,
+        "bundle_handoff_revision": bundle_handoff_revision,
+        "workload_bundle_digest": workload_bundle_digest,
+        "workload_bundle_size_bytes": workload_bundle_size_bytes,
+        "workload_bundle_compression": "xz",
+        "workload_bundle_path": workload_bundle_path,
+        "bundle_stage_receipt_digest": bundle_stage_receipt_digest,
+        "bootstrap_source_digest": bootstrap_source_digest,
         "provider_handle": provider_handle,
         "screen_completed_at": provider_receipt["completed_at"],
         "authorized_at": current_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
