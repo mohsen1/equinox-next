@@ -159,9 +159,7 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
         """Permit the recovery read required after any attempted edit."""
 
         return not self._has_fresh_read(path) and any(
-            step.tool == "edit"
-            and step.action is not None
-            and step.action.get("path") == path
+            step.tool == "edit" and step.action is not None and step.action.get("path") == path
             for step in self.steps
         )
 
@@ -171,9 +169,7 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
             return False
         if tool == "read" and self._read_would_refresh_after_edit(action.get("path", "")):
             return False
-        prior = [
-            step for step in self.steps if step.accepted and step.action == action
-        ]
+        prior = [step for step in self.steps if step.accepted and step.action == action]
         if not prior:
             return False
         if tool == "test":
@@ -181,8 +177,7 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
 
         accepted, current_observation = super()._execute(action)
         return accepted and any(
-            step.observation == frozen_environment._bounded(current_observation)
-            for step in prior
+            step.observation == frozen_environment._bounded(current_observation) for step in prior
         )
 
     def _interface_state(
@@ -210,9 +205,7 @@ class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
         available_read_paths = [
             path
             for path in observed_paths
-            if not self._diagnostic_would_repeat_without_progress(
-                {"tool": "read", "path": path}
-            )
+            if not self._diagnostic_would_repeat_without_progress({"tool": "read", "path": path})
         ]
         root_list_action = {"tool": "list", "path": ""}
         test_action = {"tool": "test"}

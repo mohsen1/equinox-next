@@ -197,7 +197,8 @@ def test_prompt_scaffold_exposes_unranked_mechanical_progress_without_fault_answ
     assert action_space["finish_allowed"] is False
     assert "faults" not in json.dumps(interface_state)
     assert all(
-        fault.old not in json.dumps(interface_state) and fault.new not in json.dumps(interface_state)
+        fault.old not in json.dumps(interface_state)
+        and fault.new not in json.dumps(interface_state)
         for fault in repair_task.faults
     )
 
@@ -221,13 +222,14 @@ def test_json_recovery_observation_is_structured_and_tool_first_compatible() -> 
         "action_choices": [{"path": "", "tool": "list"}],
         "error": "PATH_EVIDENCE_REQUIRED",
     }
-    assert action(environment_data["interface_state"]["recovery_state"]["action_choices"][0]).startswith(
-        '{"path":'
-    )
+    assert action(
+        environment_data["interface_state"]["recovery_state"]["action_choices"][0]
+    ).startswith('{"path":')
     assert action({"tool": "list", "path": ""}).startswith('{"tool":')
-    assert json.loads(action({"tool": "list", "path": ""})) == environment_data[
-        "interface_state"
-    ]["recovery_state"]["action_choices"][0]
+    assert (
+        json.loads(action({"tool": "list", "path": ""}))
+        == environment_data["interface_state"]["recovery_state"]["action_choices"][0]
+    )
 
 
 def test_multiple_recovery_choices_are_structured_without_fault_or_fix_leakage() -> None:
@@ -243,9 +245,7 @@ def test_multiple_recovery_choices_are_structured_without_fault_or_fix_leakage()
     choices = environment_data["interface_state"]["recovery_state"]["action_choices"]
     serialized_choices = json.dumps(choices, sort_keys=True)
 
-    assert choices == [
-        {"path": path, "tool": "read"} for path in sorted(repair_task.files)
-    ]
+    assert choices == [{"path": path, "tool": "read"} for path in sorted(repair_task.files)]
     assert isinstance(environment_data["transcript"][-1]["observation"], dict)
     assert all(fault.old not in serialized_choices for fault in repair_task.faults)
     assert all(fault.new not in serialized_choices for fault in repair_task.faults)
@@ -278,9 +278,7 @@ def test_repeated_accepted_diagnostics_are_rejected_with_unranked_recovery_choic
     assert repeated.accepted is False
     assert recovery == {
         "error": "NO_PROGRESS_REPEAT",
-        "next_actions": [
-            {"path": path, "tool": "read"} for path in sorted(repair_task.files)
-        ],
+        "next_actions": [{"path": path, "tool": "read"} for path in sorted(repair_task.files)],
     }
 
 

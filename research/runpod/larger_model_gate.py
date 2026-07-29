@@ -80,7 +80,7 @@ SOURCE_CONTRACT_SHA256 = {
         "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657"
     ),
     "repository_repair_env_v32.py": (
-        "215c678c96cc41bba588f3988b58f6124b6b9bacb0146735998b431cd93881f0"
+        "fefade752e6bd82530835a5de493fffe7629a6c8963ae6f5fe7e3073dd1d2557"
     ),
     "repository_repair_large_model_eligibility.py": (
         "12e82d00682da655449c9977bc09cda6fbe42f3e1c49b1a828683f54b2aa6ff1"
