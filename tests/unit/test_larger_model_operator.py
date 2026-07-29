@@ -112,6 +112,9 @@ def test_provider_query_failure_is_unknown_and_teardown_requires_zero_spend() ->
     assert "printf '%s\\n' \"unknown\"" in source
     assert "consecutive_absent >= 3" in source
     assert "currentSpendPerHr" in source
+    assert "provider_network_volume_inventory_matches" in source
+    assert "provider_idle_state_is_safe" in source
+    assert "maximum_storage_only_hourly_spend_usd" in source
     assert "reconcile_pod_id_by_name" in source
     assert 'if [[ -z "$pod_id" ]]; then\n      reconcile_pod_id_by_name || true' in source
     assert "pod_is_present" not in source

@@ -56,6 +56,13 @@ elif arguments[:2] == ["network-volume", "get"]:
         "dataCenterId": "EU-RO-1",
         "size": 50
     })))
+elif arguments == ["network-volume", "list"]:
+    print(json.dumps(scenario.get("network_volumes", [{
+        "id": "network-volume-123",
+        "name": "equinox-qwen25-coder-7b",
+        "dataCenterId": "EU-RO-1",
+        "size": 50
+    }])))
 elif arguments == ["datacenter", "list"]:
     print(json.dumps([{
         "id": "EU-RO-1",
@@ -79,8 +86,10 @@ elif arguments == ["user"]:
 elif arguments == ["pod", "list", "--all"]:
     print(json.dumps(scenario.get("pods", [])))
 elif arguments[:2] == ["pod", "create"]:
-    print("paid pod creation must not occur during preflight", file=sys.stderr)
+    print(json.dumps({"id": "fake-paid-pod"}))
     raise SystemExit(97)
+elif arguments[:2] == ["pod", "delete"]:
+    pass
 else:
     print(f"unexpected fake runpodctl arguments: {arguments!r}", file=sys.stderr)
     raise SystemExit(98)
@@ -93,6 +102,11 @@ import sys
 
 if "--fail" not in sys.argv:
     raise SystemExit(96)
+""",
+    )
+    _write_executable(
+        binary_directory / "sleep",
+        """#!/usr/bin/env python3
 """,
     )
     return binary_directory, command_log
@@ -209,6 +223,36 @@ def _run_preflight(
     return result, commands
 
 
+def _run_launch(
+    tmp_path: Path,
+    *,
+    scenario: dict[str, object],
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
+    binary_directory, command_log = _install_fake_commands(tmp_path)
+    environment = _preflight_environment(
+        tmp_path,
+        binary_directory,
+        command_log,
+        scenario,
+    )
+    environment.pop("EQUINOX_RUNPOD_PREFLIGHT_ONLY")
+    result = subprocess.run(
+        [str(LAUNCHER)],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+    commands = [
+        json.loads(line)
+        for line in command_log.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    return result, commands
+
+
 def _assert_no_paid_create(commands: list[list[str]]) -> None:
     assert not [
         command
@@ -266,19 +310,46 @@ def _shell_function(source: str, name: str) -> str:
             {"pods": {"unexpected": []}},
             False,
             False,
-            "Preflight failed: the RunPod account already contains a pod.",
+            "Preflight failed: the RunPod account pod inventory is not empty and valid.",
         ),
         (
-            {"spend": 0.25},
+            {"spend": 0.011},
             False,
             False,
-            "Preflight failed: the RunPod account already has active hourly spend.",
+            "Preflight failed: hourly spend exceeds the permitted idle baseline or could not be verified.",
         ),
         (
             {"pods": [{"id": "pod-active", "name": "another-run"}]},
             False,
             False,
-            "Preflight failed: the RunPod account already contains a pod.",
+            "Preflight failed: the RunPod account pod inventory is not empty and valid.",
+        ),
+        (
+            {
+                "network_volumes": [
+                    {
+                        "id": VOLUME_ID,
+                        "name": "configured",
+                        "dataCenterId": DATA_CENTER_ID,
+                        "size": 50,
+                    },
+                    {
+                        "id": "network-volume-extra",
+                        "name": "unexpected",
+                        "dataCenterId": DATA_CENTER_ID,
+                        "size": 50,
+                    },
+                ]
+            },
+            False,
+            False,
+            "Preflight failed: the RunPod network-volume inventory is not exactly the verified configured volume.",
+        ),
+        (
+            {"network_volumes": {"items": []}},
+            False,
+            False,
+            "Preflight failed: the RunPod network-volume inventory is not exactly the verified configured volume.",
         ),
     ],
     ids=[
@@ -289,6 +360,8 @@ def _shell_function(source: str, name: str) -> str:
         "malformed-pod-inventory",
         "active-spend",
         "active-pod",
+        "extra-network-volume",
+        "malformed-network-volume-inventory",
     ],
 )
 def test_failed_preflight_never_creates_a_paid_pod(
@@ -311,7 +384,7 @@ def test_failed_preflight_never_creates_a_paid_pod(
 
 
 def test_valid_preflight_is_read_only_and_reports_the_pinned_profile(tmp_path: Path) -> None:
-    result, commands = _run_preflight(tmp_path)
+    result, commands = _run_preflight(tmp_path, scenario={"spend": 0.005})
 
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
@@ -321,6 +394,83 @@ def test_valid_preflight_is_read_only_and_reports_the_pinned_profile(tmp_path: P
     assert payload["network_volume_id"] == VOLUME_ID
     assert payload["model_id"] == MODEL_ID
     assert payload["optimization_seed"] == 137
+    _assert_no_paid_create(commands)
+
+
+def test_larger_model_launch_allows_only_the_pinned_storage_baseline(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_launch(tmp_path, scenario={"spend": 0.005})
+
+    assert result.returncode != 0
+    assert "Creating one bounded RunPod worker" in result.stderr
+    paid_creates = [
+        command
+        for command in commands
+        if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
+    ]
+    assert len(paid_creates) == 1
+    assert "--network-volume-id" in paid_creates[0]
+    assert VOLUME_ID in paid_creates[0]
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_error"),
+    [
+        (
+            {
+                "spend": 0.005,
+                "network_volumes": [
+                    {
+                        "id": VOLUME_ID,
+                        "name": "configured",
+                        "dataCenterId": DATA_CENTER_ID,
+                        "size": 50,
+                    },
+                    {
+                        "id": "network-volume-extra",
+                        "name": "unexpected",
+                        "dataCenterId": DATA_CENTER_ID,
+                        "size": 50,
+                    },
+                ],
+            },
+            "Refusing to start: the RunPod network-volume inventory is not exactly the verified configured volume.",
+        ),
+        (
+            {"spend": 0.005, "network_volumes": {"items": []}},
+            "Refusing to start: the RunPod network-volume inventory is not exactly the verified configured volume.",
+        ),
+        (
+            {"spend": 0.011},
+            "Refusing to start: hourly spend exceeds the permitted idle baseline or could not be verified.",
+        ),
+        (
+            {"spend": 0.005, "pods": [{"id": "pod-active", "name": "another-run"}]},
+            "Refusing to start: the RunPod account pod inventory is not empty and valid.",
+        ),
+        (
+            {"spend": 0.005, "pods": {"items": []}},
+            "Refusing to start: the RunPod account pod inventory is not empty and valid.",
+        ),
+    ],
+    ids=[
+        "extra-network-volume",
+        "malformed-network-volume-inventory",
+        "excess-storage-spend",
+        "active-pod",
+        "malformed-pod-inventory",
+    ],
+)
+def test_larger_model_launch_refuses_non_storage_idle_provider_states(
+    tmp_path: Path,
+    scenario: dict[str, object],
+    expected_error: str,
+) -> None:
+    result, commands = _run_launch(tmp_path, scenario=scenario)
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
     _assert_no_paid_create(commands)
 
 

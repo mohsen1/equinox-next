@@ -258,6 +258,9 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
         "require_offline_mode_after_readiness": True,
         "allow_network_model_download_during_screen": False,
     }
+    assert manifest["provider_safety"] == {
+        "maximum_storage_only_hourly_spend_usd": 0.01,
+    }
     assert lifetime_cost_bound(
         manifest["screen_limits"]["maximum_hourly_cost_usd"],
         manifest["screen_limits"]["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS,
@@ -314,6 +317,12 @@ def test_manifest_path_can_be_supplied_to_a_flattened_remote_bundle(
         (
             lambda value: value["screen_limits"].update(maximum_workload_attempts=2),
             "maximum_workload_attempts",
+        ),
+        (
+            lambda value: value["provider_safety"].update(
+                maximum_storage_only_hourly_spend_usd=0.02
+            ),
+            "maximum_storage_only_hourly_spend_usd",
         ),
         (
             lambda value: value["model"]["snapshot_files"]["config.json"].update(sha256="0" * 64),

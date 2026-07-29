@@ -164,6 +164,9 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "require_offline_mode_after_readiness": True,
         "allow_network_model_download_during_screen": False,
     },
+    "provider_safety": {
+        "maximum_storage_only_hourly_spend_usd": 0.01,
+    },
     "screen_limits": {
         "maximum_hourly_cost_usd": 4.0,
         "maximum_total_cost_usd": 3.0,

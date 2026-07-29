@@ -28,6 +28,7 @@ larger-model scientific wrapper and interface source used by the screen and pilo
 | Paid launcher lifetime |               43 minutes |              238 minutes |
 | Cleanup cost reserve   |              120 seconds |              120 seconds |
 | Workload attempts      |                        1 |                        1 |
+| Storage-only idle cap  |               $0.01/hour |               $0.01/hour |
 
 The paid cost envelope is therefore at most 45 minutes for the screen and 240 minutes for
 the pilot. The two paid GPU stages have a combined `$19.00` ceiling, leaving `$6.00` of
@@ -139,14 +140,17 @@ runpodctl pod list --all
 runpodctl user
 ```
 
-Do not continue until the prewarm pod is absent and ongoing hourly spend is zero. The
-network volume remains for the screen and pilot.
+Do not continue until the prewarm pod is absent, the provider lists exactly the verified
+configured volume and no other network volume, and ongoing hourly spend is no more than
+the manifest-pinned `$0.01/hour` storage-only baseline. The network volume remains for
+the screen and pilot.
 
 ## Before either paid stage
 
 Confirm that:
 
-- RunPod authentication works and the account has no active pod or hourly spend;
+- RunPod authentication works, the account has no pod, exactly the verified configured
+  network volume is present, and hourly spend is at most `$0.01`;
 - the dashboard and API are running, so the execution is observable before allocation;
 - the volume receipt exists at the path above and is still fresh; and
 - no previous teardown or operator lease is unresolved.
@@ -163,9 +167,10 @@ query is not treated as proof that no pod exists.
 Preflight performs local and provider-read-only checks. It validates the profile and
 exact model revision, confirms that the requested GPU class meets the minimum memory,
 verifies the current network volume against its digest-bound readiness receipt, checks
-data-center availability, and verifies the hourly, total-cost, model-load, lifetime, and
-cleanup limits. The paid command separately refuses allocation when any pod or hourly
-spend is active.
+that it is the account's only network volume, checks data-center availability, and
+verifies the hourly, total-cost, model-load, lifetime, and cleanup limits. Both preflight
+and paid launch refuse allocation when any pod exists or hourly spend exceeds the
+manifest-pinned `$0.01/hour` storage-only baseline.
 
 Expected result: preflight succeeds and RunPod still reports no new allocation. Stop if
 the model metadata cannot be verified, the GPU inventory does not satisfy the memory
