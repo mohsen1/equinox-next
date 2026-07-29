@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$repository_root/scripts/ensure-local-env"
+export PYTHONPATH="$repository_root${PYTHONPATH:+:$PYTHONPATH}"
+exec "$repository_root/.venv/bin/python" -m research.runpod.revision31_report "$@"
