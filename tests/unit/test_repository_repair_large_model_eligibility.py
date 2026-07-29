@@ -133,7 +133,11 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
             "result_digest": gate.result_digest(result),
             "teardown_confirmed": True,
             "completed_at": "2026-07-29T12:00:00Z",
-            "resource_profile": {"network_volume_id": "volume-123"},
+            "resource_profile": {
+                "image": manifest["runtime"]["image"],
+                "image_digest": manifest["runtime"]["image_digest"],
+                "network_volume_id": "volume-123",
+            },
         },
         now=datetime(2026, 7, 29, 13, 0, tzinfo=UTC),
     )

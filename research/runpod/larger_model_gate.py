@@ -376,6 +376,83 @@ def _json_value(value: Any, name: str) -> Any:
     return value
 
 
+def _is_sha256_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
+def verify_registry_image_index(
+    manifest: Mapping[str, Any],
+    value: Any,
+) -> dict[str, str]:
+    """Resolve one exact linux/amd64 image manifest from a registry index."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    payload = _json_value(value, "container registry image index")
+    if not isinstance(payload, Mapping):
+        raise GateError("container registry image index must be an object")
+    if type(payload.get("schemaVersion")) is not int or payload["schemaVersion"] != 2:
+        raise GateError("container registry image index schemaVersion must be 2")
+    if payload.get("mediaType") not in {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    }:
+        raise GateError("container registry image index mediaType is invalid")
+    index_digest = payload.get("digest")
+    if not _is_sha256_digest(index_digest):
+        raise GateError("container registry image index digest is invalid")
+    descriptors = payload.get("manifests")
+    if isinstance(descriptors, str | bytes) or not isinstance(descriptors, Sequence):
+        raise GateError("container registry image index manifests must be an array")
+
+    candidates: list[str] = []
+    valid_manifest_media_types = {
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    }
+    for index, descriptor in enumerate(descriptors):
+        if not isinstance(descriptor, Mapping):
+            raise GateError(f"container registry image descriptor {index} must be an object")
+        platform = descriptor.get("platform")
+        if not isinstance(platform, Mapping):
+            raise GateError(
+                f"container registry image descriptor {index} platform must be an object"
+            )
+        operating_system = platform.get("os")
+        architecture = platform.get("architecture")
+        if not isinstance(operating_system, str) or not isinstance(architecture, str):
+            raise GateError(f"container registry image descriptor {index} platform is invalid")
+        if operating_system != "linux" or architecture != "amd64":
+            continue
+        variant = platform.get("variant")
+        if variant not in (None, ""):
+            raise GateError("container registry linux/amd64 image variant is unsupported")
+        if descriptor.get("mediaType") not in valid_manifest_media_types:
+            raise GateError("container registry linux/amd64 descriptor is not an image manifest")
+        digest = descriptor.get("digest")
+        if not _is_sha256_digest(digest):
+            raise GateError("container registry linux/amd64 image digest is invalid")
+        candidates.append(digest)
+
+    if len(candidates) != 1:
+        raise GateError("container registry must return exactly one linux/amd64 image manifest")
+    expected_digest = manifest["runtime"]["image_digest"]
+    if candidates[0] != expected_digest:
+        raise GateError(
+            "container registry linux/amd64 image digest does not match the immutable profile"
+        )
+    return {
+        "image": manifest["runtime"]["image"],
+        "image_digest": candidates[0],
+        "index_digest": index_digest,
+        "platform": "linux/amd64",
+    }
+
+
 def parse_runpod_inventory(value: Any) -> tuple[RunPodGPU, ...]:
     """Parse ``runpodctl gpu list`` JSON without accepting ambiguous entries."""
 
@@ -1095,9 +1172,18 @@ def verify_pilot_authorization(
     if provider_receipt.get("teardown_confirmed") is not True:
         raise GateError("provider teardown is not confirmed")
     resource_profile = provider_receipt.get("resource_profile")
-    network_volume_id = (
-        resource_profile.get("network_volume_id") if isinstance(resource_profile, Mapping) else None
-    )
+    if not isinstance(resource_profile, Mapping):
+        raise GateError("provider receipt resource profile is invalid")
+    expected_image_identity = {
+        "image": manifest["runtime"]["image"],
+        "image_digest": manifest["runtime"]["image_digest"],
+    }
+    for key, expected in expected_image_identity.items():
+        if resource_profile.get(key) != expected:
+            raise GateError(
+                f"provider receipt resource profile {key} does not match the larger-model profile"
+            )
+    network_volume_id = resource_profile.get("network_volume_id")
     if not isinstance(network_volume_id, str) or not network_volume_id:
         raise GateError("provider receipt does not bind a RunPod network volume")
     provider_handle = provider_receipt.get("provider_handle")
@@ -1126,6 +1212,8 @@ def verify_pilot_authorization(
         "screen_result_digest": observed_digest,
         "pinned_snapshot_digest": expected_snapshot_digest(manifest),
         "source_contract_digest": expected_source_contract_digest(manifest),
+        "image": manifest["runtime"]["image"],
+        "image_digest": manifest["runtime"]["image_digest"],
         "network_volume_id": network_volume_id,
         "provider_handle": provider_handle,
         "screen_completed_at": provider_receipt["completed_at"],
@@ -1155,6 +1243,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers.add_parser("verify-sources")
     inventory_parser = subparsers.add_parser("inventory")
     inventory_parser.add_argument("path", type=Path)
+    image_parser = subparsers.add_parser("verify-image-index")
+    image_parser.add_argument("path", type=Path)
     subparsers.add_parser("verify-model")
     cost_parser = subparsers.add_parser("cost")
     cost_parser.add_argument("hourly_cost_usd")
@@ -1185,6 +1275,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else arguments.path.read_bytes()
             )
             output = asdict(require_runpod_gpu(manifest, raw))
+        elif arguments.command == "verify-image-index":
+            raw = (
+                sys.stdin.buffer.read()
+                if str(arguments.path) == "-"
+                else arguments.path.read_bytes()
+            )
+            output = verify_registry_image_index(manifest, raw)
         elif arguments.command == "verify-model":
             output = verify_huggingface_metadata(manifest)
         elif arguments.command == "cost":

@@ -330,6 +330,35 @@ run_provider_command() {
   timeout --kill-after=5 "$duration" "$@"
 }
 
+verify_pinned_image_tag() {
+  local registry_image_index
+  local verified_image_identity
+  local observed_image
+  local observed_digest
+  if ! registry_image_index="$(
+    run_provider_command 60 \
+      docker buildx imagetools inspect "$image" --format '{{json .Manifest}}'
+  )"; then
+    echo "The pinned container image could not be inspected in its registry." >&2
+    return 1
+  fi
+  if ! verified_image_identity="$(
+    python3 "$repository_root/research/runpod/larger_model_gate.py" \
+      verify-image-index - <<<"$registry_image_index"
+  )"; then
+    echo "The container registry did not return the exact pinned image manifest." >&2
+    return 1
+  fi
+  observed_image="$(jq -r '.image // empty' <<<"$verified_image_identity")"
+  observed_digest="$(jq -r '.image_digest // empty' <<<"$verified_image_identity")"
+  if [[ "$observed_image" != "$image" ||
+    "$observed_digest" != "$expected_image_digest" ]]; then
+    echo "The verified container image identity does not match the immutable profile." >&2
+    return 1
+  fi
+  verified_image_digest="$observed_digest"
+}
+
 seconds_until_deadline() {
   local deadline_epoch="$1"
   local maximum_seconds="$2"
@@ -609,49 +638,7 @@ PY
     exit 1
   fi
   expected_image_digest="$(jq -r '.runtime.image_digest' <<<"$larger_model_manifest")"
-  if ! registry_image_index="$(
-    run_provider_command 60 docker buildx imagetools inspect --raw "$image"
-  )"; then
-    echo "The pinned container image could not be inspected in its registry." >&2
-    exit 1
-  fi
-  if ! verified_image_digest="$(
-    jq -er '
-      if type != "object"
-        or .schemaVersion != 2
-        or (
-          .mediaType != "application/vnd.oci.image.index.v1+json"
-          and .mediaType != "application/vnd.docker.distribution.manifest.list.v2+json"
-        )
-        or (.manifests | type) != "array"
-      then
-        error("invalid image index")
-      else
-        [
-          .manifests[]
-          | select(type == "object")
-          | select(
-              (.platform | type) == "object"
-              and .platform.os == "linux"
-              and .platform.architecture == "amd64"
-              and ((.platform.variant // "") == "")
-            )
-          | .digest
-        ]
-      end
-      | if length == 1
-          and (.[0] | type) == "string"
-          and (.[0] | test("^sha256:[0-9a-f]{64}$"))
-        then .[0]
-        else error("ambiguous linux/amd64 image manifest")
-        end
-    ' <<<"$registry_image_index"
-  )"; then
-    echo "The container registry did not return exactly one valid linux/amd64 image manifest." >&2
-    exit 1
-  fi
-  if [[ "$verified_image_digest" != "$expected_image_digest" ]]; then
-    echo "The registry linux/amd64 image digest does not match the immutable profile." >&2
+  if ! verify_pinned_image_tag; then
     exit 1
   fi
 fi
@@ -1653,6 +1640,14 @@ if ! provider_idle_state_is_safe; then
   exit 1
 fi
 
+if [[ -n "$larger_model_mode" ]]; then
+  failure_message="The pinned container image changed before pod creation."
+  if ! verify_pinned_image_tag; then
+    echo "Refusing to allocate: the pinned container image could not be reverified." >&2
+    exit 1
+  fi
+fi
+
 echo "Creating one bounded RunPod worker; provider deadline: $terminate_after" >&2
 failure_message="RunPod pod creation failed before a provider handle was returned."
 create_arguments=(
@@ -1740,6 +1735,13 @@ if ! jq -en \
   '$observed <= $maximum' >/dev/null; then
   echo "Hourly cost \$$hourly_cost exceeds the \$$maximum_hourly_cost ceiling." >&2
   exit 1
+fi
+if [[ -n "$larger_model_mode" ]]; then
+  failure_message="The pinned container image changed immediately after pod creation."
+  if ! verify_pinned_image_tag; then
+    echo "The pinned container image changed after allocation; terminating before readiness." >&2
+    exit 1
+  fi
 fi
 resource_profile="$(
   jq -cn \

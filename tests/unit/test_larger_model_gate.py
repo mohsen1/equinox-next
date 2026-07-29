@@ -37,11 +37,15 @@ from research.runpod.larger_model_gate import (
     verify_dependency_import_smoke,
     verify_huggingface_metadata,
     verify_pilot_authorization,
+    verify_registry_image_index,
     verify_source_contract,
     verify_volume_readiness_receipt,
 )
 
 NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
+IMAGE_TAG = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+IMAGE_DIGEST = "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851"
+IMAGE_INDEX_DIGEST = "sha256:" + "1" * 64
 EXPECTED_SNAPSHOT_HASHES = {
     "config.json": "c0242402ad6a13b331ea320feea8c7e3776ffb7a4eff0757b9cd667e116d9a28",
     "generation_config.json": "1a628a5775bc69cde01c6749a531150ca4d3189652c618a174f7077923acf3b1",
@@ -164,7 +168,11 @@ def receipt_for(result: dict[str, object], **overrides: object) -> dict[str, obj
         "result_digest": result_digest(result),
         "teardown_confirmed": True,
         "completed_at": "2026-07-29T11:00:00Z",
-        "resource_profile": {"network_volume_id": "network-volume-123"},
+        "resource_profile": {
+            "image": IMAGE_TAG,
+            "image_digest": IMAGE_DIGEST,
+            "network_volume_id": "network-volume-123",
+        },
     }
     receipt.update(overrides)
     return receipt
@@ -189,6 +197,29 @@ def volume_receipt(**overrides: object) -> dict[str, object]:
     receipt.update(overrides)
     receipt["receipt_digest"] = "sha256:" + hashlib.sha256(canonical_json(receipt)).hexdigest()
     return receipt
+
+
+def registry_image_index(*descriptors: object, **overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "digest": IMAGE_INDEX_DIGEST,
+        "manifests": list(descriptors)
+        or [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": IMAGE_DIGEST,
+                "platform": {"architecture": "amd64", "os": "linux"},
+            },
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": "sha256:" + "2" * 64,
+                "platform": {"architecture": "unknown", "os": "unknown"},
+            },
+        ],
+    }
+    payload.update(overrides)
+    return payload
 
 
 def write_manifest(tmp_path: Path, transform: callable) -> Path:
@@ -269,6 +300,110 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
         manifest["pilot_limits"]["maximum_hourly_cost_usd"],
         manifest["pilot_limits"]["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS,
     ) == Decimal("16.0")
+
+
+def test_registry_image_index_resolves_one_exact_linux_amd64_manifest() -> None:
+    evidence = verify_registry_image_index(load_manifest(), registry_image_index())
+
+    assert evidence == {
+        "image": IMAGE_TAG,
+        "image_digest": IMAGE_DIGEST,
+        "index_digest": IMAGE_INDEX_DIGEST,
+        "platform": "linux/amd64",
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("not-json", "not valid JSON"),
+        ([], "must be an object"),
+        (
+            registry_image_index(mediaType="application/vnd.oci.image.manifest.v1+json"),
+            "index mediaType",
+        ),
+        (
+            registry_image_index(digest="sha256:invalid"),
+            "index digest",
+        ),
+        (
+            registry_image_index(
+                {
+                    "mediaType": "application/vnd.oci.image.index.v1+json",
+                    "digest": IMAGE_DIGEST,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ),
+            "not an image manifest",
+        ),
+        (
+            registry_image_index(
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:" + "A" * 64,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ),
+            "image digest is invalid",
+        ),
+        (
+            registry_image_index(
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": "sha256:" + "0" * 64,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                }
+            ),
+            "does not match",
+        ),
+        (
+            registry_image_index(
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": IMAGE_DIGEST,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                },
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": IMAGE_DIGEST,
+                    "platform": {"architecture": "amd64", "os": "linux"},
+                },
+            ),
+            "exactly one",
+        ),
+        (
+            registry_image_index(
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": IMAGE_DIGEST,
+                    "platform": {
+                        "architecture": "amd64",
+                        "os": "linux",
+                        "variant": "v2",
+                    },
+                }
+            ),
+            "variant is unsupported",
+        ),
+    ],
+    ids=(
+        "invalid-json",
+        "not-object",
+        "wrong-index-media-type",
+        "invalid-index-digest",
+        "wrong-child-media-type",
+        "invalid-child-digest",
+        "mismatched-child-digest",
+        "ambiguous-platform",
+        "unsupported-variant",
+    ),
+)
+def test_registry_image_index_parser_fails_closed(
+    payload: object,
+    message: str,
+) -> None:
+    with pytest.raises(GateError, match=message):
+        verify_registry_image_index(load_manifest(), payload)
 
 
 @pytest.mark.parametrize("tampered_name", tuple(SOURCE_CONTRACT_SHA256))
@@ -674,6 +809,8 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
     )
     assert authorization["screen_result_digest"] == result_digest(screen)
     assert authorization["pinned_snapshot_digest"] == expected_snapshot_digest(load_manifest())
+    assert authorization["image"] == IMAGE_TAG
+    assert authorization["image_digest"] == IMAGE_DIGEST
     assert authorization["network_volume_id"] == "network-volume-123"
     assert authorization["provider_handle"] == "runpod://pods/pod-123"
     assert authorization["digest"].startswith("sha256:")
@@ -718,12 +855,40 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
         ({"solved_siblings": 1}, {}, "solved_siblings"),
         ({"failed_siblings": 1}, {}, "failed_siblings"),
         ({}, {"teardown_confirmed": False}, "teardown"),
-        ({}, {"resource_profile": None}, "network volume"),
-        ({}, {"resource_profile": {}}, "network volume"),
+        ({}, {"resource_profile": None}, "resource profile"),
+        ({}, {"resource_profile": {}}, "resource profile image"),
         (
             {},
-            {"resource_profile": {"network_volume_id": 123}},
+            {
+                "resource_profile": {
+                    "image": IMAGE_TAG,
+                    "image_digest": IMAGE_DIGEST,
+                    "network_volume_id": 123,
+                }
+            },
             "network volume",
+        ),
+        (
+            {},
+            {
+                "resource_profile": {
+                    "image": "runpod/pytorch:latest",
+                    "image_digest": IMAGE_DIGEST,
+                    "network_volume_id": "network-volume-123",
+                }
+            },
+            "resource profile image",
+        ),
+        (
+            {},
+            {
+                "resource_profile": {
+                    "image": IMAGE_TAG,
+                    "image_digest": "sha256:" + "0" * 64,
+                    "network_volume_id": "network-volume-123",
+                }
+            },
+            "resource profile image_digest",
         ),
         ({}, {"result_digest": "sha256:" + "0" * 64}, "exact screen result"),
         ({}, {"profile_id": "other-profile@1"}, "receipt profile_id"),

@@ -33,6 +33,7 @@ def _image_index(*digests: str) -> dict[str, object]:
     return {
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.index.v1+json",
+        "digest": "sha256:" + "1" * 64,
         "manifests": [
             {
                 "digest": digest,
@@ -104,7 +105,13 @@ elif arguments == ["pod", "list", "--all"]:
     print(json.dumps(scenario.get("pods", [])))
 elif arguments[:2] == ["pod", "create"]:
     print(json.dumps({"id": "fake-paid-pod"}))
-    raise SystemExit(97)
+    if not scenario.get("pod_create_succeeds"):
+        raise SystemExit(97)
+elif arguments[:2] == ["pod", "get"]:
+    print(json.dumps({
+        "id": "fake-paid-pod",
+        "adjustedCostPerHr": scenario.get("pod_hourly_cost", 2.99)
+    }))
 elif arguments[:2] == ["pod", "delete"]:
     pass
 else:
@@ -139,13 +146,31 @@ if arguments != [
     "buildx",
     "imagetools",
     "inspect",
-    "--raw",
     "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404",
+    "--format",
+    "{{json .Manifest}}",
 ]:
     raise SystemExit(94)
-print(json.dumps(scenario.get("image_index", {
+image_indexes = scenario.get("image_indexes")
+if image_indexes is not None:
+    with open(os.environ["FAKE_RUNPOD_LOG"], encoding="utf-8") as handle:
+        inspection_number = sum(
+            1
+            for line in handle
+            if json.loads(line)[0:1] == ["docker"]
+        )
+    if inspection_number > len(image_indexes):
+        print("missing sequenced image inspection", file=sys.stderr)
+        raise SystemExit(93)
+    selected_index = image_indexes[inspection_number - 1]
+    if selected_index is None:
+        print("registry unavailable", file=sys.stderr)
+        raise SystemExit(95)
+else:
+    selected_index = scenario.get("image_index", {
     "schemaVersion": 2,
     "mediaType": "application/vnd.oci.image.index.v1+json",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
     "manifests": [{
         "digest": "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851",
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -155,7 +180,8 @@ print(json.dumps(scenario.get("image_index", {
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
         "platform": {"architecture": "unknown", "os": "unknown"}
     }]
-})))
+})
+print(json.dumps(selected_index))
 """,
     )
     _write_executable(
@@ -478,7 +504,7 @@ def test_valid_preflight_is_read_only_and_reports_the_pinned_profile(tmp_path: P
         ),
         (
             {"image_index": _image_index(IMAGE_DIGEST, IMAGE_DIGEST)},
-            "did not return exactly one valid linux/amd64 image manifest",
+            "must return exactly one linux/amd64 image manifest",
         ),
     ],
     ids=("digest-mismatch", "inspection-failure", "ambiguous-amd64"),
@@ -492,8 +518,78 @@ def test_image_verification_failure_never_creates_a_paid_pod(
 
     assert result.returncode != 0
     assert expected_error in result.stderr
-    assert ["docker", "buildx", "imagetools", "inspect", "--raw", IMAGE_TAG] in commands
+    assert [
+        "docker",
+        "buildx",
+        "imagetools",
+        "inspect",
+        IMAGE_TAG,
+        "--format",
+        "{{json .Manifest}}",
+    ] in commands
     _assert_no_paid_create(commands)
+
+
+@pytest.mark.parametrize(
+    "second_resolution",
+    (_image_index("sha256:" + "0" * 64), None),
+    ids=("digest-drift", "inspection-failure"),
+)
+def test_image_reverification_failure_immediately_before_create_never_allocates(
+    tmp_path: Path,
+    second_resolution: object,
+) -> None:
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "image_indexes": [_image_index(IMAGE_DIGEST), second_resolution],
+        },
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to allocate: the pinned container image could not be reverified." in (
+        result.stderr
+    )
+    _assert_no_paid_create(commands)
+    inspections = [command for command in commands if command[:1] == ["docker"]]
+    assert len(inspections) == 2
+
+
+@pytest.mark.parametrize(
+    "third_resolution",
+    (_image_index("sha256:" + "0" * 64), None),
+    ids=("digest-drift", "inspection-failure"),
+)
+def test_image_reverification_failure_after_create_deletes_exact_pod_before_readiness(
+    tmp_path: Path,
+    third_resolution: object,
+) -> None:
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+                third_resolution,
+            ],
+        },
+    )
+
+    assert result.returncode != 0
+    assert "terminating before readiness" in result.stderr
+    paid_creates = [
+        command
+        for command in commands
+        if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
+    ]
+    assert len(paid_creates) == 1
+    assert ["pod", "get", "fake-paid-pod"] in commands
+    assert ["pod", "delete", "fake-paid-pod"] in commands
+    inspections = [command for command in commands if command[:1] == ["docker"]]
+    assert len(inspections) == 3
 
 
 def test_larger_model_launch_allows_only_the_pinned_storage_baseline(
