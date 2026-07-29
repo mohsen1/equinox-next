@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import os
 import subprocess
+import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from research.runpod.bootstrap_server import expected_bundle_files
 from research.runpod.larger_model_gate import (
     canonical_json,
     expected_snapshot_digest,
@@ -123,7 +127,12 @@ elif arguments[:2] == ["pod", "create"]:
 elif arguments[:2] == ["pod", "get"]:
     print(json.dumps({
         "id": "fake-paid-pod",
-        "adjustedCostPerHr": scenario.get("pod_hourly_cost", 2.99)
+        "adjustedCostPerHr": scenario.get("pod_hourly_cost", 2.99),
+        "imageName": scenario.get(
+            "pod_image",
+            "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+            "@sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851",
+        ),
     }))
 elif arguments[:2] == ["pod", "delete"]:
     pass
@@ -627,6 +636,10 @@ def test_valid_preflight_is_read_only_and_reports_the_pinned_profile(tmp_path: P
     assert payload["image"] == IMAGE_TAG
     assert payload["image_digest"] == IMAGE_DIGEST
     assert payload["optimization_seed"] == 137
+    assert payload["workload_bundle_compression"] == "xz"
+    assert 0 < payload["workload_bundle_size_bytes"] <= 80 * 1024
+    assert payload["workload_bundle_digest"].startswith("sha256:")
+    assert len(payload["workload_bundle_digest"]) == len("sha256:") + 64
     _assert_no_paid_create(commands)
 
 
@@ -695,40 +708,47 @@ def test_image_reverification_failure_immediately_before_create_never_allocates(
     assert len(inspections) == 2
 
 
-@pytest.mark.parametrize(
-    "third_resolution",
-    (_image_index("sha256:" + "0" * 64), None),
-    ids=("digest-drift", "inspection-failure"),
-)
-def test_image_reverification_failure_after_create_deletes_exact_pod_before_readiness(
+def test_digest_pinned_create_needs_no_mutable_tag_check_after_allocation(
     tmp_path: Path,
-    third_resolution: object,
 ) -> None:
     result, commands = _run_launch(
         tmp_path,
         scenario={
             "spend": 0.005,
             "pod_create_succeeds": True,
-            "image_indexes": [
-                _image_index(IMAGE_DIGEST),
-                _image_index(IMAGE_DIGEST),
-                third_resolution,
-            ],
+            "transport": "accept",
+            "image_indexes": [_image_index(IMAGE_DIGEST), _image_index(IMAGE_DIGEST)],
         },
     )
 
     assert result.returncode != 0
-    assert "terminating before readiness" in result.stderr
     paid_creates = [
         command
         for command in commands
         if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
     ]
     assert len(paid_creates) == 1
-    assert ["pod", "get", "fake-paid-pod"] in commands
-    assert ["pod", "delete", "fake-paid-pod"] in commands
+    assert paid_creates[0][paid_creates[0].index("--image") + 1] == (f"{IMAGE_TAG}@{IMAGE_DIGEST}")
     inspections = [command for command in commands if command[:1] == ["docker"]]
-    assert len(inspections) == 3
+    assert len(inspections) == 2
+
+
+def test_provider_image_attestation_mismatch_deletes_the_exact_pod(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "pod_image": IMAGE_TAG,
+            "image_indexes": [_image_index(IMAGE_DIGEST), _image_index(IMAGE_DIGEST)],
+        },
+    )
+
+    assert result.returncode != 0
+    assert "did not report the exact requested image digest" in result.stderr
+    assert ["pod", "delete", "fake-paid-pod"] in commands
 
 
 def test_larger_model_launch_allows_only_the_pinned_storage_baseline(
@@ -746,11 +766,10 @@ def test_larger_model_launch_allows_only_the_pinned_storage_baseline(
     assert len(paid_creates) == 1
     assert "--network-volume-id" in paid_creates[0]
     assert VOLUME_ID in paid_creates[0]
-    assert paid_creates[0][paid_creates[0].index("--image") + 1] == IMAGE_TAG
-    assert "@" not in paid_creates[0][paid_creates[0].index("--image") + 1]
+    assert paid_creates[0][paid_creates[0].index("--image") + 1] == (f"{IMAGE_TAG}@{IMAGE_DIGEST}")
 
 
-def test_paid_create_carries_only_token_then_uploads_after_image_postcheck(
+def test_paid_create_carries_one_digest_verified_inline_bundle_without_post(
     tmp_path: Path,
 ) -> None:
     result, commands = _run_launch(
@@ -759,11 +778,7 @@ def test_paid_create_carries_only_token_then_uploads_after_image_postcheck(
             "spend": 0.005,
             "pod_create_succeeds": True,
             "transport": "accept",
-            "image_indexes": [
-                _image_index(IMAGE_DIGEST),
-                _image_index(IMAGE_DIGEST),
-                _image_index(IMAGE_DIGEST),
-            ],
+            "image_indexes": [_image_index(IMAGE_DIGEST), _image_index(IMAGE_DIGEST)],
         },
     )
 
@@ -776,45 +791,72 @@ def test_paid_create_carries_only_token_then_uploads_after_image_postcheck(
     ]
     assert len(paid_create_indexes) == 1
     create = commands[paid_create_indexes[0]]
+    assert create[create.index("--image") + 1] == f"{IMAGE_TAG}@{IMAGE_DIGEST}"
+    serialized_environment = create[create.index("--env") + 1]
+    assert len(serialized_environment.encode()) <= 120 * 1024
     create_environment = json.loads(create[create.index("--env") + 1])
-    assert set(create_environment) == {"EQUINOX_RESULT_TOKEN"}
+    assert set(create_environment) == {
+        "EQUINOX_RESULT_TOKEN",
+        "EQUINOX_BUNDLE_B64",
+        "EQUINOX_BUNDLE_SHA256",
+    }
     assert len(create_environment["EQUINOX_RESULT_TOKEN"]) == 64
-    assert "EQUINOX_BUNDLE_B64" not in create[create.index("--env") + 1]
+    bundle = base64.b64decode(create_environment["EQUINOX_BUNDLE_B64"], validate=True)
+    assert len(bundle) <= 80 * 1024
+    assert create_environment["EQUINOX_BUNDLE_SHA256"] == (
+        f"sha256:{hashlib.sha256(bundle).hexdigest()}"
+    )
+    with tarfile.open(fileobj=io.BytesIO(bundle), mode="r:xz") as archive:
+        assert {member.name for member in archive.getmembers()} == expected_bundle_files(
+            "repository_repair_large_model_eligibility.py"
+        )
 
-    image_postcheck_index = max(
+    image_precheck_index = max(
         index for index, command in enumerate(commands) if command[:1] == ["docker"]
     )
-    health_indexes = [
+    post_indexes = [
         index
         for index, command in enumerate(commands)
-        if command[:1] == ["curl"] and command[-1].endswith("/bootstrap-health")
-    ]
-    upload_indexes = [
-        index
-        for index, command in enumerate(commands)
-        if command[:1] == ["curl"] and command[-1].endswith("/bundle")
+        if command[:1] == ["curl"]
+        and "-X" in command
+        and command[command.index("-X") + 1] == "POST"
     ]
     progress_indexes = [
         index
         for index, command in enumerate(commands)
         if command[:1] == ["curl"] and command[-1].endswith("/progress.json")
     ]
-    assert len(upload_indexes) == 1
-    assert image_postcheck_index < health_indexes[0] < upload_indexes[0] < progress_indexes[0]
-    upload = commands[upload_indexes[0]]
-    token = create_environment["EQUINOX_RESULT_TOKEN"]
-    assert upload[upload.index("-X") + 1] == "POST"
-    assert f"Authorization: Bearer {token}" in upload
-    assert "Content-Type: application/gzip" in upload
-    assert "Expect:" in upload
-    assert upload[upload.index("--data-binary") + 1].startswith("@")
+    bootstrap_health_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:1] == ["curl"] and command[-1].endswith("/bootstrap-health")
+    ]
+    assert not post_indexes
+    assert not bootstrap_health_indexes
+    assert image_precheck_index < paid_create_indexes[0] < progress_indexes[0]
+    assert create_environment["EQUINOX_RESULT_TOKEN"] not in result.stdout
+    assert create_environment["EQUINOX_RESULT_TOKEN"] not in result.stderr
+    assert create_environment["EQUINOX_BUNDLE_B64"] not in result.stdout
+    assert create_environment["EQUINOX_BUNDLE_B64"] not in result.stderr
+    observer_payloads = (tmp_path / "observer-payloads.jsonl").read_text(encoding="utf-8")
+    assert create_environment["EQUINOX_RESULT_TOKEN"] not in observer_payloads
+    assert create_environment["EQUINOX_BUNDLE_B64"] not in observer_payloads
+    observed_resource_profiles = [
+        json.loads(line)["resource_profile"] for line in observer_payloads.splitlines() if line
+    ]
+    assert any(
+        profile.get("workload_bundle_digest") == create_environment["EQUINOX_BUNDLE_SHA256"]
+        and profile.get("workload_bundle_size_bytes") == len(bundle)
+        and profile.get("workload_bundle_compression") == "xz"
+        for profile in observed_resource_profiles
+    )
 
     delete_indexes = [
         index for index, command in enumerate(commands) if command[:2] == ["pod", "delete"]
     ]
     assert delete_indexes
     assert all(commands[index] == ["pod", "delete", "fake-paid-pod"] for index in delete_indexes)
-    assert upload_indexes[0] < min(delete_indexes)
+    assert progress_indexes[0] < min(delete_indexes)
 
 
 def test_exit_visibility_cannot_drop_the_final_remote_progress(tmp_path: Path) -> None:
@@ -1250,72 +1292,29 @@ JSON
     assert (result.returncode == 0) is expected_match
 
 
-def test_rejected_bundle_upload_deletes_the_exact_pod_without_retry(
+@pytest.mark.parametrize("transport", ("reject", "drop"))
+def test_proxy_post_behavior_cannot_affect_inline_bundle_handoff(
     tmp_path: Path,
+    transport: str,
 ) -> None:
     result, commands = _run_launch(
         tmp_path,
         scenario={
             "spend": 0.005,
             "pod_create_succeeds": True,
-            "transport": "reject",
-            "image_indexes": [
-                _image_index(IMAGE_DIGEST),
-                _image_index(IMAGE_DIGEST),
-                _image_index(IMAGE_DIGEST),
-            ],
-        },
-    )
-
-    assert result.returncode != 0
-    assert "rejected the workload bundle with HTTP 400" in result.stderr
-    creates = [
-        command
-        for command in commands
-        if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
-    ]
-    uploads = [
-        command
-        for command in commands
-        if command[:1] == ["curl"] and command[-1].endswith("/bundle")
-    ]
-    deletes = [command for command in commands if command[:2] == ["pod", "delete"]]
-    progress = [
-        command
-        for command in commands
-        if command[:1] == ["curl"] and command[-1].endswith("/progress.json")
-    ]
-    assert len(creates) == 1
-    assert len(uploads) == 1
-    assert not progress
-    assert deletes
-    assert all(command == ["pod", "delete", "fake-paid-pod"] for command in deletes)
-
-
-def test_dropped_bundle_response_is_resolved_by_progress_without_reupload(
-    tmp_path: Path,
-) -> None:
-    result, commands = _run_launch(
-        tmp_path,
-        scenario={
-            "spend": 0.005,
-            "pod_create_succeeds": True,
-            "transport": "drop",
-            "image_indexes": [
-                _image_index(IMAGE_DIGEST),
-                _image_index(IMAGE_DIGEST),
-                _image_index(IMAGE_DIGEST),
-            ],
+            "transport": transport,
+            "image_indexes": [_image_index(IMAGE_DIGEST), _image_index(IMAGE_DIGEST)],
         },
     )
 
     assert result.returncode != 0
     assert "Container is live; streaming structured progress" in result.stderr
-    assert "no authenticated progress handoff appeared" not in result.stderr
-    uploads = [
+    posts = [
         command
         for command in commands
-        if command[:1] == ["curl"] and command[-1].endswith("/bundle")
+        if command[:1] == ["curl"]
+        and "-X" in command
+        and command[command.index("-X") + 1] == "POST"
     ]
     progress = [
         command
@@ -1327,7 +1326,7 @@ def test_dropped_bundle_response_is_resolved_by_progress_without_reupload(
         for command in commands
         if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
     ]
-    assert len(uploads) == 1
+    assert not posts
     assert progress
     assert len(creates) == 1
 
@@ -1451,8 +1450,8 @@ def test_larger_model_launch_refuses_non_storage_idle_provider_states(
 
 def test_readiness_polling_obeys_one_wall_clock_deadline(tmp_path: Path) -> None:
     source = LAUNCHER.read_text(encoding="utf-8")
-    start = source.index("bootstrap_transport_ready=false\n")
-    end = source.index('if [[ "$bootstrap_transport_ready" != true ]]', start)
+    start = source.index("workload_transport_ready=false\n", source.index('exit_code=""\n'))
+    end = source.index('rm -f -- "$bundle_source_path"', start)
     readiness_block = source[start:end]
 
     assert "readiness_deadline_epoch" in readiness_block
@@ -1516,7 +1515,7 @@ readiness_deadline_epoch=1012
 boot_timeout_seconds=12
 last_progress='{{}}'
 maximum_updates=1
-bootstrap_health_url=https://worker.invalid/bootstrap-health
+progress_url=https://worker.invalid/progress.json
 remote_authorization='Authorization: Bearer test'
 publish_execution() {{ :; }}
 {readiness_block}
@@ -1604,7 +1603,6 @@ printf '%s\\n' "$last_remote_progress_fetch_valid"
 def test_remote_json_acceptance_guards_require_nonempty_bodies() -> None:
     source = LAUNCHER.read_text(encoding="utf-8")
 
-    assert 'if [[ -n "$bootstrap_health" ]] &&' in source
-    assert '[[ -n "$bundle_upload_body" ]] &&' in source
     assert 'if [[ -n "$remote_progress" ]] &&' in source
     assert 'if [[ -z "$metrics" ]] ||' in source
+    assert "bundle_upload_url" not in source

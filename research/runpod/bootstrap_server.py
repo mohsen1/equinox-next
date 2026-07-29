@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import hmac
 import io
 import json
@@ -131,7 +132,7 @@ def install_bundle(
     expected_files = expected_bundle_files(workload_file)
     staging_directory = Path(tempfile.mkdtemp(prefix=".bundle-", dir=work_directory))
     try:
-        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
             members = archive.getmembers()
             observed_files = {member.name for member in members}
             if observed_files != expected_files:
@@ -173,6 +174,7 @@ def install_environment_bundle(
     *,
     work_directory: Path,
     workload_file: str,
+    expected_digest: str | None = None,
 ) -> None:
     try:
         payload = base64.b64decode(encoded_payload, validate=True)
@@ -180,6 +182,10 @@ def install_environment_bundle(
         raise ValueError("Environment bundle was not valid base64.") from error
     if not payload or len(payload) > MAXIMUM_BUNDLE_BYTES:
         raise ValueError("Environment bundle size was invalid.")
+    if expected_digest is not None:
+        observed_digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+        if not hmac.compare_digest(observed_digest, expected_digest):
+            raise ValueError("Environment bundle digest did not match.")
     install_bundle(
         payload,
         work_directory=work_directory,
@@ -266,13 +272,29 @@ def main() -> None:
     if not os.environ.get("EQUINOX_RESULT_TOKEN"):
         raise SystemExit("EQUINOX_RESULT_TOKEN is required.")
     encoded_environment_bundle = os.environ.pop("EQUINOX_BUNDLE_B64", "")
+    expected_environment_bundle_digest = os.environ.pop(
+        "EQUINOX_BUNDLE_SHA256",
+        "",
+    )
     if encoded_environment_bundle:
+        if (
+            len(expected_environment_bundle_digest) != len("sha256:") + 64
+            or not expected_environment_bundle_digest.startswith("sha256:")
+            or any(
+                character not in "0123456789abcdef"
+                for character in expected_environment_bundle_digest.removeprefix("sha256:")
+            )
+        ):
+            raise SystemExit("EQUINOX_BUNDLE_SHA256 is invalid.")
         install_environment_bundle(
             encoded_environment_bundle,
             work_directory=work_directory,
             workload_file=workload_file,
+            expected_digest=expected_environment_bundle_digest,
         )
     else:
+        if expected_environment_bundle_digest:
+            raise SystemExit("EQUINOX_BUNDLE_SHA256 requires EQUINOX_BUNDLE_B64.")
         port = int(os.environ.get("EQUINOX_BOOTSTRAP_PORT", "8000"))
         server = BootstrapServer(("0.0.0.0", port), BootstrapHandler)
         while not server.bundle_ready:

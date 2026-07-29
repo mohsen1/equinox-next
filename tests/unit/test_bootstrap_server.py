@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import tarfile
@@ -20,9 +21,9 @@ from research.runpod.bootstrap_server import (
 )
 
 
-def bundle_payload(files: dict[str, bytes]) -> bytes:
+def bundle_payload(files: dict[str, bytes], *, mode: str = "w:gz") -> bytes:
     output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode="w:gz") as archive:
+    with tarfile.open(fileobj=output, mode=mode) as archive:
         for name, content in files.items():
             metadata = tarfile.TarInfo(name)
             metadata.size = len(content)
@@ -195,14 +196,33 @@ def test_install_environment_bundle_decodes_and_validates_the_allowlist(
 ) -> None:
     workload_file = "repository_repair_rl.py"
     files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+    payload = bundle_payload(files, mode="w:xz")
+    digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
     install_environment_bundle(
-        base64.b64encode(bundle_payload(files)).decode(),
+        base64.b64encode(payload).decode(),
         work_directory=tmp_path,
         workload_file=workload_file,
+        expected_digest=digest,
     )
 
     assert {path.name for path in tmp_path.iterdir()} == set(files)
+
+
+def test_install_environment_bundle_rejects_a_digest_mismatch(tmp_path: Path) -> None:
+    workload_file = "repository_repair_rl.py"
+    files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+    payload = bundle_payload(files, mode="w:xz")
+
+    with pytest.raises(ValueError, match="digest did not match"):
+        install_environment_bundle(
+            base64.b64encode(payload).decode(),
+            work_directory=tmp_path,
+            workload_file=workload_file,
+            expected_digest="sha256:" + "0" * 64,
+        )
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_install_environment_bundle_rejects_invalid_base64(tmp_path: Path) -> None:

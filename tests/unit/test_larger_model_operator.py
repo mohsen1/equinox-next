@@ -158,7 +158,9 @@ def test_paid_larger_model_worker_is_offline_and_cannot_invoke_pip() -> None:
     assert "EQUINOX_RUNPOD_NETWORK_VOLUME_ID" in source
     assert 'docker buildx imagetools inspect "$image" --format' in source
     assert "verify-image-index" in source
-    assert 'image="$image@' not in source
+    assert 'deployment_image="$image@$verified_image_digest"' in source
+    assert '--image "$deployment_image"' in source
+    assert "EQUINOX_BUNDLE_SHA256" in source
     assert "HF_HUB_OFFLINE=1" in source
     assert "TRANSFORMERS_OFFLINE=1" in source
     assert "PIP_NO_INDEX=1" in source
