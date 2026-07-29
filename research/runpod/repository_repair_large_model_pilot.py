@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 
 WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@2"
 OBJECTIVE_ID = "verified-repair-chain-root-branch-retention-policy-gradient@16"
-SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed"
+SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed@1"
 LOCALIZATION_TELEMETRY_STRATEGY = "all_fault_sources_observed"
 POLICY_CREDIT_SCOPE = (
     "fault_fixing_edits_and_immediately_upstream_fresh_reads_"

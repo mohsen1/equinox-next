@@ -77,7 +77,7 @@ def test_v32_pilot_constants_do_not_modify_frozen_sources() -> None:
         pilot.OBJECTIVE_ID
         == "verified-repair-chain-root-branch-retention-policy-gradient@16"
     )
-    assert pilot.SHARED_PREFIX_CHECKPOINT_STRATEGY == "repository_root_observed"
+    assert pilot.SHARED_PREFIX_CHECKPOINT_STRATEGY == "repository_root_observed@1"
     assert Path(pilot.__file__).name == "repository_repair_large_model_pilot.py"
     assert os.path.basename(pilot.frozen.__file__) == "repository_repair_rl.py"
 
@@ -173,7 +173,7 @@ def test_branching_precedes_localization_and_keeps_coverage_as_telemetry(
     assert serialized["checkpoint"]["static_branch_width"] == 4
     assert (
         serialized["shared_prefix"]["checkpoint_strategy"]
-        == "repository_root_observed"
+        == "repository_root_observed@1"
     )
     assert serialized["shared_prefix"]["required_diagnostic_actions"] == 1
     assert serialized["shared_prefix"]["required_fault_source_reads"] == 0
@@ -215,7 +215,7 @@ def test_bootstrap_contract_pins_static_k_and_truthful_training_globals(
     assert pilot.frozen.MINIMUM_PREFIX_ACCEPTED_ACTIONS == 1
     assert (
         pilot.frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY
-        == "repository_root_observed"
+        == "repository_root_observed@1"
     )
     assert pilot.frozen.POLICY_CREDIT_SCOPE == pilot.POLICY_CREDIT_SCOPE
     assert (
@@ -371,7 +371,7 @@ def test_pilot_result_records_seed_and_source_contract(
     assert result["optimization_seed"] == optimization_seed
     assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
     assert result["training_configuration"]["shared_prefix_checkpoint"] == (
-        "repository_root_observed"
+        "repository_root_observed@1"
     )
     assert result["training_configuration"]["minimum_shared_prefix_actions"] == 1
     assert result["training_configuration"]["policy_credit_scope"] == pilot.POLICY_CREDIT_SCOPE
