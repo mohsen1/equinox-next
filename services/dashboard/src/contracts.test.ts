@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeResearchComputeExecution,
+  decodeResearchStudyReport,
   decodeResearchTrajectoryResponse,
+  decodeStudiesResponse,
 } from "./contracts";
 
 function k1Execution() {
@@ -51,5 +53,65 @@ describe("research contracts", () => {
         branch_width: 2,
       }),
     ).toThrow("branch_width must be 1 or 4");
+  });
+
+  it("accepts explicit missing study evidence without turning it into zero", () => {
+    const decoded = decodeResearchStudyReport({
+      study_id: "study@1",
+      report_id: "study@1/report@1",
+      generated_at: "2026-07-29T10:00:00Z",
+      overall_status: "FAIL",
+      aggregation_policy: "Per-seed evidence",
+      report_digest: "sha256:report",
+      freeze: {},
+      conditions: {
+        failed_condition: {
+          seed: 211,
+          branch_width: 4,
+          initial_successes: null,
+          final_successes: null,
+        },
+      },
+      decisions: {
+        advantage: { status: "FAIL", evidence: {} },
+      },
+      failure_count: {
+        provider_executions: 1,
+        operator_attempts: 0,
+      },
+      executions: [
+        {
+          execution_id: "execution-1",
+          outcome: "FAILED",
+          estimated_cost_usd: null,
+          teardown_confirmed: true,
+        },
+      ],
+    });
+
+    expect(decoded.conditions.failed_condition.initial_successes).toBeNull();
+    expect(decoded.executions[0]?.estimated_cost_usd).toBeNull();
+  });
+
+  it("rejects partial study responses at the API boundary", () => {
+    expect(() =>
+      decodeStudiesResponse({
+        items: [
+          {
+            study_id: "study@1",
+            generated_at: null,
+            overall_status: "FAIL",
+          },
+        ],
+      }),
+    ).toThrow("study 0.generated_at");
+    expect(() =>
+      decodeResearchStudyReport({
+        study_id: "study@1",
+        report_id: "study@1/report@1",
+        generated_at: "2026-07-29T10:00:00Z",
+        overall_status: "FAIL",
+      }),
+    ).toThrow("study report.aggregation_policy");
   });
 });

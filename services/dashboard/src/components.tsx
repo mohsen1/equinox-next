@@ -1,14 +1,24 @@
 import { useState, type PropsWithChildren, type ReactNode } from "react";
+import {
+  Boxes,
+  FlaskConical,
+  GitBranch,
+  LayoutDashboard,
+  Orbit,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
 import { artifactUrl } from "./api";
 import { Link, NavLink, useLocation } from "./router";
 import type { ArtifactRef } from "./types";
 
 const NAV_ITEMS = [
-  { to: "/runs", label: "Runs" },
-  { to: "/studies", label: "Studies" },
-  { to: "/environments", label: "Environments" },
-  { to: "/proofs", label: "Proofs" },
-];
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/runs", label: "Runs", icon: GitBranch },
+  { to: "/studies", label: "Studies", icon: FlaskConical },
+  { to: "/environments", label: "Environments", icon: Boxes },
+  { to: "/proofs", label: "Proofs", icon: ShieldCheck },
+] satisfies Array<{ to: string; label: string; icon: LucideIcon }>;
 
 export function AppShell({ children }: PropsWithChildren) {
   const location = useLocation();
@@ -20,18 +30,19 @@ export function AppShell({ children }: PropsWithChildren) {
       <aside className="rail" aria-label="Primary navigation">
         <NavLink className="brand" to="/runs" aria-label="Equinox Next runs">
           <span className="brand-mark" aria-hidden="true">
-            EQ
+            <Orbit />
           </span>
-          <span>Equinox</span>
+          <span>
+            Equinox <strong>Next</strong>
+          </span>
         </NavLink>
         <nav>
           {NAV_ITEMS.map((item) => {
             const isActive =
-              item.to === "/runs"
-                ? location.pathname.startsWith("/runs") ||
-                  location.pathname.startsWith("/rollout-trees") ||
-                  location.pathname.startsWith("/verification-runs")
-                : location.pathname.startsWith(item.to);
+              item.to === "/dashboard"
+                ? location.pathname === "/dashboard"
+                : location.pathname === item.to ||
+                  location.pathname.startsWith(`${item.to}/`);
             return (
               <Link
                 key={item.to}
@@ -39,7 +50,10 @@ export function AppShell({ children }: PropsWithChildren) {
                 aria-current={isActive ? "page" : undefined}
                 className={isActive ? "nav-item active" : "nav-item"}
               >
-                {item.label}
+                <span className="nav-icon" aria-hidden="true">
+                  <item.icon />
+                </span>
+                <span className="nav-label">{item.label}</span>
               </Link>
             );
           })}
@@ -91,8 +105,15 @@ function statusTone(status: string): string {
       "VERIFIED",
       "PROMOTED",
       "RELEASED",
-      "PASS",
       "ELIGIBLE",
+      "MATCHED",
+      "MATCHED_CONTROL",
+      "USED_IN_TRAINING",
+      "MATERIALIZED",
+      "IMPROVED",
+      "REPLICATED",
+      "EXTERNALLY_VALIDATED",
+      "PASS",
     ].includes(status)
   )
     return "positive";
@@ -104,6 +125,7 @@ function statusTone(status: string): string {
       "EXCLUDED",
       "CANDIDATE_FAILED",
       "INELIGIBLE",
+      "REGRESSED_ROLLED_BACK",
     ].includes(status)
   )
     return "negative";
@@ -114,10 +136,60 @@ function statusTone(status: string): string {
       "RETRYING",
       "INFRA_FAILED",
       "CANCEL_REQUESTED",
+      "INCONCLUSIVE",
+      "NO_UPDATE",
+      "INCOMPLETE",
+      "CONTRACT_ONLY",
+      "NOT_EVALUATED",
+      "EXPLORATORY_SINGLE_SEED",
     ].includes(status)
   )
     return "warning";
   return "neutral";
+}
+
+export function ExecutionBadge({ status }: { status: string }) {
+  const label: Record<string, string> = {
+    SUCCEEDED: "Completed",
+    FAILED: "Failed",
+    CANCELED: "Canceled",
+    CANCEL_REQUESTED: "Cancel requested",
+  };
+  return (
+    <span className={`status ${statusTone(status)}`}>
+      {label[status] ?? friendlyStatus(status)}
+    </span>
+  );
+}
+
+export function LearningOutcomeBadge({ outcome }: { outcome: string }) {
+  const label: Record<string, string> = {
+    INCONCLUSIVE: "Inconclusive",
+    NOT_EVALUATED: "Not evaluated",
+    NO_UPDATE: "No policy update",
+    IMPROVED: "Improved",
+    REGRESSED_ROLLED_BACK: "Regressed · rolled back",
+  };
+  return (
+    <span className={`status ${statusTone(outcome)}`}>
+      {label[outcome] ?? friendlyStatus(outcome)}
+    </span>
+  );
+}
+
+export function EvidenceStrengthBadge({ strength }: { strength: string }) {
+  const label: Record<string, string> = {
+    CONTRACT_ONLY: "Contract evidence only",
+    EXPLORATORY_SINGLE_SEED: "Exploratory · single seed",
+    MATCHED_CONTROL: "Matched control",
+    REPLICATED: "Replicated",
+    EXTERNALLY_VALIDATED: "Externally validated",
+  };
+  return (
+    <span className={`status ${statusTone(strength)}`}>
+      {label[strength] ?? friendlyStatus(strength)}
+    </span>
+  );
 }
 
 export function friendlyStatus(value: string): string {
@@ -232,13 +304,15 @@ export function Section({
   aside,
   children,
   className = "",
+  id,
 }: PropsWithChildren<{
   title: ReactNode;
   aside?: ReactNode;
   className?: string;
+  id?: string;
 }>) {
   return (
-    <section className={`section ${className}`}>
+    <section className={`section ${className}`} id={id}>
       <div className="section-heading">
         <h2>{title}</h2>
         {aside}

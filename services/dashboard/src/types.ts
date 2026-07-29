@@ -175,18 +175,18 @@ export interface ResearchStudySummary {
 export interface ResearchStudyCondition {
   role?: string;
   status?: string;
-  seed?: number;
-  branch_width?: number;
+  seed?: number | null;
+  branch_width?: number | null;
   policy_mutation_enabled?: boolean;
-  sampled_completions?: number;
-  policy_updates?: number;
-  optimizer_updates?: number;
-  initial_successes?: number;
-  final_successes?: number;
-  gain?: number;
-  paired_improved?: number;
-  paired_regressed?: number;
-  paired_p_value?: number;
+  sampled_completions?: number | null;
+  policy_updates?: number | null;
+  optimizer_updates?: number | null;
+  initial_successes?: number | null;
+  final_successes?: number | null;
+  gain?: number | null;
+  paired_improved?: number | null;
+  paired_regressed?: number | null;
+  paired_p_value?: number | null;
 }
 
 export interface ResearchStudyReport {

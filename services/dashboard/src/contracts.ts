@@ -3,6 +3,8 @@ import type {
   ResearchComputeExecution,
   ResearchProofDetail,
   ResearchProofSummary,
+  ResearchStudyReport,
+  ResearchStudySummary,
   ResearchTrajectoryResponse,
   RunSummary,
 } from "./types";
@@ -14,6 +16,10 @@ export interface RunsResponse {
 
 export interface ProofsResponse {
   items: ResearchProofSummary[];
+}
+
+export interface StudiesResponse {
+  items: ResearchStudySummary[];
 }
 
 export function decodeRunsResponse(value: unknown): RunsResponse {
@@ -51,6 +57,101 @@ export function decodeResearchComputeExecution(
     );
   }
   return item as unknown as ResearchComputeExecution;
+}
+
+export function decodeStudiesResponse(value: unknown): StudiesResponse {
+  const root = record(value, "studies response");
+  return {
+    items: array(root.items, "studies").map((value, index) => {
+      const item = record(value, `study ${index}`);
+      requiredString(item.study_id, `study ${index}.study_id`);
+      requiredString(item.generated_at, `study ${index}.generated_at`);
+      studyStatus(item.overall_status, `study ${index}.overall_status`);
+      finiteNumber(item.condition_count, `study ${index}.condition_count`);
+      finiteNumber(item.execution_count, `study ${index}.execution_count`);
+      finiteNumber(
+        item.estimated_provider_cost_usd,
+        `study ${index}.estimated_provider_cost_usd`,
+      );
+      const decisions = record(item.decisions, `study ${index}.decisions`);
+      for (const [decisionId, status] of Object.entries(decisions)) {
+        studyStatus(status, `study ${index}.decisions.${decisionId}`);
+      }
+      return item as unknown as ResearchStudySummary;
+    }),
+  };
+}
+
+export function decodeResearchStudyReport(value: unknown): ResearchStudyReport {
+  const item = record(value, "study report");
+  requiredString(item.study_id, "study report.study_id");
+  requiredString(item.report_id, "study report.report_id");
+  requiredString(item.generated_at, "study report.generated_at");
+  requiredString(item.aggregation_policy, "study report.aggregation_policy");
+  requiredString(item.report_digest, "study report.report_digest");
+  studyStatus(item.overall_status, "study report.overall_status");
+  const freeze = record(item.freeze, "study report.freeze");
+  if (freeze.model !== undefined && freeze.model !== null) {
+    record(freeze.model, "study report.freeze.model");
+  }
+  const conditions = record(item.conditions, "study report.conditions");
+  for (const [conditionId, value] of Object.entries(conditions)) {
+    const condition = record(value, `study condition ${conditionId}`);
+    for (const field of [
+      "seed",
+      "branch_width",
+      "sampled_completions",
+      "policy_updates",
+      "optimizer_updates",
+      "initial_successes",
+      "final_successes",
+      "gain",
+      "paired_improved",
+      "paired_regressed",
+      "paired_p_value",
+    ]) {
+      nullableFiniteNumber(
+        condition[field],
+        `study condition ${conditionId}.${field}`,
+      );
+    }
+  }
+  const decisions = record(item.decisions, "study report.decisions");
+  for (const [decisionId, value] of Object.entries(decisions)) {
+    const decision = record(value, `study decision ${decisionId}`);
+    studyStatus(decision.status, `study decision ${decisionId}.status`);
+    record(decision.evidence, `study decision ${decisionId}.evidence`);
+  }
+  const failureCount = record(item.failure_count, "study report.failure_count");
+  finiteNumber(
+    failureCount.provider_executions,
+    "study report.failure_count.provider_executions",
+  );
+  finiteNumber(
+    failureCount.operator_attempts,
+    "study report.failure_count.operator_attempts",
+  );
+  for (const [index, value] of array(
+    item.executions,
+    "study report.executions",
+  ).entries()) {
+    const execution = record(value, `study execution ${index}`);
+    requiredString(
+      execution.execution_id,
+      `study execution ${index}.execution_id`,
+    );
+    requiredString(execution.outcome, `study execution ${index}.outcome`);
+    nullableFiniteNumber(
+      execution.estimated_cost_usd,
+      `study execution ${index}.estimated_cost_usd`,
+    );
+    if (typeof execution.teardown_confirmed !== "boolean") {
+      throw new Error(
+        `Invalid API response: study execution ${index}.teardown_confirmed.`,
+      );
+    }
+  }
+  return item as unknown as ResearchStudyReport;
 }
 
 export function decodeProofsResponse(value: unknown): ProofsResponse {
@@ -156,4 +257,23 @@ function requiredString(value: unknown, label: string): string {
     throw new Error(`Invalid API response: expected ${label}.`);
   }
   return value;
+}
+
+function studyStatus(value: unknown, label: string): "PASS" | "FAIL" {
+  if (value !== "PASS" && value !== "FAIL") {
+    throw new Error(`Invalid API response: expected ${label}.`);
+  }
+  return value;
+}
+
+function finiteNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Invalid API response: expected ${label}.`);
+  }
+  return value;
+}
+
+function nullableFiniteNumber(value: unknown, label: string): number | null {
+  if (value === undefined || value === null) return null;
+  return finiteNumber(value, label);
 }

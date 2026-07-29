@@ -7,13 +7,19 @@ import {
   Section,
   StatusBadge,
 } from "../components";
+import {
+  decodeResearchStudyReport,
+  decodeStudiesResponse,
+  type StudiesResponse,
+} from "../contracts";
 import { Link, useParams } from "../router";
-import type { ResearchStudyReport, ResearchStudySummary } from "../types";
+import type { ResearchStudyReport } from "../types";
 
 export function StudiesPage() {
-  const studies = useApi<{ items: ResearchStudySummary[] }>(
+  const studies = useApi<StudiesResponse>(
     "/v1/studies",
     10_000,
+    decodeStudiesResponse,
   );
 
   return (
@@ -66,6 +72,7 @@ export function StudyPage() {
   const study = useApi<ResearchStudyReport>(
     `/v1/studies/${encodeURIComponent(studyId)}`,
     10_000,
+    decodeResearchStudyReport,
   );
   const report = study.data;
   const conditions = report ? Object.entries(report.conditions) : [];
@@ -205,6 +212,8 @@ export function StudyPage() {
   );
 }
 
-function formatRate(value: number | undefined): string {
-  return value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
+function formatRate(value: number | null | undefined): string {
+  return value === undefined || value === null
+    ? "—"
+    : `${(value * 100).toFixed(1)}%`;
 }

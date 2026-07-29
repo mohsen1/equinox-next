@@ -5,6 +5,7 @@
  * FIRST VIEWPORT: Compact rail, decision-led route header, and a dense evidence workspace.
  * FORM: Operate surface; shared-prefix/four-lane composition selected from study B, with A's inspector.
  */
+import { lazy, Suspense } from "react";
 import { AppShell } from "./components";
 import { EnvironmentsPage } from "./pages/environments";
 import { ResearchTrajectoryPage } from "./pages/research-trajectory";
@@ -13,11 +14,33 @@ import { ProofDetailPage, ProofsPage } from "./pages/proofs";
 import { StudyPage, StudiesPage } from "./pages/studies";
 import { Navigate, Route, Routes } from "./router";
 
+const DashboardPage = lazy(() => import("./pages/dashboard"));
+
 export function App() {
   return (
     <AppShell>
       <Routes>
         <Route path="/" element={<Navigate to="/runs" replace />} />
+        <Route
+          path="/dashboard"
+          element={
+            <Suspense
+              fallback={
+                <div
+                  className="dashboard-route-loading"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="loading-line" />
+                  <span className="loading-line short" />
+                  <span>Loading dashboard…</span>
+                </div>
+              }
+            >
+              <DashboardPage />
+            </Suspense>
+          }
+        />
         <Route path="/runs" element={<RunsPage />} />
         <Route
           path="/runs/research/:executionId"

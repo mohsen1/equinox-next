@@ -12,8 +12,10 @@
   },
   "dependencies": {
     "@xyflow/react": "12.8.2",
+    "lucide-react": "1.27.0",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "recharts": "3.10.1"
   },
   "devDependencies": {
     "@types/react": "19.1.8",
