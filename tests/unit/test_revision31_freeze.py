@@ -24,6 +24,10 @@ def test_revision31_trainer_is_byte_for_byte_frozen() -> None:
     assert manifest["frozen_design"]["branch_widths"] == [1, 4]
     assert manifest["frozen_design"]["optimization_seeds_per_cell"] == 5
     assert manifest["frozen_design"]["completion_budget"] == 320
+    assert manifest["operational_amendments"] == [
+        "research/studies/revision31-capacity-amendment-1.json",
+        "research/studies/revision31-operational-amendment-2.json",
+    ]
 
     for source in manifest["source_files"]:
         path = REPOSITORY_ROOT / source["path"]
