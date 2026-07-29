@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import math
 import os
@@ -27,8 +28,55 @@ MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 MODEL_REVISION = "c03e6d358207e414f1eca0bb1891e29f1db0e242"
 MODEL_PARAMETER_COUNT = 7_615_616_512
 MODEL_SAFETENSORS_BYTES = 15_231_271_864
+SNAPSHOT_FILES = {
+    "config.json": {
+        "size_bytes": 663,
+        "sha256": "c0242402ad6a13b331ea320feea8c7e3776ffb7a4eff0757b9cd667e116d9a28",
+    },
+    "generation_config.json": {
+        "size_bytes": 242,
+        "sha256": "1a628a5775bc69cde01c6749a531150ca4d3189652c618a174f7077923acf3b1",
+    },
+    "merges.txt": {
+        "size_bytes": 1_671_839,
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+    },
+    "model-00001-of-00004.safetensors": {
+        "size_bytes": 4_877_660_776,
+        "sha256": "0b6f069918b07c064cbba8ae4f00f529aa9bbf84b7cdfcb7fc2694a40f6aa8ef",
+    },
+    "model-00002-of-00004.safetensors": {
+        "size_bytes": 4_932_751_008,
+        "sha256": "c3d46733e7aa054ea7b063fbccd0a5a08446e7bd1814bef26936c5aa1331da62",
+    },
+    "model-00003-of-00004.safetensors": {
+        "size_bytes": 4_330_865_200,
+        "sha256": "9fe45dacee087385b3d2d6dd27a7413a8a56d95f145772facc148fa86fc73446",
+    },
+    "model-00004-of-00004.safetensors": {
+        "size_bytes": 1_089_994_880,
+        "sha256": "5aa6e5cbe642377fd441fb4e60e83cca96b2bcd9820e245b9ea06d94653f17f2",
+    },
+    "model.safetensors.index.json": {
+        "size_bytes": 27_752,
+        "sha256": "998a078123ffc97763690de7f2a677eb89168af5eaf8a5e12e6bc24d18e25bdb",
+    },
+    "tokenizer.json": {
+        "size_bytes": 7_031_645,
+        "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+    },
+    "tokenizer_config.json": {
+        "size_bytes": 7_305,
+        "sha256": "959e7f1d9a1b7641a6d6ce05ca97b75c7894fcb66cbe5a040406458fb1128ee4",
+    },
+    "vocab.json": {
+        "size_bytes": 2_776_833,
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+    },
+}
 SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
 SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@1"
+CLEANUP_COST_RESERVE_SECONDS = 120
 DEFAULT_MANIFEST_PATH = (
     Path(__file__).resolve().parents[1] / "studies/larger-model-eligibility.json"
 )
@@ -44,6 +92,7 @@ REQUIRED_GATE_RESULTS = (
     "pinned_snapshot_ready",
     "offline_mode_active",
     "hardware_verified",
+    "pilot_runtime_feasible",
     "policy_unchanged",
     "optimizer_state_restored",
     "test_split_isolated",
@@ -57,6 +106,7 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "revision": MODEL_REVISION,
         "parameter_count": MODEL_PARAMETER_COUNT,
         "safetensors_bytes": MODEL_SAFETENSORS_BYTES,
+        "snapshot_files": SNAPSHOT_FILES,
         "dtype": "bfloat16",
     },
     "runtime": {
@@ -68,12 +118,17 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
             "transformers": "5.14.1",
         },
     },
+    "interface": {
+        "environment_revision": "repository-repair-simulator@6",
+        "action_protocol_revision": "repository-repair-json-tools@5",
+    },
     "hardware": {
         "provider": "runpod",
         "cloud_type": "SECURE",
         "gpu_id": "NVIDIA L40",
         "gpu_display_name": "L40",
         "minimum_gpu_memory_gb": 48,
+        "minimum_cuda_memory_bytes": 47_000_000_000,
         "container_disk_gb": 50,
         "volume_disk_gb": 50,
         "minimum_free_cache_bytes": 25_000_000_000,
@@ -88,14 +143,14 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
     "screen_limits": {
         "maximum_hourly_cost_usd": 1.0,
         "maximum_total_cost_usd": 0.75,
-        "maximum_lifetime_seconds": 2_700,
+        "maximum_lifetime_seconds": 2_580,
         "model_load_timeout_seconds": 1_200,
         "maximum_workload_attempts": 1,
     },
     "pilot_limits": {
         "maximum_hourly_cost_usd": 1.0,
         "maximum_total_cost_usd": 4.0,
-        "maximum_lifetime_seconds": 14_400,
+        "maximum_lifetime_seconds": 14_280,
         "model_load_timeout_seconds": 1_200,
         "maximum_workload_attempts": 1,
     },
@@ -125,7 +180,22 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
             "maximum_solved_sibling_rate": 0.8,
             "minimum_baseline_exact_rate": 0.02,
             "maximum_baseline_exact_rate": 0.75,
+            "maximum_predicted_final_evaluation_seconds": 1_440,
         },
+    },
+    "pilot": {
+        "target_runtime_seconds": 9_000,
+        "maximum_updates": 40,
+        "validation_examples": 8,
+        "test_examples": 12,
+        "training_tasks_per_update": 4,
+        "replay_tasks_per_level": 1,
+        "mastery_windows": 2,
+        "maximum_final_evaluation_reserve_seconds": 1_800,
+        "training_microbatch_size": 1,
+        "maximum_input_tokens": 1_536,
+        "minimum_effective_policy_updates": 1,
+        "final_evaluation_safety_factor": 1.5,
     },
     "authorization": {
         "maximum_age_hours": 168,
@@ -217,7 +287,7 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
         limits = payload[name]
         bound = lifetime_cost_bound(
             limits["maximum_hourly_cost_usd"],
-            limits["maximum_lifetime_seconds"],
+            limits["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS,
         )
         if bound > Decimal(str(limits["maximum_total_cost_usd"])):
             raise GateError(f"manifest.{name} lifetime cost exceeds its total-cost ceiling")
@@ -402,7 +472,15 @@ def verify_huggingface_metadata(
         name = sibling.get("rfilename")
         if isinstance(name, str) and name.startswith("model-") and name.endswith(".safetensors"):
             size = sibling.get("size")
-            if type(size) is not int or size <= 0:
+            expected_file = model["snapshot_files"].get(name)
+            lfs = sibling.get("lfs")
+            if (
+                not isinstance(expected_file, dict)
+                or type(size) is not int
+                or size != expected_file["size_bytes"]
+                or not isinstance(lfs, dict)
+                or lfs.get("sha256") != expected_file["sha256"]
+            ):
                 raise GateError(f"Hugging Face snapshot shard {name!r} has no valid size")
             shard_names.append(name)
             shard_sizes.append(size)
@@ -418,6 +496,71 @@ def verify_huggingface_metadata(
         "safetensors_bytes": observed_bytes,
         "shard_count": len(shard_names),
         "metadata_url": url,
+    }
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(8 * 1024 * 1024):
+                digest.update(chunk)
+    except OSError as error:
+        raise GateError(f"could not hash pinned snapshot file {path.name}: {error}") from error
+    return digest.hexdigest()
+
+
+def verify_local_snapshot(
+    manifest: Mapping[str, Any],
+    snapshot: Path,
+) -> dict[str, Any]:
+    """Hash every required local artifact before any model initialization."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    if not snapshot.is_dir():
+        raise GateError("the pinned local model snapshot directory is unavailable")
+    expected_files = manifest["model"]["snapshot_files"]
+    observed_files: dict[str, dict[str, Any]] = {}
+    for name, expected in expected_files.items():
+        path = snapshot / name
+        try:
+            size = path.stat().st_size
+        except OSError as error:
+            raise GateError(f"the pinned snapshot is missing {name}") from error
+        if not path.is_file() or size != expected["size_bytes"]:
+            raise GateError(f"the pinned snapshot file {name} has an invalid size")
+        observed_sha256 = _sha256_path(path)
+        if observed_sha256 != expected["sha256"]:
+            raise GateError(f"the pinned snapshot file {name} failed SHA-256 verification")
+        observed_files[name] = {
+            "size_bytes": size,
+            "sha256": observed_sha256,
+        }
+
+    try:
+        index = json.loads((snapshot / "model.safetensors.index.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateError("the pinned model index is invalid") from error
+    expected_shards = {name for name in expected_files if name.endswith(".safetensors")}
+    weight_map = index.get("weight_map") if isinstance(index, dict) else None
+    if (
+        not isinstance(weight_map, dict)
+        or not weight_map
+        or set(weight_map.values()) != expected_shards
+    ):
+        raise GateError("the pinned model index does not cover the exact shard set")
+
+    snapshot_material = {
+        "profile_id": manifest["profile_id"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+        "files": observed_files,
+    }
+    return {
+        **snapshot_material,
+        "snapshot_path": str(snapshot),
+        "snapshot_digest": "sha256:"
+        + hashlib.sha256(canonical_json(snapshot_material)).hexdigest(),
     }
 
 
@@ -443,6 +586,16 @@ def result_digest(result: Mapping[str, Any]) -> str:
         raise GateError("screen result must be an object")
     content = {key: value for key, value in result.items() if key != "digest"}
     return "sha256:" + hashlib.sha256(canonical_json(content)).hexdigest()
+
+
+def expected_snapshot_digest(manifest: Mapping[str, Any]) -> str:
+    material = {
+        "profile_id": manifest["profile_id"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+        "files": manifest["model"]["snapshot_files"],
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(material)).hexdigest()
 
 
 def _required_number(value: Any, name: str) -> float:
@@ -473,6 +626,155 @@ def _utc_timestamp(value: Any, name: str) -> datetime:
     return timestamp
 
 
+def _receipt_digest(receipt: Mapping[str, Any]) -> str:
+    content = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    return "sha256:" + hashlib.sha256(canonical_json(content)).hexdigest()
+
+
+def build_volume_readiness_receipt(
+    manifest: Mapping[str, Any],
+    snapshot: Path,
+    *,
+    volume_id: str,
+    data_center_id: str,
+    volume_size_gb: int,
+    dependency_versions: Mapping[str, str],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a local receipt on a CPU-prewarmed mounted network volume."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    if (
+        not isinstance(volume_id, str)
+        or not volume_id
+        or not isinstance(data_center_id, str)
+        or not data_center_id
+        or type(volume_size_gb) is not int
+        or volume_size_gb < manifest["hardware"]["volume_disk_gb"]
+    ):
+        raise GateError("volume readiness identity or size is invalid")
+    if (
+        not isinstance(dependency_versions, Mapping)
+        or dict(dependency_versions) != manifest["runtime"]["dependencies"]
+    ):
+        raise GateError("volume readiness dependencies do not match the immutable profile")
+    snapshot_evidence = verify_local_snapshot(manifest, snapshot)
+    prepared_at = now or datetime.now(UTC)
+    if prepared_at.tzinfo is None or prepared_at.utcoffset() is None:
+        raise GateError("volume readiness time must be timezone-aware")
+    prepared_at = prepared_at.astimezone(UTC)
+    receipt = {
+        "schema_version": 1,
+        "profile_id": manifest["profile_id"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+        "manifest_digest": "sha256:" + hashlib.sha256(canonical_json(manifest)).hexdigest(),
+        "network_volume_id": volume_id,
+        "network_volume_data_center_id": data_center_id,
+        "network_volume_size_gb": volume_size_gb,
+        "snapshot_digest": snapshot_evidence["snapshot_digest"],
+        "dependencies": dict(dependency_versions),
+        "prepared_at": prepared_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "ready": True,
+    }
+    receipt["receipt_digest"] = _receipt_digest(receipt)
+    return receipt
+
+
+def verify_volume_readiness_receipt(
+    manifest: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    provider_volume: Any,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Verify the CPU-prewarm receipt against current provider volume identity."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    required_keys = {
+        "schema_version",
+        "profile_id",
+        "model_id",
+        "model_revision",
+        "manifest_digest",
+        "network_volume_id",
+        "network_volume_data_center_id",
+        "network_volume_size_gb",
+        "snapshot_digest",
+        "dependencies",
+        "prepared_at",
+        "ready",
+        "receipt_digest",
+    }
+    if not isinstance(receipt, Mapping) or set(receipt) != required_keys:
+        raise GateError("volume readiness receipt has an invalid field set")
+    expected_identity = {
+        "schema_version": 1,
+        "profile_id": manifest["profile_id"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+        "manifest_digest": "sha256:" + hashlib.sha256(canonical_json(manifest)).hexdigest(),
+        "snapshot_digest": expected_snapshot_digest(manifest),
+        "dependencies": manifest["runtime"]["dependencies"],
+        "ready": True,
+    }
+    for key, expected in expected_identity.items():
+        try:
+            _expect_exact(receipt.get(key), expected, f"volume readiness receipt {key}")
+        except GateError as error:
+            raise GateError(f"volume readiness receipt {key} does not match the profile") from error
+    volume_id = receipt.get("network_volume_id")
+    data_center_id = receipt.get("network_volume_data_center_id")
+    volume_size_gb = receipt.get("network_volume_size_gb")
+    if (
+        not isinstance(volume_id, str)
+        or not volume_id
+        or not isinstance(data_center_id, str)
+        or not data_center_id
+        or type(volume_size_gb) is not int
+        or volume_size_gb < manifest["hardware"]["volume_disk_gb"]
+    ):
+        raise GateError("volume readiness receipt volume identity or size is invalid")
+    receipt_digest = receipt.get("receipt_digest")
+    if not isinstance(receipt_digest, str) or receipt_digest != _receipt_digest(receipt):
+        raise GateError("volume readiness receipt digest is invalid")
+    prepared_at = _utc_timestamp(receipt.get("prepared_at"), "volume receipt prepared_at")
+    current_time = now or datetime.now(UTC)
+    if current_time.tzinfo is None or current_time.utcoffset() is None:
+        raise GateError("volume receipt verification time must be timezone-aware")
+    current_time = current_time.astimezone(UTC)
+    age_seconds = (current_time - prepared_at).total_seconds()
+    if age_seconds < 0 or age_seconds > 7 * 24 * 3_600:
+        raise GateError("volume readiness receipt is not fresh")
+
+    payload = _json_value(provider_volume, "RunPod network volume")
+    if not isinstance(payload, Mapping):
+        raise GateError("RunPod network volume must be an object")
+    volume = payload.get("networkVolume", payload)
+    if not isinstance(volume, Mapping):
+        raise GateError("RunPod network volume payload is invalid")
+    provider_id = volume.get("id", volume.get("networkVolumeId"))
+    provider_size = volume.get("size")
+    provider_data_center = volume.get("dataCenterId")
+    if (
+        not isinstance(provider_id, str)
+        or not isinstance(provider_data_center, str)
+        or type(provider_size) is not int
+        or provider_id != volume_id
+        or provider_data_center != data_center_id
+        or provider_size < volume_size_gb
+    ):
+        raise GateError("RunPod network volume no longer matches its readiness receipt")
+    return {
+        "profile_id": manifest["profile_id"],
+        "network_volume_id": provider_id,
+        "network_volume_data_center_id": provider_data_center,
+        "network_volume_size_gb": provider_size,
+        "snapshot_digest": receipt["snapshot_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+    }
+
+
 def verify_pilot_authorization(
     manifest: Mapping[str, Any],
     screen_result: Mapping[str, Any],
@@ -493,6 +795,14 @@ def verify_pilot_authorization(
         "profile_id": manifest["profile_id"],
         "model_id": manifest["model"]["id"],
         "model_revision": manifest["model"]["revision"],
+        "environment_revision": manifest["interface"]["environment_revision"],
+        "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "branch_width": manifest["screen"]["branch_width"],
+        "training_microbatch_size": manifest["screen"]["training_microbatch_size"],
+        "maximum_input_tokens": manifest["screen"]["maximum_input_tokens"],
+        "capacity_smoke_completed": True,
+        "gradient_checkpointing_enabled": True,
+        "pinned_snapshot_digest": expected_snapshot_digest(manifest),
     }
     for key, expected in expected_result_identity.items():
         if screen_result.get(key) != expected:
@@ -546,11 +856,23 @@ def verify_pilot_authorization(
             0.0,
             manifest["hardware"]["maximum_peak_reserved_vram_fraction"],
         ),
+        "predicted_final_evaluation_seconds": (
+            0.0,
+            thresholds["maximum_predicted_final_evaluation_seconds"],
+        ),
     }
     for key, (minimum, maximum) in metric_limits.items():
         observed = _required_number(screen_result.get(key), f"screen result {key}")
         if not minimum <= observed <= maximum:
             raise GateError(f"screen result {key}={observed} is outside [{minimum}, {maximum}]")
+    if (
+        _required_number(
+            screen_result.get("predicted_final_evaluation_seconds"),
+            "screen result predicted_final_evaluation_seconds",
+        )
+        <= 0
+    ):
+        raise GateError("screen result did not measure positive pilot runtime")
 
     completed_baseline_examples = _required_integer(
         screen_result.get("completed_baseline_examples"),
@@ -616,6 +938,12 @@ def verify_pilot_authorization(
         raise GateError("provider receipt does not cover the exact screen result")
     if provider_receipt.get("teardown_confirmed") is not True:
         raise GateError("provider teardown is not confirmed")
+    resource_profile = provider_receipt.get("resource_profile")
+    network_volume_id = (
+        resource_profile.get("network_volume_id") if isinstance(resource_profile, Mapping) else None
+    )
+    if not isinstance(network_volume_id, str) or not network_volume_id:
+        raise GateError("provider receipt does not bind a RunPod network volume")
     provider_handle = provider_receipt.get("provider_handle")
     if not isinstance(provider_handle, str) or not provider_handle.startswith("runpod://pods/"):
         raise GateError("provider receipt has no valid RunPod handle")
@@ -639,6 +967,8 @@ def verify_pilot_authorization(
         "model_revision": manifest["model"]["revision"],
         "screen_workload_revision": manifest["screen"]["workload_revision"],
         "screen_result_digest": observed_digest,
+        "pinned_snapshot_digest": expected_snapshot_digest(manifest),
+        "network_volume_id": network_volume_id,
         "provider_handle": provider_handle,
         "screen_completed_at": provider_receipt["completed_at"],
         "authorized_at": current_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -673,6 +1003,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     authorize_parser = subparsers.add_parser("authorize")
     authorize_parser.add_argument("screen_result", type=Path)
     authorize_parser.add_argument("provider_receipt", type=Path)
+    create_volume_parser = subparsers.add_parser("create-volume-receipt")
+    create_volume_parser.add_argument("--volume-id", required=True)
+    create_volume_parser.add_argument("--data-center-id", required=True)
+    create_volume_parser.add_argument("--volume-size-gb", required=True, type=int)
+    create_volume_parser.add_argument("--snapshot", type=Path)
+    verify_volume_parser = subparsers.add_parser("verify-volume-receipt")
+    verify_volume_parser.add_argument("receipt", type=Path)
+    verify_volume_parser.add_argument("provider_volume", type=Path)
     arguments = parser.parse_args(argv)
 
     try:
@@ -697,11 +1035,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
             }
-        else:
+        elif arguments.command == "authorize":
             output = verify_pilot_authorization(
                 manifest,
                 _read_json_object(arguments.screen_result, "screen result"),
                 _read_json_object(arguments.provider_receipt, "provider receipt"),
+            )
+        elif arguments.command == "create-volume-receipt":
+            snapshot = arguments.snapshot or (
+                Path(manifest["artifact_readiness"]["cache_directory"])
+                / "hub"
+                / ("models--" + manifest["model"]["id"].replace("/", "--"))
+                / "snapshots"
+                / manifest["model"]["revision"]
+            )
+            versions = {
+                package: importlib.metadata.version(package)
+                for package in manifest["runtime"]["dependencies"]
+            }
+            output = build_volume_readiness_receipt(
+                manifest,
+                snapshot,
+                volume_id=arguments.volume_id,
+                data_center_id=arguments.data_center_id,
+                volume_size_gb=arguments.volume_size_gb,
+                dependency_versions=versions,
+            )
+        else:
+            raw_volume = (
+                sys.stdin.buffer.read()
+                if str(arguments.provider_volume) == "-"
+                else arguments.provider_volume.read_bytes()
+            )
+            output = verify_volume_readiness_receipt(
+                manifest,
+                _read_json_object(arguments.receipt, "volume readiness receipt"),
+                raw_volume,
             )
     except (GateError, OSError) as error:
         parser.error(str(error))
