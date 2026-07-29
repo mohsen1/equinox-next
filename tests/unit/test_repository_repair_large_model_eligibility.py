@@ -513,7 +513,7 @@ def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
         "EQUINOX_RL_TEST_EXAMPLES": "4",
         "EQUINOX_RL_TARGET_SECONDS": "2400",
         "EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS": "1200",
-            "EQUINOX_RL_SEED": "137",
+        "EQUINOX_RL_SEED": "137",
         "EQUINOX_WORKLOAD_ATTEMPT": "1",
     }.items():
         monkeypatch.setenv(name, value)

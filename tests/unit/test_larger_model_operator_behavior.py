@@ -105,8 +105,7 @@ def _write_volume_receipt(path: Path) -> None:
         "profile_id": manifest["profile_id"],
         "model_id": manifest["model"]["id"],
         "model_revision": manifest["model"]["revision"],
-        "manifest_digest": "sha256:"
-        + hashlib.sha256(canonical_json(manifest)).hexdigest(),
+        "manifest_digest": "sha256:" + hashlib.sha256(canonical_json(manifest)).hexdigest(),
         "network_volume_id": VOLUME_ID,
         "network_volume_data_center_id": DATA_CENTER_ID,
         "network_volume_size_gb": 50,
@@ -390,9 +389,7 @@ date +%s
     assert result.returncode == 0, result.stdout + result.stderr
     assert int(result.stdout.strip()) == 1012
     trace = [
-        json.loads(line)
-        for line in trace_path.read_text(encoding="utf-8").splitlines()
-        if line
+        json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line
     ]
     assert sum(event["seconds"] for event in trace) == 12
     assert all(event["seconds"] > 0 for event in trace)
