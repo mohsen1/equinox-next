@@ -2,6 +2,9 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -x "$repository_root/.venv/bin/python3" ]]; then
+  PATH="$repository_root/.venv/bin:$PATH"
+fi
 "$repository_root/scripts/ensure-local-env"
 internal_token="${EQUINOX_INTERNAL_TOKEN:-$(
   sed -n 's/^EQUINOX_INTERNAL_TOKEN=//p' "$repository_root/.env" | tail -n 1
@@ -18,6 +21,7 @@ study_validation_seed_base="${EQUINOX_STUDY_VALIDATION_SEED_BASE:-}"
 study_test_seed_base="${EQUINOX_STUDY_TEST_SEED_BASE:-}"
 study_completion_budget="${EQUINOX_STUDY_COMPLETION_BUDGET:-}"
 study_eligibility_only="${EQUINOX_STUDY_ELIGIBILITY_ONLY:-}"
+larger_model_mode="${EQUINOX_LARGER_MODEL_MODE:-}"
 expected_study_id="repository-repair-confirmatory-study@1"
 expected_complexity_strategy="adaptive"
 expected_mastery_window_basis="retained_zero_regression_checkpoints"
@@ -47,7 +51,38 @@ case "$experiment" in
   repository-repair)
     contract_workload_file="repository_repair_rl.py"
     environment_file="repository_repair_env.py"
-    if [[ -z "$study_condition" ]]; then
+    if [[ -n "$larger_model_mode" ]]; then
+      if [[ -n "$study_condition" || -n "$study_eligibility_only" ]]; then
+        echo "Larger-model runs cannot be combined with a frozen study condition." >&2
+        exit 1
+      fi
+      contract_workload_file="repository_repair_large_model_pilot.py"
+      environment_file="repository_repair_env_v32.py"
+      support_files=(
+        "larger_model_gate.py"
+        "repository_repair_env.py"
+        "repository_repair_env_v31.py"
+        "$environment_file"
+        "repository_repair_rl.py"
+        "repository_repair_study.py"
+      )
+      case "$larger_model_mode" in
+        screen)
+          workload_file="repository_repair_large_model_eligibility.py"
+          workload_id="repository-repair-larger-model-eligibility"
+          execution_name="7B eligibility screen"
+          ;;
+        pilot)
+          workload_file="repository_repair_large_model_pilot.py"
+          workload_id="repository-repair-restored-continuation-post-training"
+          execution_name="7B K=4 pilot"
+          ;;
+        *)
+          echo "EQUINOX_LARGER_MODEL_MODE must be screen or pilot." >&2
+          exit 1
+          ;;
+      esac
+    elif [[ -z "$study_condition" ]]; then
       workload_file="$contract_workload_file"
       support_files=("$environment_file")
     else
@@ -133,7 +168,9 @@ case "$experiment" in
           ;;
       esac
     fi
-    if [[ "$study_eligibility_only" == "1" ]]; then
+    if [[ -n "$larger_model_mode" ]]; then
+      :
+    elif [[ "$study_eligibility_only" == "1" ]]; then
       workload_id="repository-repair-protocol-eligibility"
     else
       workload_id="repository-repair-restored-continuation-post-training"
@@ -152,7 +189,33 @@ case "$experiment" in
     default_mastery_windows="2"
     default_training_tasks_per_update="4"
     default_replay_tasks_per_level="1"
-    if [[ -n "$study_condition" ]]; then
+    if [[ "$larger_model_mode" == "screen" ]]; then
+      default_model_id="Qwen/Qwen2.5-Coder-7B-Instruct"
+      default_gpu_id="NVIDIA L40"
+      default_target_runtime_seconds="1500"
+      default_maximum_lifetime_minutes="43"
+      default_retry_reserve_seconds="300"
+      default_maximum_final_evaluation_reserve_seconds="300"
+      default_maximum_updates="1"
+      default_validation_examples="8"
+      default_test_examples="4"
+      default_mastery_windows="1"
+      default_training_tasks_per_update="8"
+      default_replay_tasks_per_level="1"
+    elif [[ "$larger_model_mode" == "pilot" ]]; then
+      default_model_id="Qwen/Qwen2.5-Coder-7B-Instruct"
+      default_gpu_id="NVIDIA L40"
+      default_target_runtime_seconds="9000"
+      default_maximum_lifetime_minutes="238"
+      default_retry_reserve_seconds="1800"
+      default_maximum_final_evaluation_reserve_seconds="1800"
+      default_maximum_updates="40"
+      default_validation_examples="8"
+      default_test_examples="12"
+      default_mastery_windows="2"
+      default_training_tasks_per_update="4"
+      default_replay_tasks_per_level="1"
+    elif [[ -n "$study_condition" ]]; then
       default_target_runtime_seconds="10800"
       default_maximum_lifetime_minutes="360"
       default_test_examples="12"
@@ -183,12 +246,63 @@ gpu_id="${EQUINOX_RUNPOD_GPU:-$default_gpu_id}"
 template_id="${EQUINOX_RUNPOD_TEMPLATE:-runpod-torch-v280}"
 cloud_type="${EQUINOX_RUNPOD_CLOUD_TYPE:-$default_cloud_type}"
 data_center_ids="${EQUINOX_RUNPOD_DATA_CENTER_IDS:-}"
-maximum_hourly_cost="${EQUINOX_RUNPOD_MAX_HOURLY_COST:-0.50}"
+default_maximum_hourly_cost="0.50"
+default_maximum_total_cost="10.00"
+default_minimum_gpu_memory_gb="1"
+default_model_load_timeout_seconds="1200"
+default_maximum_workload_attempts="2"
+default_container_disk_in_gb="30"
+default_persistent_volume_in_gb="10"
+if [[ "$larger_model_mode" == "screen" ]]; then
+  default_maximum_hourly_cost="1.00"
+  default_maximum_total_cost="0.75"
+  default_minimum_gpu_memory_gb="48"
+  default_maximum_workload_attempts="1"
+  default_container_disk_in_gb="50"
+  default_persistent_volume_in_gb="50"
+elif [[ "$larger_model_mode" == "pilot" ]]; then
+  default_maximum_hourly_cost="1.00"
+  default_maximum_total_cost="4.00"
+  default_minimum_gpu_memory_gb="48"
+  default_maximum_workload_attempts="1"
+  default_container_disk_in_gb="50"
+  default_persistent_volume_in_gb="50"
+fi
+maximum_hourly_cost="${EQUINOX_RUNPOD_MAX_HOURLY_COST:-$default_maximum_hourly_cost}"
+maximum_total_cost="${EQUINOX_RUNPOD_MAX_TOTAL_COST:-$default_maximum_total_cost}"
+minimum_gpu_memory_gb="${EQUINOX_RUNPOD_MIN_GPU_MEMORY_GB:-$default_minimum_gpu_memory_gb}"
+model_load_timeout_seconds="${EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS:-$default_model_load_timeout_seconds}"
+stale_progress_timeout_seconds="${EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS:-1800}"
+maximum_workload_attempts="${EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS:-$default_maximum_workload_attempts}"
+larger_model_authorization_digest="${EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST:-}"
+larger_model_screen_result="${EQUINOX_LARGER_MODEL_SCREEN_RESULT:-}"
+larger_model_screen_receipt="${EQUINOX_LARGER_MODEL_SCREEN_RECEIPT:-}"
+larger_model_screen_result_digest=""
+larger_model_expected_snapshot_digest=""
+volume_readiness_receipt="${EQUINOX_LARGER_MODEL_VOLUME_RECEIPT:-}"
+volume_readiness_receipt_digest=""
 maximum_lifetime_minutes="${EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES:-$default_maximum_lifetime_minutes}"
 boot_timeout_seconds="${EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS:-360}"
-container_disk_in_gb="${EQUINOX_RUNPOD_CONTAINER_DISK_GB:-30}"
-persistent_volume_in_gb="${EQUINOX_RUNPOD_VOLUME_GB:-10}"
-persistent_work_directory="/workspace/equinox-state"
+container_disk_in_gb="${EQUINOX_RUNPOD_CONTAINER_DISK_GB:-$default_container_disk_in_gb}"
+persistent_volume_in_gb="${EQUINOX_RUNPOD_VOLUME_GB:-$default_persistent_volume_in_gb}"
+network_volume_id="${EQUINOX_RUNPOD_NETWORK_VOLUME_ID:-}"
+network_volume_data_center_id=""
+proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
+persistent_work_directory="/workspace/equinox-runs/$proof_id"
+model_cache_directory="/workspace/equinox-state/huggingface"
+operator_lock_directory="$receipt_directory/.runpod-operator.lock"
+operator_lock_acquired=false
+provider_teardown_confirmed=false
+
+release_operator_lock() {
+  if [[ "$operator_lock_acquired" != true ]]; then
+    return
+  fi
+  rm -f -- "$operator_lock_directory/lease.json"
+  if rmdir "$operator_lock_directory"; then
+    operator_lock_acquired=false
+  fi
+}
 if [[ "$experiment" == "sequence-ladder" ]]; then
   model_id="$default_model_id"
   target_runtime_seconds="$default_target_runtime_seconds"
@@ -215,7 +329,7 @@ else
   maximum_final_evaluation_reserve_seconds="${EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS:-$default_maximum_final_evaluation_reserve_seconds}"
 fi
 final_evaluation_generation_overshoot_seconds=0
-if [[ "$experiment" == "repository-repair" ]]; then
+if [[ "$experiment" == "repository-repair" && "$larger_model_mode" != "screen" ]]; then
   final_evaluation_generation_overshoot_seconds=900
 fi
 
@@ -289,6 +403,49 @@ if [[ -z "$image" ]]; then
   echo "RunPod template $template_id did not resolve to a container image." >&2
   exit 1
 fi
+if [[ -n "$larger_model_mode" ]]; then
+  PYTHONPATH="$repository_root" python3 - <<'PY'
+from research.runpod.repository_repair_study import verify_frozen_sources
+
+verify_frozen_sources()
+PY
+  larger_model_manifest="$(
+    python3 "$repository_root/research/runpod/larger_model_gate.py" manifest
+  )"
+  expected_limit_key="${larger_model_mode}_limits"
+  if ! jq -en \
+    --argjson manifest "$larger_model_manifest" \
+    --arg limit_key "$expected_limit_key" \
+    --arg template_id "$template_id" \
+    --arg image "$image" \
+    --arg cloud_type "$cloud_type" \
+    --arg gpu_id "$gpu_id" \
+    --argjson container_disk "$container_disk_in_gb" \
+    --argjson volume_disk "$persistent_volume_in_gb" \
+    --argjson minimum_gpu_memory "$minimum_gpu_memory_gb" \
+    --argjson maximum_hourly "$maximum_hourly_cost" \
+    --argjson maximum_total "$maximum_total_cost" \
+    --argjson maximum_lifetime_seconds "$((maximum_lifetime_minutes * 60))" \
+    --argjson model_load_timeout "$model_load_timeout_seconds" \
+    --argjson maximum_attempts "$maximum_workload_attempts" \
+    '
+      $manifest.runtime.template_id == $template_id
+      and $manifest.runtime.image == $image
+      and $manifest.hardware.cloud_type == $cloud_type
+      and $manifest.hardware.gpu_id == $gpu_id
+      and $manifest.hardware.container_disk_gb == $container_disk
+      and $manifest.hardware.volume_disk_gb == $volume_disk
+      and $manifest.hardware.minimum_gpu_memory_gb == $minimum_gpu_memory
+      and $manifest[$limit_key].maximum_hourly_cost_usd == $maximum_hourly
+      and $manifest[$limit_key].maximum_total_cost_usd == $maximum_total
+      and $manifest[$limit_key].maximum_lifetime_seconds == $maximum_lifetime_seconds
+      and $manifest[$limit_key].model_load_timeout_seconds == $model_load_timeout
+      and $manifest[$limit_key].maximum_workload_attempts == $maximum_attempts
+    ' >/dev/null; then
+    echo "The larger-model provider settings do not exactly match the immutable profile." >&2
+    exit 1
+  fi
+fi
 if [[ "$cloud_type" != "COMMUNITY" && "$cloud_type" != "SECURE" ]]; then
   echo "EQUINOX_RUNPOD_CLOUD_TYPE must be COMMUNITY or SECURE." >&2
   exit 1
@@ -297,6 +454,178 @@ if [[ -n "$data_center_ids" ]] &&
   [[ ! "$data_center_ids" =~ ^[A-Z0-9-]+(,[A-Z0-9-]+)*$ ]]; then
   echo "EQUINOX_RUNPOD_DATA_CENTER_IDS must be a comma-separated list of RunPod datacenter ids." >&2
   exit 1
+fi
+if [[ -n "$network_volume_id" ]] &&
+  [[ ! "$network_volume_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  echo "EQUINOX_RUNPOD_NETWORK_VOLUME_ID is invalid." >&2
+  exit 1
+fi
+if ! jq -en \
+  --argjson hourly "$maximum_hourly_cost" \
+  --argjson total "$maximum_total_cost" \
+  --argjson lifetime "$maximum_lifetime_minutes" \
+  '$hourly > 0
+    and $total > 0
+    and $lifetime > 0
+    and (($hourly * $lifetime / 60) <= $total)' >/dev/null 2>&1; then
+  echo "Hourly cost, total cost, and lifetime must be positive and the lifetime cost bound must fit the total-cost ceiling." >&2
+  exit 1
+fi
+if [[ ! "$minimum_gpu_memory_gb" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EQUINOX_RUNPOD_MIN_GPU_MEMORY_GB must be a positive integer." >&2
+  exit 1
+fi
+if [[ ! "$model_load_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 1
+fi
+if [[ ! "$stale_progress_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS must be a positive integer." >&2
+  exit 1
+fi
+if [[ "$maximum_workload_attempts" != "1" && "$maximum_workload_attempts" != "2" ]]; then
+  echo "EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS must be 1 or 2." >&2
+  exit 1
+fi
+if [[ -n "$larger_model_mode" ]]; then
+  if [[ "$model_id" != "Qwen/Qwen2.5-Coder-7B-Instruct" ]]; then
+    echo "The larger-model profile pins Qwen/Qwen2.5-Coder-7B-Instruct." >&2
+    exit 1
+  fi
+  if [[ "$gpu_id" != "NVIDIA L40" || "$minimum_gpu_memory_gb" -lt 48 ]]; then
+    echo "The larger-model profile requires exactly one NVIDIA L40 with at least 48 GB." >&2
+    exit 1
+  fi
+  if [[ -z "$network_volume_id" ]]; then
+    echo "Larger-model runs require EQUINOX_RUNPOD_NETWORK_VOLUME_ID with the pinned offline snapshot." >&2
+    exit 1
+  fi
+  if ! network_volume="$(
+    timeout 30 runpodctl network-volume get "$network_volume_id" 2>/dev/null
+  )"; then
+    echo "The configured RunPod network volume could not be verified." >&2
+    exit 1
+  fi
+  if ! jq -e \
+    --arg volume_id "$network_volume_id" \
+    --argjson minimum_size "$persistent_volume_in_gb" \
+    '
+      (.networkVolume // .) as $volume
+      | ($volume.id // $volume.networkVolumeId // "") == $volume_id
+        and ($volume.size | type) == "number"
+        and $volume.size >= $minimum_size
+        and ($volume.dataCenterId | type) == "string"
+        and ($volume.dataCenterId | length) > 0
+    ' >/dev/null <<<"$network_volume"; then
+    echo "The configured RunPod network volume identity, size, or data center is invalid." >&2
+    exit 1
+  fi
+  network_volume_data_center_id="$(
+    jq -r '(.networkVolume // .).dataCenterId' <<<"$network_volume"
+  )"
+  if [[ -z "$volume_readiness_receipt" ]]; then
+    volume_readiness_receipt="$receipt_directory/larger-model-volume-$network_volume_id.json"
+  fi
+  if [[ ! -f "$volume_readiness_receipt" ]]; then
+    echo "The configured network volume has no local CPU-prewarm readiness receipt." >&2
+    exit 1
+  fi
+  verified_volume_readiness="$(
+    printf '%s' "$network_volume" |
+      python3 "$repository_root/research/runpod/larger_model_gate.py" \
+        verify-volume-receipt \
+        "$volume_readiness_receipt" \
+        -
+  )"
+  larger_model_expected_snapshot_digest="$(
+    jq -r '.snapshot_digest' <<<"$verified_volume_readiness"
+  )"
+  volume_readiness_receipt_digest="$(
+    jq -r '.receipt_digest' <<<"$verified_volume_readiness"
+  )"
+  if [[ -n "$data_center_ids" ]] &&
+    ! jq -en \
+      --arg configured "$data_center_ids" \
+      --arg required "$network_volume_data_center_id" \
+      '$configured | split(",") | index($required) != null' >/dev/null; then
+    echo "The configured data centers do not include the network volume data center." >&2
+    exit 1
+  fi
+  data_center_inventory="$(timeout 30 runpodctl datacenter list)"
+  if ! jq -e \
+    --arg data_center_id "$network_volume_data_center_id" \
+    --arg gpu_id "$gpu_id" \
+    '
+      any(.[];
+        .id == $data_center_id
+        and any(.gpuAvailability[];
+          .gpuId == $gpu_id
+          and .stockStatus != "Unavailable"
+        )
+      )
+    ' >/dev/null <<<"$data_center_inventory"; then
+    echo "The network volume data center does not currently report a profile-matching L40." >&2
+    exit 1
+  fi
+  if [[ "$larger_model_mode" == "pilot" ]]; then
+    if [[ ! -f "$larger_model_screen_result" || ! -f "$larger_model_screen_receipt" ]]; then
+      echo "The pilot requires an existing screen result and provider receipt." >&2
+      exit 1
+    fi
+    verified_authorization="$(
+      python3 "$repository_root/research/runpod/larger_model_gate.py" \
+        authorize \
+        "$larger_model_screen_result" \
+        "$larger_model_screen_receipt"
+    )"
+    larger_model_authorization_digest="$(jq -r '.digest' <<<"$verified_authorization")"
+    larger_model_screen_result_digest="$(
+      jq -r '.screen_result_digest' <<<"$verified_authorization"
+    )"
+    authorized_network_volume_id="$(
+      jq -r '.network_volume_id' <<<"$verified_authorization"
+    )"
+    authorized_snapshot_digest="$(
+      jq -r '.pinned_snapshot_digest' <<<"$verified_authorization"
+    )"
+    if [[ ! "$larger_model_authorization_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "The larger-model gate returned an invalid authorization digest." >&2
+      exit 1
+    fi
+    if [[ ! "$larger_model_screen_result_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "The larger-model gate returned an invalid screen-result digest." >&2
+      exit 1
+    fi
+    if [[ "$authorized_network_volume_id" != "$network_volume_id" ||
+      "$authorized_snapshot_digest" != "$larger_model_expected_snapshot_digest" ]]; then
+      echo "The pilot volume or snapshot does not match the screened authorization." >&2
+      exit 1
+    fi
+    authorization_consumption_path="$receipt_directory/larger-model-authorizations/${larger_model_screen_result_digest#sha256:}.json"
+    if [[ -e "$authorization_consumption_path" ]]; then
+      echo "The matching larger-model screen authorization has already been consumed." >&2
+      exit 1
+    fi
+  fi
+  gpu_inventory="$(runpodctl gpu list --include-unavailable)"
+  if ! jq -e \
+    --arg gpu_id "$gpu_id" \
+    --arg cloud_type "$cloud_type" \
+    --argjson minimum_memory "$minimum_gpu_memory_gb" \
+    '
+      any(.[];
+        .gpuId == $gpu_id
+        and .available == true
+        and .memoryInGb >= $minimum_memory
+        and (
+          ($cloud_type == "SECURE" and .secureCloud == true)
+          or ($cloud_type == "COMMUNITY" and .communityCloud == true)
+        )
+      )
+    ' >/dev/null <<<"$gpu_inventory"; then
+    echo "RunPod does not currently report an available profile-matching L40." >&2
+    exit 1
+  fi
 fi
 if [[ "$experiment" == "sequence-ladder" ]]; then
   for configuration_name in \
@@ -437,13 +766,22 @@ if ((
 fi
 bundle_files=("$workload_file" "remote_runner.sh" "result_server.py")
 bundle_files+=("${support_files[@]}")
+larger_model_profile_file="larger-model-eligibility.json"
 bundle_source_path="$(
   mktemp "${TMPDIR:-/tmp}/equinox-runpod-bundle.XXXXXX"
 )"
 trap 'rm -f -- "$bundle_source_path"' EXIT
-COPYFILE_DISABLE=1 tar -czf "$bundle_source_path" \
-  -C "$repository_root/research/runpod" \
-  "${bundle_files[@]}"
+if [[ -n "$larger_model_mode" ]]; then
+  COPYFILE_DISABLE=1 tar -czf "$bundle_source_path" \
+    -C "$repository_root/research/runpod" \
+    "${bundle_files[@]}" \
+    -C "$repository_root/research/studies" \
+    "$larger_model_profile_file"
+else
+  COPYFILE_DISABLE=1 tar -czf "$bundle_source_path" \
+    -C "$repository_root/research/runpod" \
+    "${bundle_files[@]}"
+fi
 bundle_size_bytes="$(wc -c <"$bundle_source_path" | tr -d ' ')"
 if ((bundle_size_bytes > 256 * 1024)); then
   echo "The compressed workload bundle exceeds the 256 KiB inline transport limit." >&2
@@ -467,32 +805,96 @@ pod_environment="$(
       EQUINOX_BUNDLE_B64: $bundle
     }'
 )"
-docker_args="bash -lc \"mkdir -p $persistent_work_directory; echo $bootstrap_source_b64 | base64 -d > $persistent_work_directory/bootstrap_server.py; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds EQUINOX_STUDY_CONDITION=$study_condition EQUINOX_STUDY_VALIDATION_SEED_BASE=$study_validation_seed_base EQUINOX_STUDY_TEST_SEED_BASE=$study_test_seed_base EQUINOX_STUDY_COMPLETION_BUDGET=$study_completion_budget python3 $persistent_work_directory/bootstrap_server.py\""
+docker_args="bash -lc \"mkdir -p $persistent_work_directory $model_cache_directory; echo $bootstrap_source_b64 | base64 -d > $persistent_work_directory/bootstrap_server.py; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds EQUINOX_STUDY_CONDITION=$study_condition EQUINOX_STUDY_VALIDATION_SEED_BASE=$study_validation_seed_base EQUINOX_STUDY_TEST_SEED_BASE=$study_test_seed_base EQUINOX_STUDY_COMPLETION_BUDGET=$study_completion_budget EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS=$maximum_workload_attempts EQUINOX_LARGER_MODEL_PROFILE_PATH=$persistent_work_directory/$larger_model_profile_file EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST=$larger_model_authorization_digest EQUINOX_LARGER_MODEL_EXPECTED_SNAPSHOT_DIGEST=$larger_model_expected_snapshot_digest EQUINOX_RUNPOD_NETWORK_VOLUME_ID=$network_volume_id EQUINOX_EXPECTED_GPU_ID='$gpu_id' EQUINOX_MINIMUM_GPU_MEMORY_GB=$minimum_gpu_memory_gb HF_HOME=$model_cache_directory HUGGINGFACE_HUB_CACHE=$model_cache_directory/hub HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PIP_NO_INDEX=1 PYTHONPATH=/workspace/equinox-state/python python3 $persistent_work_directory/bootstrap_server.py\""
 preflight_only="${EQUINOX_RUNPOD_PREFLIGHT_ONLY:-}"
 if [[ -n "$preflight_only" && "$preflight_only" != "1" ]]; then
   echo "EQUINOX_RUNPOD_PREFLIGHT_ONLY must be 1 when set." >&2
   exit 1
 fi
 if [[ "$preflight_only" == "1" ]]; then
+  if [[ "$(runpodctl user | jq -r '.currentSpendPerHr')" != "0" ]]; then
+    echo "Preflight failed: the RunPod account already has active hourly spend." >&2
+    exit 1
+  fi
+  if [[ "$(runpodctl pod list --all | jq 'length')" != "0" ]]; then
+    echo "Preflight failed: the RunPod account already contains a pod." >&2
+    exit 1
+  fi
+  curl --fail --silent --show-error --max-time 10 "$api_root/healthz" >/dev/null
+  curl --fail --silent --show-error --max-time 10 "$dashboard_root/runs" >/dev/null
   jq -n \
     --arg experiment "$experiment" \
     --arg workload_file "$workload_file" \
     --arg study_condition "$study_condition" \
+    --arg larger_model_mode "$larger_model_mode" \
+    --arg network_volume_id "$network_volume_id" \
+    --arg network_volume_data_center_id "$network_volume_data_center_id" \
+    --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
     --arg model_id "$model_id" \
+    --arg model_revision "$(
+      if [[ -n "$larger_model_mode" ]]; then
+        read_python_string_constant "$workload_path" MODEL_REVISION
+      fi
+    )" \
+    --arg profile_id "$(
+      if [[ -n "$larger_model_mode" ]]; then
+        jq -r '.profile_id' "$repository_root/research/studies/$larger_model_profile_file"
+      fi
+    )" \
+    --arg gpu_id "$gpu_id" \
     --argjson optimization_seed "$optimization_seed" \
     --argjson branch_width "$expected_branch_width" \
     --argjson validation_seed_base "${study_validation_seed_base:-null}" \
     --argjson test_seed_base "${study_test_seed_base:-null}" \
     --argjson completion_budget "${study_completion_budget:-null}" \
     --argjson bundle_size_bytes "$bundle_size_bytes" \
+    --argjson minimum_gpu_memory_gb "$minimum_gpu_memory_gb" \
+    --argjson maximum_hourly_cost_usd "$maximum_hourly_cost" \
+    --argjson maximum_total_cost_usd "$maximum_total_cost" \
+    --argjson maximum_lifetime_minutes "$maximum_lifetime_minutes" \
+    --argjson model_load_timeout_seconds "$model_load_timeout_seconds" \
+    --argjson stale_progress_timeout_seconds "$stale_progress_timeout_seconds" \
+    --argjson maximum_workload_attempts "$maximum_workload_attempts" \
     '{
       preflight_passed: true,
+      preflight_scope: "preallocation_host",
+      remote_snapshot_check_pending: ($larger_model_mode != ""),
       experiment: $experiment,
       workload_file: $workload_file,
+      larger_model_mode: (
+        if $larger_model_mode == "" then null else $larger_model_mode end
+      ),
       study_condition: (
         if $study_condition == "" then null else $study_condition end
       ),
       model_id: $model_id,
+      model_revision: (
+        if $model_revision == "" then null else $model_revision end
+      ),
+      profile_id: (if $profile_id == "" then null else $profile_id end),
+      network_volume_id: (
+        if $network_volume_id == "" then null else $network_volume_id end
+      ),
+      network_volume_data_center_id: (
+        if $network_volume_data_center_id == ""
+        then null
+        else $network_volume_data_center_id
+        end
+      ),
+      volume_readiness_receipt_digest: (
+        if $volume_readiness_receipt_digest == ""
+        then null
+        else $volume_readiness_receipt_digest
+        end
+      ),
+      gpu_id: $gpu_id,
+      minimum_gpu_memory_gb: $minimum_gpu_memory_gb,
+      maximum_hourly_cost_usd: $maximum_hourly_cost_usd,
+      maximum_total_cost_usd: $maximum_total_cost_usd,
+      maximum_lifetime_minutes: $maximum_lifetime_minutes,
+      model_load_timeout_seconds: $model_load_timeout_seconds,
+      stale_progress_timeout_seconds: $stale_progress_timeout_seconds,
+      maximum_workload_attempts: $maximum_workload_attempts,
       optimization_seed: $optimization_seed,
       branch_width: $branch_width,
       validation_seed_base: $validation_seed_base,
@@ -504,10 +906,10 @@ if [[ "$preflight_only" == "1" ]]; then
 fi
 
 mkdir -p "$receipt_directory"
-proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')"
 pod_name="equinox-${proof_id}"
 started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 started_epoch="$(date +%s)"
+last_progress_change_epoch="$started_epoch"
 terminate_after="$(
   python3 - "$maximum_lifetime_minutes" <<'PY'
 from datetime import datetime, timedelta, timezone
@@ -520,9 +922,35 @@ print(
 )
 PY
 )"
+if ! mkdir "$operator_lock_directory"; then
+  echo "Another RunPod operator lease exists; refusing a concurrent allocation." >&2
+  exit 1
+fi
+operator_lock_acquired=true
+trap release_operator_lock EXIT
+(
+  umask 077
+  jq -n \
+    --arg proof_id "$proof_id" \
+    --arg pod_name "$pod_name" \
+    --arg mode "$larger_model_mode" \
+    --arg started_at "$started_at" \
+    --arg terminate_after "$terminate_after" \
+    --argjson operator_pid "$$" \
+    '{
+      proof_id: $proof_id,
+      pod_name: $pod_name,
+      mode: (if $mode == "" then null else $mode end),
+      operator_pid: $operator_pid,
+      started_at: $started_at,
+      terminate_after: $terminate_after,
+      state: "preallocation"
+    }' >"$operator_lock_directory/lease.json"
+)
 pod_id=""
 provider_handle=""
 hourly_cost=""
+pod_create_attempted=false
 execution_registered=false
 terminal_published=false
 failure_message="The operator harness exited before the proof was persisted."
@@ -543,8 +971,15 @@ resource_profile="$(
     --arg image "$image" \
     --arg cloud_type "$cloud_type" \
     --arg data_center_ids "$data_center_ids" \
+    --arg network_volume_id "$network_volume_id" \
+    --arg network_volume_data_center_id "$network_volume_data_center_id" \
+    --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
     --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
     --argjson maximum_hourly_cost "$maximum_hourly_cost" \
+    --argjson maximum_total_cost "$maximum_total_cost" \
+    --argjson minimum_gpu_memory_gb "$minimum_gpu_memory_gb" \
+    --argjson model_load_timeout_seconds "$model_load_timeout_seconds" \
+    --argjson stale_progress_timeout_seconds "$stale_progress_timeout_seconds" \
     '{
       gpu_id: $gpu_id,
       gpu_count: 1,
@@ -557,7 +992,26 @@ resource_profile="$(
         end
       ),
       persistent_volume_in_gb: $persistent_volume_in_gb,
-      maximum_hourly_cost_usd: $maximum_hourly_cost
+      network_volume_id: (
+        if $network_volume_id == "" then null else $network_volume_id end
+      ),
+      network_volume_data_center_id: (
+        if $network_volume_data_center_id == ""
+        then null
+        else $network_volume_data_center_id
+        end
+      ),
+      volume_readiness_receipt_digest: (
+        if $volume_readiness_receipt_digest == ""
+        then null
+        else $volume_readiness_receipt_digest
+        end
+      ),
+      maximum_hourly_cost_usd: $maximum_hourly_cost,
+      maximum_total_cost_usd: $maximum_total_cost,
+      minimum_gpu_memory_gb: $minimum_gpu_memory_gb,
+      model_load_timeout_seconds: $model_load_timeout_seconds,
+      stale_progress_timeout_seconds: $stale_progress_timeout_seconds
     }'
 )"
 
@@ -614,14 +1068,74 @@ publish_execution() {
   return 1
 }
 
-pod_is_present() {
-  runpodctl pod list --all |
-    jq -e --arg id "$pod_id" '.[] | select(.id == $id)' >/dev/null
+provider_pods() {
+  timeout 30 runpodctl pod list --all
+}
+
+reconcile_pod_id_by_name() {
+  local pods
+  local matches
+  if ! pods="$(provider_pods 2>/dev/null)"; then
+    return 2
+  fi
+  matches="$(jq -r --arg name "$pod_name" '[.[] | select(.name == $name) | .id] | .[]' <<<"$pods")"
+  if [[ -z "$matches" ]]; then
+    return 1
+  fi
+  if [[ "$(wc -l <<<"$matches" | tr -d ' ')" != "1" ]] ||
+    [[ ! "$matches" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    return 2
+  fi
+  pod_id="$matches"
+  provider_handle="runpod://pods/$pod_id"
+}
+
+pod_presence_state() {
+  local pods
+  if ! pods="$(provider_pods 2>/dev/null)"; then
+    printf '%s\n' "unknown"
+  elif [[ -n "$pod_id" ]] &&
+    jq -e --arg id "$pod_id" 'any(.[]; .id == $id)' >/dev/null <<<"$pods"; then
+    printf '%s\n' "present"
+  elif jq -e --arg name "$pod_name" 'any(.[]; .name == $name)' >/dev/null <<<"$pods"; then
+    printf '%s\n' "present"
+  else
+    printf '%s\n' "absent"
+  fi
+}
+
+confirm_provider_teardown() {
+  local consecutive_absent=0
+  local state
+  local spend
+  for _ in {1..12}; do
+    if [[ -z "$pod_id" ]]; then
+      reconcile_pod_id_by_name || true
+    fi
+    if [[ -n "$pod_id" ]]; then
+      timeout 30 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
+    fi
+    state="$(pod_presence_state)"
+    if [[ "$state" == "absent" ]]; then
+      consecutive_absent=$((consecutive_absent + 1))
+    else
+      consecutive_absent=0
+    fi
+    if ((consecutive_absent >= 3)); then
+      if spend="$(timeout 30 runpodctl user 2>/dev/null | jq -r '.currentSpendPerHr')"; then
+        if [[ "$spend" == "0" ]]; then
+          return 0
+        fi
+      fi
+    fi
+    sleep 5
+  done
+  return 1
 }
 
 cleanup() {
   local exit_code="$?"
-  local teardown_confirmed=false
+  local teardown_confirmed="$provider_teardown_confirmed"
   local completed_at
   local failed_progress
   trap - EXIT
@@ -632,15 +1146,22 @@ cleanup() {
     bundle_source_path=""
   fi
 
+  if [[ "$pod_create_attempted" == true && -z "$pod_id" ]]; then
+    reconcile_pod_id_by_name || true
+  fi
   if [[ -n "$pod_id" ]]; then
-    timeout 30 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
-    for _ in {1..12}; do
-      if ! pod_is_present; then
-        teardown_confirmed=true
+    for _ in {1..3}; do
+      timeout 30 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
+      if [[ "$(pod_presence_state)" == "absent" ]]; then
         break
       fi
-      sleep 5
     done
+  fi
+  if [[ "$pod_create_attempted" == true && "$teardown_confirmed" != true ]]; then
+    if confirm_provider_teardown; then
+      teardown_confirmed=true
+      provider_teardown_confirmed=true
+    fi
   else
     teardown_confirmed=true
   fi
@@ -659,6 +1180,11 @@ cleanup() {
       "$failed_progress" \
       "$completed_at" \
       "$teardown_confirmed" || true
+  fi
+  if [[ "$teardown_confirmed" == true ]]; then
+    release_operator_lock
+  else
+    echo "RunPod teardown is unresolved; retaining $operator_lock_directory." >&2
   fi
   exit "$exit_code"
 }
@@ -736,7 +1262,6 @@ create_arguments=(
   --gpu-count 1
   --cloud-type "$cloud_type"
   --container-disk-in-gb "$container_disk_in_gb"
-  --volume-in-gb "$persistent_volume_in_gb"
   --volume-mount-path "/workspace"
   --ports "8000/http"
   --ssh=false
@@ -744,19 +1269,56 @@ create_arguments=(
   --docker-args "$docker_args"
   --terminate-after "$terminate_after"
 )
+if [[ -n "$network_volume_id" ]]; then
+  create_arguments+=(--network-volume-id "$network_volume_id")
+else
+  create_arguments+=(--volume-in-gb "$persistent_volume_in_gb")
+fi
 if [[ -n "$data_center_ids" ]]; then
   create_arguments+=(--data-center-ids "$data_center_ids")
 fi
-create_response="$(runpodctl "${create_arguments[@]}")"
-pod_id="$(jq -r '.id // .pod.id // empty' <<<"$create_response")"
-if [[ ! "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-  echo "RunPod did not return a valid pod id." >&2
+pod_create_attempted=true
+if [[ "$larger_model_mode" == "pilot" ]]; then
+  mkdir -p "$(dirname "$authorization_consumption_path")"
+  if ! (
+    set -o noclobber
+    jq -n \
+      --arg proof_id "$proof_id" \
+      --arg screen_result_digest "$larger_model_screen_result_digest" \
+      --arg authorization_digest "$larger_model_authorization_digest" \
+      --arg consumed_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+      '{
+        proof_id: $proof_id,
+        screen_result_digest: $screen_result_digest,
+        authorization_digest: $authorization_digest,
+        consumed_at: $consumed_at
+      }' >"$authorization_consumption_path"
+  ) 2>/dev/null; then
+    pod_create_attempted=false
+    echo "The matching larger-model screen authorization was consumed concurrently." >&2
+    exit 1
+  fi
+fi
+set +e
+create_response="$(timeout 90 runpodctl "${create_arguments[@]}")"
+create_exit_code="$?"
+set -e
+pod_id="$(jq -r '.id // .pod.id // empty' <<<"$create_response" 2>/dev/null || true)"
+if [[ "$create_exit_code" != "0" || ! "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  pod_id=""
+  if reconcile_pod_id_by_name; then
+    failure_message="RunPod pod creation returned ambiguously after allocating a worker."
+    echo "Reconciled ambiguous pod creation to $pod_id; cleanup will delete it." >&2
+  else
+    failure_message="RunPod pod creation failed and provider state could not be reconciled."
+    echo "RunPod did not return a valid pod id; refusing to assume no worker exists." >&2
+  fi
   exit 1
 fi
 provider_handle="runpod://pods/$pod_id"
 
 failure_message="RunPod did not report a bounded hourly rate."
-pod_response="$(runpodctl pod get "$pod_id")"
+pod_response="$(timeout 30 runpodctl pod get "$pod_id")"
 hourly_cost="$(
   jq -r '.adjustedCostPerHr // .costPerHr // .costPerHour // empty' <<<"$pod_response"
 )"
@@ -777,9 +1339,16 @@ resource_profile="$(
     --arg image "$image" \
     --arg cloud_type "$cloud_type" \
     --arg data_center_ids "$data_center_ids" \
+    --arg network_volume_id "$network_volume_id" \
+    --arg network_volume_data_center_id "$network_volume_data_center_id" \
+    --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
     --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
     --argjson hourly_cost "$hourly_cost" \
     --argjson maximum_hourly_cost "$maximum_hourly_cost" \
+    --argjson maximum_total_cost "$maximum_total_cost" \
+    --argjson minimum_gpu_memory_gb "$minimum_gpu_memory_gb" \
+    --argjson model_load_timeout_seconds "$model_load_timeout_seconds" \
+    --argjson stale_progress_timeout_seconds "$stale_progress_timeout_seconds" \
     '{
       gpu_id: $gpu_id,
       gpu_count: 1,
@@ -792,8 +1361,27 @@ resource_profile="$(
         end
       ),
       persistent_volume_in_gb: $persistent_volume_in_gb,
+      network_volume_id: (
+        if $network_volume_id == "" then null else $network_volume_id end
+      ),
+      network_volume_data_center_id: (
+        if $network_volume_data_center_id == ""
+        then null
+        else $network_volume_data_center_id
+        end
+      ),
+      volume_readiness_receipt_digest: (
+        if $volume_readiness_receipt_digest == ""
+        then null
+        else $volume_readiness_receipt_digest
+        end
+      ),
       hourly_cost_usd: $hourly_cost,
-      maximum_hourly_cost_usd: $maximum_hourly_cost
+      maximum_hourly_cost_usd: $maximum_hourly_cost,
+      maximum_total_cost_usd: $maximum_total_cost,
+      minimum_gpu_memory_gb: $minimum_gpu_memory_gb,
+      model_load_timeout_seconds: $model_load_timeout_seconds,
+      stale_progress_timeout_seconds: $stale_progress_timeout_seconds
     }'
 )"
 last_progress="$(
@@ -815,6 +1403,7 @@ remote_authorization="Authorization: Bearer $transport_token"
 exit_code=""
 readiness_attempts=$(( (boot_timeout_seconds + 4) / 5 ))
 workload_transport_ready=false
+preparation_started_epoch=""
 failure_message="The RunPod worker never exposed structured workload progress."
 for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
   remote_progress="$(
@@ -822,6 +1411,11 @@ for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
       -H "$remote_authorization" "$progress_url" 2>/dev/null || true
   )"
   if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
+    last_progress_change_epoch="$(date +%s)"
+    remote_phase="$(jq -r '.phase // empty' <<<"$remote_progress")"
+    if [[ "$remote_phase" == "dependency_setup" || "$remote_phase" == "model_loading" ]]; then
+      preparation_started_epoch="$(date +%s)"
+    fi
     last_progress="$(
       jq -cn \
         --argjson previous "$last_progress" \
@@ -862,6 +1456,33 @@ echo "Container is live; streaming structured progress to Equinox." >&2
 result_deadline_epoch=$((started_epoch + maximum_lifetime_minutes * 60 - 60))
 failure_message="The remote workload did not finish before the provider cleanup reserve."
 while (( $(date +%s) < result_deadline_epoch )); do
+  current_epoch="$(date +%s)"
+  accrued_cost="$(
+    jq -n \
+      --argjson hourly_cost "$hourly_cost" \
+      --argjson elapsed_seconds "$((current_epoch - started_epoch))" \
+      '$hourly_cost * $elapsed_seconds / 3600'
+  )"
+  if ! jq -en \
+    --argjson accrued "$accrued_cost" \
+    --argjson maximum "$maximum_total_cost" \
+    '$accrued < $maximum' >/dev/null; then
+    failure_message="The total-cost ceiling was reached before the workload completed."
+    echo "Stopping before accrued cost can exceed \$$maximum_total_cost." >&2
+    exit 1
+  fi
+  if [[ -n "$preparation_started_epoch" ]] &&
+    ((current_epoch - preparation_started_epoch > model_load_timeout_seconds)); then
+    failure_message="Dependency preparation or model loading exceeded its bounded timeout."
+    echo "Model readiness exceeded ${model_load_timeout_seconds}s; terminating the worker." >&2
+    exit 1
+  fi
+  if [[ -n "$larger_model_mode" ]] &&
+    ((current_epoch - last_progress_change_epoch > stale_progress_timeout_seconds)); then
+    failure_message="Structured remote progress stopped changing before completion."
+    echo "No progress change for ${stale_progress_timeout_seconds}s; terminating the worker." >&2
+    exit 1
+  fi
   exit_code="$(
     curl --fail --silent --show-error --max-time 10 \
       -H "$remote_authorization" "$proxy_root/exit_code" 2>/dev/null || true
@@ -875,6 +1496,14 @@ while (( $(date +%s) < result_deadline_epoch )); do
   )"
   if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress" &&
     [[ "$remote_progress" != "$last_remote_progress" ]]; then
+    last_progress_change_epoch="$current_epoch"
+    remote_phase="$(jq -r '.phase // empty' <<<"$remote_progress")"
+    if [[ -z "$preparation_started_epoch" ]] &&
+      [[ "$remote_phase" == "dependency_setup" || "$remote_phase" == "model_loading" ]]; then
+      preparation_started_epoch="$current_epoch"
+    elif [[ "$remote_phase" != "dependency_setup" && "$remote_phase" != "model_loading" ]]; then
+      preparation_started_epoch=""
+    fi
     last_progress="$(
       jq -cn \
         --argjson previous "$last_progress" \
@@ -902,7 +1531,7 @@ if [[ "$exit_code" != "0" ]]; then
   exit 1
 fi
 metrics="$(
-  curl --fail --silent --show-error \
+  curl --fail --silent --show-error --max-time 60 \
     -H "$remote_authorization" "$proxy_root/result.json"
 )"
 if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
@@ -912,7 +1541,9 @@ if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metrics"; then
 fi
 result_path="$receipt_directory/$proof_id.result.json"
 jq . <<<"$metrics" >"$result_path"
-if [[ "$experiment" == "repository-repair" && "$study_eligibility_only" != "1" ]]; then
+if [[ "$experiment" == "repository-repair" &&
+  "$study_eligibility_only" != "1" &&
+  "$larger_model_mode" != "screen" ]]; then
   adapter_path="$receipt_directory/$proof_id.adapter.tgz"
   adapter_pending_path="$adapter_path.pending"
   curl --fail --silent --show-error --max-time 120 \
@@ -960,7 +1591,53 @@ with tarfile.open(archive_path, "r:gz") as archive:
             raise SystemExit(f"adapter digest mismatch for {item['path']}")
 PY
 fi
-if [[ "$study_eligibility_only" == "1" ]]; then
+if [[ "$larger_model_mode" == "screen" ]]; then
+  proof_assertion='
+    .device == "cuda"
+    and .workload == "repository-repair-larger-model-eligibility-screen"
+    and .workload_revision == "larger-model-eligibility-screen@1"
+    and .profile_id == "qwen2.5-coder-7b-runpod-l40@1"
+    and .model_id == $expected_model
+    and .model_revision == "c03e6d358207e414f1eca0bb1891e29f1db0e242"
+    and .screen_completed == true
+    and (.eligible | type) == "boolean"
+    and .policy_mutation_detected == false
+    and .optimizer_state_restored == true
+    and .test_split_accessed == false
+    and .branch_width == 4
+    and .gpu_id == "NVIDIA L40"
+    and .gpu_total_memory_bytes >= 47000000000
+    and .pinned_snapshot_digest == $expected_snapshot_digest
+    and (.peak_reserved_vram_fraction | type) == "number"
+    and (.predicted_final_evaluation_seconds | type) == "number"
+    and (.completed_baseline_examples | type) == "number"
+    and (.per_level_checkpoint_rates | type) == "object"
+    and (.informative_groups | type) == "number"
+    and (.solved_siblings | type) == "number"
+    and (.failed_siblings | type) == "number"
+    and (.gate_results | type) == "object"
+    and ([.gate_results[] | type == "boolean"] | all)
+    and (
+      if .eligible then
+        ([.gate_results[]] | all)
+        and .completed_baseline_examples == 32
+        and .peak_reserved_vram_fraction <= 0.85
+        and .predicted_final_evaluation_seconds > 0
+        and .predicted_final_evaluation_seconds <= 1440
+        and .ineligibility_reasons == []
+        and .ineligible_reasons == []
+      else
+        ([.gate_results[]] | all | not)
+        and (.ineligibility_reasons | type) == "array"
+        and (.ineligibility_reasons | length) >= 1
+        and .ineligible_reasons == .ineligibility_reasons
+        and (
+          [.gate_results | to_entries[] | select(.value == false) | .key] | sort
+        ) == (.ineligibility_reasons | sort)
+      end
+    )
+  '
+elif [[ "$study_eligibility_only" == "1" ]]; then
   proof_assertion='
     .device == "cuda"
     and .workload == "repository-repair-protocol-eligibility-screen"
@@ -1309,6 +1986,28 @@ else
     and (.hypothesis_passed | type) == "boolean"
   '
 fi
+if [[ "$larger_model_mode" == "pilot" ]]; then
+  proof_assertion="($proof_assertion)"'
+    and .profile_id == "qwen2.5-coder-7b-runpod-l40@1"
+    and .model_revision == "c03e6d358207e414f1eca0bb1891e29f1db0e242"
+    and .authorization_digest == $expected_authorization_digest
+    and .environment_revision == "repository-repair-simulator@6"
+    and .action_protocol_revision == "repository-repair-json-tools@5"
+    and .gpu_id == "NVIDIA L40"
+    and .gpu_name == "NVIDIA L40"
+    and .gpu_total_memory_bytes >= 47000000000
+    and .offline_mode_active == true
+    and .pinned_snapshot_digest == $expected_snapshot_digest
+    and .network_volume_id == $expected_network_volume_id
+    and .training_microbatch_size == 1
+    and .maximum_input_tokens == 1536
+    and .gradient_checkpointing_enabled == true
+    and .gradient_checkpointing_use_reentrant == false
+    and .effective_policy_update_count >= 1
+    and .probative_post_training == true
+    and .final_evaluation_complete == true
+  '
+fi
 if ! jq -e \
   --arg expected_model "$model_id" \
   --arg expected_workload_revision "$expected_workload_revision" \
@@ -1324,6 +2023,9 @@ if ! jq -e \
   --arg expected_training_level_allocation "$expected_training_level_allocation" \
   --arg expected_action_protocol_revision "$expected_action_protocol_revision" \
   --arg expected_shared_prefix_checkpoint "$expected_shared_prefix_checkpoint" \
+  --arg expected_authorization_digest "$larger_model_authorization_digest" \
+  --arg expected_snapshot_digest "$larger_model_expected_snapshot_digest" \
+  --arg expected_network_volume_id "$network_volume_id" \
   --argjson expected_branch_width "$expected_branch_width" \
   --argjson expected_optimization_seed "$optimization_seed" \
   --argjson expected_validation_seed_base "${study_validation_seed_base:-null}" \
@@ -1342,7 +2044,9 @@ if ! jq -e \
   jq . <<<"$metrics" >&2
   exit 1
 fi
-if [[ "$experiment" == "repository-repair" && "$study_eligibility_only" != "1" ]] &&
+if [[ "$experiment" == "repository-repair" &&
+  "$study_eligibility_only" != "1" &&
+  "$larger_model_mode" != "screen" ]] &&
   [[ "$(jq -r '.stop_reason' <<<"$metrics")" == "final_evaluation_reserve_ceiling" ]]; then
   if [[ "$(jq -r '.probative_post_training' <<<"$metrics")" == "true" ]]; then
     echo \
@@ -1361,7 +2065,29 @@ if [[ "$experiment" == "repository-repair" && "$study_eligibility_only" != "1" ]
   fi
 fi
 
-if [[ "$study_eligibility_only" == "1" ]]; then
+if [[ "$larger_model_mode" == "screen" ]]; then
+  last_progress="$(
+    jq -cn \
+      --argjson result "$metrics" \
+      '{
+        phase: "finalizing",
+        message: "Eligibility recorded; confirming teardown.",
+        branch_width: $result.branch_width,
+        complexity_strategy: "adaptive",
+        elapsed_seconds: $result.elapsed_seconds,
+        eligible: $result.eligible,
+        profile_id: $result.profile_id,
+        model_revision: $result.model_revision,
+        branch_checkpoint_rate: $result.branch_checkpoint_rate,
+        informative_group_rate: $result.informative_group_rate,
+        peak_reserved_vram_fraction: $result.peak_reserved_vram_fraction,
+        policy_mutation_detected: $result.policy_mutation_detected,
+        gate_results: $result.gate_results,
+        ineligibility_reasons: $result.ineligibility_reasons,
+        test_split_accessed: false
+      }'
+  )"
+elif [[ "$study_eligibility_only" == "1" ]]; then
   last_progress="$(
     jq -cn \
       --argjson result "$metrics" \
@@ -1414,39 +2140,61 @@ else
       ' <<<"$last_progress"
   )"
 fi
-publish_execution "FINALIZING" "$last_progress"
+if ! publish_execution "FINALIZING" "$last_progress"; then
+  echo "Observer finalizing publish failed; persisting teardown evidence locally." >&2
+fi
 
 echo "Remote loop passed; terminating worker $pod_id." >&2
 failure_message="RunPod teardown could not be confirmed."
-runpodctl pod delete "$pod_id" >/dev/null
-for _ in {1..12}; do
-  if ! pod_is_present; then
+for _ in {1..3}; do
+  timeout 30 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
+  if [[ "$(pod_presence_state)" == "absent" ]]; then
     break
   fi
-  sleep 5
 done
-if pod_is_present; then
-  echo "RunPod still reports worker $pod_id; refusing to record confirmed teardown." >&2
+if ! confirm_provider_teardown; then
+  echo "RunPod teardown is unknown or spend remains nonzero; refusing confirmed teardown." >&2
   exit 1
 fi
+provider_teardown_confirmed=true
 completed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 pod_id=""
 
 receipt_path="$receipt_directory/$proof_id.json"
+result_digest="$(
+  python3 - "$result_path" "$repository_root" <<'PY'
+import json
+import sys
+
+repository_root = sys.argv[2]
+sys.path.insert(0, repository_root)
+from research.runpod.larger_model_gate import result_digest
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    result = json.load(handle)
+print(result_digest(result))
+PY
+)"
 jq -n \
   --arg provider_name "RunPod" \
+  --arg provider "runpod" \
   --arg provider_handle "$provider_handle" \
   --arg provider_cli_version "$(runpodctl version | awk '{print $2}')" \
   --arg gpu_id "$gpu_id" \
   --arg image "$image" \
   --arg cloud_type "$cloud_type" \
   --arg data_center_ids "$data_center_ids" \
+  --arg network_volume_id "$network_volume_id" \
+  --arg network_volume_data_center_id "$network_volume_data_center_id" \
+  --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
   --argjson persistent_volume_in_gb "$persistent_volume_in_gb" \
   --argjson hourly_cost "$hourly_cost" \
   --arg started_at "$started_at" \
   --arg completed_at "$completed_at" \
+  --arg result_digest "$result_digest" \
   --argjson result "$metrics" \
   '{
+    provider: $provider,
     provider_name: $provider_name,
     provider_handle: $provider_handle,
     provider_cli_version: $provider_cli_version,
@@ -1462,8 +2210,34 @@ jq -n \
         else ($data_center_ids | split(","))
         end
       ),
-      persistent_volume_in_gb: $persistent_volume_in_gb
+      persistent_volume_in_gb: $persistent_volume_in_gb,
+      network_volume_id: (
+        if $network_volume_id == "" then null else $network_volume_id end
+      ),
+      network_volume_data_center_id: (
+        if $network_volume_data_center_id == ""
+        then null
+        else $network_volume_data_center_id
+        end
+      ),
+      volume_readiness_receipt_digest: (
+        if $volume_readiness_receipt_digest == ""
+        then null
+        else $volume_readiness_receipt_digest
+        end
+      )
     },
+    profile_id: ($result.profile_id // null),
+    model_id: ($result.model_id // null),
+    model_revision: ($result.model_revision // null),
+    screen_workload_revision: (
+      if $result.workload == "repository-repair-larger-model-eligibility-screen"
+      then $result.workload_revision
+      else null
+      end
+    ),
+    gpu_id: $gpu_id,
+    result_digest: $result_digest,
     workload: {
       id: $result.workload,
       revision: $result.workload_revision,
@@ -1491,7 +2265,18 @@ jq -n \
     teardown_confirmed: true
   }' >"$receipt_path"
 
-if [[ "$study_eligibility_only" == "1" ]]; then
+if [[ "$larger_model_mode" == "screen" ]]; then
+  last_progress="$(
+    jq -c \
+      '. + {
+        phase: "complete",
+        message: "Eligibility recorded and teardown confirmed.",
+        error: null
+      }' <<<"$last_progress"
+  )"
+  failure_message="The completed larger-model eligibility screen could not be published."
+  publish_execution "SUCCEEDED" "$last_progress" "$completed_at" "true"
+elif [[ "$study_eligibility_only" == "1" ]]; then
   last_progress="$(
     jq -c \
       '. + {
@@ -1503,13 +2288,40 @@ if [[ "$study_eligibility_only" == "1" ]]; then
   failure_message="The completed eligibility screen could not be published."
   publish_execution "SUCCEEDED" "$last_progress" "$completed_at" "true"
 else
-  failure_message="The sanitized proof receipt could not be ingested after teardown."
-  curl --fail --silent --show-error \
-    -X POST "$api_root/internal/research-compute-proofs" \
-    -H "Authorization: Bearer $internal_token" \
-    -H 'Content-Type: application/json' \
-    --data-binary "@$receipt_path" |
-    jq .
+  failure_message="A verified local proof receipt is pending ingestion."
+  proof_ingested=false
+  proof_payload="$(
+    jq '{
+      provider_name,
+      provider_handle,
+      provider_cli_version,
+      resource_profile,
+      workload,
+      result,
+      started_at,
+      completed_at,
+      teardown_confirmed
+    }' "$receipt_path"
+  )"
+  for attempt in 1 2 3; do
+    if proof_response="$(
+      curl --fail --silent --show-error --max-time 60 \
+        -X POST "$api_root/internal/research-compute-proofs" \
+        -H "Authorization: Bearer $internal_token" \
+        -H 'Content-Type: application/json' \
+        --data-binary @- <<<"$proof_payload"
+    )"; then
+      jq . <<<"$proof_response"
+      proof_ingested=true
+      break
+    fi
+    if ((attempt < 3)); then
+      sleep 2
+    fi
+  done
+  if [[ "$proof_ingested" != true ]]; then
+    exit 1
+  fi
 fi
 terminal_published=true
 echo "Sanitized receipt: $receipt_path" >&2
