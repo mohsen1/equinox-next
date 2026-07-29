@@ -95,3 +95,35 @@ def test_paid_dependency_setup_fails_closed_instead_of_running_pip(
 
     with pytest.raises(RuntimeError, match="manifest-pinned dependencies"):
         pilot.frozen.ensure_dependencies()
+
+
+def test_final_evaluation_requires_a_policy_update_in_the_retained_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = gate.load_manifest()
+    monkeypatch.setattr(pilot, "OBSERVED_POLICY_UPDATE_COUNT", 0)
+    monkeypatch.setattr(pilot, "POLICY_UPDATE_COUNTS_BY_TRAINING_UPDATE", {})
+    monkeypatch.setattr(pilot, "RETAINED_CHECKPOINT_UPDATE", 0)
+    monkeypatch.setattr(pilot, "RETAINED_POLICY_UPDATE_COUNT", 0)
+
+    pilot.observe_retained_update_evidence(
+        "training",
+        {"update": 2, "policy_update_count": 0},
+    )
+    pilot.observe_retained_update_evidence(
+        "training",
+        {"update": 3, "policy_update_count": 1},
+    )
+    pilot.observe_retained_update_evidence(
+        "finalizing",
+        {"best_validation": {"update": 2}},
+    )
+
+    with pytest.raises(RuntimeError, match="NO_RETAINED_POLICY_UPDATE"):
+        pilot.require_retained_policy_update(manifest)
+
+    pilot.observe_retained_update_evidence(
+        "finalizing",
+        {"best_validation": {"update": 3}},
+    )
+    assert pilot.require_retained_policy_update(manifest) == (3, 1)

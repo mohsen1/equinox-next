@@ -29,6 +29,65 @@ SHARED_PREFIX_CHECKPOINT_STRATEGY = "all_fault_sources_observed"
 MODEL_REVISION = gate.MODEL_REVISION
 PILOT_WORKLOAD = "repository-repair-restored-continuation-post-training"
 OBSERVED_POLICY_UPDATE_COUNT = 0
+POLICY_UPDATE_COUNTS_BY_TRAINING_UPDATE: dict[int, int] = {}
+RETAINED_CHECKPOINT_UPDATE = 0
+RETAINED_POLICY_UPDATE_COUNT = 0
+
+
+def reset_retained_update_evidence() -> None:
+    """Reset process-local evidence before installing the one-shot pilot hooks."""
+
+    global OBSERVED_POLICY_UPDATE_COUNT
+    global RETAINED_CHECKPOINT_UPDATE
+    global RETAINED_POLICY_UPDATE_COUNT
+
+    OBSERVED_POLICY_UPDATE_COUNT = 0
+    POLICY_UPDATE_COUNTS_BY_TRAINING_UPDATE.clear()
+    RETAINED_CHECKPOINT_UPDATE = 0
+    RETAINED_POLICY_UPDATE_COUNT = 0
+
+
+def observe_retained_update_evidence(phase: str, values: dict[str, Any]) -> None:
+    """Bind cumulative policy updates to the checkpoint retained for evaluation."""
+
+    global OBSERVED_POLICY_UPDATE_COUNT
+    global RETAINED_CHECKPOINT_UPDATE
+    global RETAINED_POLICY_UPDATE_COUNT
+
+    observed_update = values.get("update")
+    observed_policy_updates = values.get("policy_update_count")
+    if (
+        type(observed_update) is int
+        and observed_update >= 1
+        and type(observed_policy_updates) is int
+        and observed_policy_updates >= 0
+    ):
+        POLICY_UPDATE_COUNTS_BY_TRAINING_UPDATE[observed_update] = observed_policy_updates
+        OBSERVED_POLICY_UPDATE_COUNT = max(
+            OBSERVED_POLICY_UPDATE_COUNT,
+            observed_policy_updates,
+        )
+
+    if phase != "finalizing":
+        return
+    best_validation = values.get("best_validation")
+    retained_update = best_validation.get("update") if isinstance(best_validation, dict) else None
+    if type(retained_update) is not int or retained_update < 0:
+        raise RuntimeError("PILOT_RETAINED_CHECKPOINT_EVIDENCE_INVALID")
+    RETAINED_CHECKPOINT_UPDATE = retained_update
+    RETAINED_POLICY_UPDATE_COUNT = POLICY_UPDATE_COUNTS_BY_TRAINING_UPDATE.get(
+        retained_update,
+        0,
+    )
+
+
+def require_retained_policy_update(manifest: dict[str, Any]) -> tuple[int, int]:
+    """Return retained update evidence or refuse to spend on final evaluation."""
+
+    minimum = manifest["pilot"]["minimum_effective_policy_updates"]
+    if RETAINED_CHECKPOINT_UPDATE < 1 or minimum > RETAINED_POLICY_UPDATE_COUNT:
+        raise RuntimeError("PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE")
+    return RETAINED_CHECKPOINT_UPDATE, RETAINED_POLICY_UPDATE_COUNT
 
 
 def require_offline_snapshot(manifest: dict[str, Any]) -> tuple[Path, str]:
@@ -150,6 +209,7 @@ def validate_runtime_configuration(runtime: Any, manifest: dict[str, Any]) -> No
 def install_v32_contract(manifest: dict[str, Any], authorization_digest: str) -> None:
     """Install the new model/interface identity around the byte-frozen trainer."""
 
+    reset_retained_update_evidence()
     original_emit_progress = frozen.emit_progress
     original_checkpoint_reached = frozen.branch_checkpoint_reached
     original_training_stop_decision = frozen.training_stop_decision
@@ -166,14 +226,7 @@ def install_v32_contract(manifest: dict[str, Any], authorization_digest: str) ->
         preserve_context: bool = False,
         **values: Any,
     ) -> None:
-        global OBSERVED_POLICY_UPDATE_COUNT
-
-        observed_policy_updates = values.get("policy_update_count")
-        if type(observed_policy_updates) is int:
-            OBSERVED_POLICY_UPDATE_COUNT = max(
-                OBSERVED_POLICY_UPDATE_COUNT,
-                observed_policy_updates,
-            )
+        observe_retained_update_evidence(phase, values)
         if phase == "model_loading":
             import torch
 
@@ -223,11 +276,8 @@ def install_v32_contract(manifest: dict[str, Any], authorization_digest: str) ->
         split: str = "train",
         exclude_semantic_task_ids: frozenset[str] = frozenset(),
     ) -> Any:
-        if (
-            split == "test"
-            and manifest["pilot"]["minimum_effective_policy_updates"] > OBSERVED_POLICY_UPDATE_COUNT
-        ):
-            raise RuntimeError("PILOT_PRODUCED_NO_EFFECTIVE_POLICY_UPDATE")
+        if split == "test":
+            require_retained_policy_update(manifest)
         return original_make_tasks(
             level,
             count,
@@ -251,8 +301,18 @@ def augment_result(
     import torch
 
     hardware = gate.require_cuda_hardware(manifest, torch)
-    if result.get("policy_update_count", 0) < manifest["pilot"]["minimum_effective_policy_updates"]:
-        raise RuntimeError("the larger-model pilot produced no effective policy update")
+    retained_update, retained_policy_updates = require_retained_policy_update(manifest)
+    best_validation = result.get("best_validation")
+    result_retained_update = (
+        best_validation.get("update") if isinstance(best_validation, dict) else None
+    )
+    total_policy_updates = result.get("policy_update_count")
+    if (
+        result_retained_update != retained_update
+        or type(total_policy_updates) is not int
+        or total_policy_updates < retained_policy_updates
+    ):
+        raise RuntimeError("the larger-model pilot retained-update evidence is inconsistent")
     return {
         **result,
         "workload": PILOT_WORKLOAD,
@@ -277,7 +337,8 @@ def augment_result(
         "maximum_input_tokens": frozen.MAX_INPUT_TOKENS,
         "gradient_checkpointing_enabled": True,
         "gradient_checkpointing_use_reentrant": False,
-        "effective_policy_update_count": result["policy_update_count"],
+        "retained_checkpoint_update": retained_update,
+        "effective_policy_update_count": retained_policy_updates,
     }
 
 
