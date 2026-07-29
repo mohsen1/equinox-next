@@ -384,14 +384,35 @@ RunPod's proxy returned `404` for bundle posts to its root despite serving authe
 bootstrap health. A second attempt showed the same behavior on health, dedicated, and
 root POST paths. Both workers were deleted and provider spend returned to zero. The
 profile-6 screen reproduced the method-specific proxy failure after an authenticated
-health response; that worker was also deleted before model loading. Paid automation no
-longer uses proxy POST for workload handoff. The launcher verifies the mutable image tag
-twice before allocation, creates the worker from the exact `tag@sha256` manifest, and
-requires `pod get` to attest that same immutable reference. An XZ bundle capped at 80
-KiB travels in the encrypted creation request, whose serialized environment is capped
-at 120 KiB. The bootstrap verifies the bundle SHA-256 and exact file allowlist, installs
-it once, removes both bundle and digest from the child environment, and executes the
-runner. Observer evidence records only its digest, size, and compression.
+health response; that worker was also deleted before model loading. These proxy failures,
+and the short-lived inline creation-request workaround that followed them, are retained
+as legacy incident history. They do not describe the current larger-model handoff.
+
+Current larger-model automation uses
+`runpod-volume-bundle-handoff@1`. Before allocation, an operator builds one deterministic
+USTAR-and-XZ screen/pilot bundle, verifies the pinned source contract, and stages the
+bundle at its SHA-256-addressed path on the provider-bound network volume. The bundle has
+a 2 MiB hard limit. Staging uses a compare-and-set write and produces a receipt that
+binds the profile and source-contract digests, bundle digest, size, compression, path and
+allowlist, plus provider volume identity, data center, and size. The receipt is valid for
+24 hours; persistent bytes on the volume do not make an expired receipt fresh.
+
+The worker's creation environment carries no workload bytes and is limited to 4 KiB. It
+contains the result token and exact handoff identity: handoff revision, bundle path,
+digest and size, stage-receipt digest, and bootstrap-source digest. The container verifies
+the bootstrap source before execution. The bootstrap reads the staged path without
+following symlinks, rechecks the bundle identity and allowlist, and installs it once. The
+first structured progress must attest the same bundle, bootstrap, receipt, and network
+volume before readiness is accepted. The launcher uses authenticated read-only readiness
+and progress probes; paid automation performs no proxy POST mutation.
+
+Screen authorization binds the scientific profile and result to this operational
+identity, including the handoff revision; bundle digest, size, XZ compression and path;
+stage-receipt digest; and bootstrap-source digest. The pilot rejects an authorization
+from a different handoff even when the model and scientific profile are unchanged.
+Preflight, resource-profile evidence, provider receipts, and final proofs retain the same
+identity. The launcher still creates the worker from the exact digest-qualified image
+reference and requires `pod get` to attest that immutable reference.
 
 The completed seed `113` revision-20 run stopped safely at update 17 after two recent
 malformed-action windows exceeded `5%`. It rolled back to update 15, persisted a verified

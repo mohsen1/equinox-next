@@ -43,12 +43,18 @@ the pilot. The two paid GPU stages have a combined `$19.00` ceiling, leaving `$6
 the authorized `$25.00` for CPU prewarm, network-volume storage, and contingency. The
 120-second reserve is not training time.
 
-## Prepare the network volume on CPU
+## Prepare the network volume and workload on CPU
 
-The launcher never creates or populates a network volume. With no existing volume and
-matching readiness receipt, both `--preflight-only` and paid launch are blocked.
-Readiness receipts and screen authorizations from the former L40 profile or the H100
-`@1`, `@2`, `@3`, `@4`, or `@5` profiles do not match this profile and cannot be reused.
+The launcher never creates or populates a network volume, and it never stages workload
+bytes during paid allocation. Both `--preflight-only` and paid launch are blocked unless
+the configured volume has:
+
+- a seven-day model-readiness receipt for the pinned snapshot and dependencies; and
+- a 24-hour workload-stage receipt for the exact content-addressed bundle.
+
+Readiness receipts, stage receipts, and screen authorizations from the former L40 profile
+or the H100 `@1`, `@2`, `@3`, `@4`, or `@5` profiles do not match this profile and cannot
+be reused.
 
 Create a 50 GB volume in a data center that offers an `NVIDIA H100 80GB HBM3`:
 
@@ -96,9 +102,9 @@ snapshot_download(
 PY
 ```
 
-Copy `research/runpod/larger_model_gate.py` and
-`research/studies/larger-model-eligibility.json` from the repository to
-`/tmp/equinox-prewarm/` over the same SSH connection.
+Copy the repository's `research/` directory and
+`scripts/stage-runpod-workload-bundle` under `/tmp/equinox-prewarm/` over the same SSH
+connection.
 
 Set the same volume and data-center values in the CPU shell. Then hash the snapshot and
 create its readiness receipt:
@@ -108,8 +114,8 @@ export EQUINOX_RUNPOD_NETWORK_VOLUME_ID=VOLUME_ID
 export EQUINOX_RUNPOD_DATA_CENTER_IDS=DATA_CENTER_ID
 
 PYTHONPATH=/workspace/equinox-state/python \
-python3 /tmp/equinox-prewarm/larger_model_gate.py \
-  --manifest /tmp/equinox-prewarm/larger-model-eligibility.json \
+python3 /tmp/equinox-prewarm/research/runpod/larger_model_gate.py \
+  --manifest /tmp/equinox-prewarm/research/studies/larger-model-eligibility.json \
   create-volume-receipt \
   --volume-id "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" \
   --data-center-id "$EQUINOX_RUNPOD_DATA_CENTER_IDS" \
@@ -140,7 +146,94 @@ runpodctl network-volume get "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" |
 The receipt binds the profile, model revision, every required file digest, dependency
 versions and successful imports, volume ID, data center, and size. It expires after seven
 days. The base image supplies `torch==2.8.0+cu128`; do not install another torch build into
-the volume. Copy the receipt back before deleting the CPU pod.
+the volume.
+
+### Stage the exact workload bundle
+
+Build the canonical screen-and-pilot bundle from the checkout that will launch the run.
+The builder creates a deterministic USTAR archive, compresses it with XZ, verifies the
+profile source contract, and rejects output larger than 2 MiB.
+
+```bash
+bundle_directory="$(mktemp -d)"
+bundle_file="$bundle_directory/workload-bundle.tar.xz"
+bundle_metadata="$bundle_directory/bundle-metadata.json"
+
+./scripts/stage-runpod-workload-bundle \
+  --manifest research/studies/larger-model-eligibility.json \
+  build \
+  --repository-root "$PWD" \
+  --output "$bundle_file" \
+  >"$bundle_metadata"
+
+jq . "$bundle_metadata"
+```
+
+Copy the bundle and metadata as `/tmp/equinox-prewarm/workload-bundle.tar.xz` and
+`/tmp/equinox-prewarm/bundle-metadata.json` on the attached CPU pod. Stage the bytes on
+the mounted volume using the exact identity emitted by the builder:
+
+```bash
+bundle_digest="$(jq -r '.bundle_digest' /tmp/equinox-prewarm/bundle-metadata.json)"
+bundle_size_bytes="$(jq -r '.bundle_size_bytes' /tmp/equinox-prewarm/bundle-metadata.json)"
+
+PYTHONPATH=/tmp/equinox-prewarm \
+bash /tmp/equinox-prewarm/scripts/stage-runpod-workload-bundle \
+  --manifest /tmp/equinox-prewarm/research/studies/larger-model-eligibility.json \
+  stage-mounted \
+  --bundle /tmp/equinox-prewarm/workload-bundle.tar.xz \
+  --bundle-digest "$bundle_digest" \
+  --bundle-size-bytes "$bundle_size_bytes" \
+  --mount-root /workspace \
+  --volume-id "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" \
+  --data-center-id "$EQUINOX_RUNPOD_DATA_CENTER_IDS" \
+  --volume-size-gb 50 \
+  --receipt-output \
+    "/workspace/equinox-state/larger-model-bundle-stage-$EQUINOX_RUNPOD_NETWORK_VOLUME_ID.json"
+```
+
+The staging helper writes the bundle read-only at:
+
+```text
+/workspace/equinox-state/workload-bundles/PROFILE_ID/BUNDLE_SHA256_HEX.tar.xz
+```
+
+It uses a content-addressed compare-and-set write and verifies the final regular file,
+size, and bytes. It refuses symlinks, non-regular files, or different bytes already
+present at the digest path.
+
+Copy the stage receipt back to:
+
+```text
+var/research-proofs/larger-model-bundle-stage-VOLUME_ID.json
+```
+
+Then verify the receipt against the current provider volume and the locally built bundle:
+
+```bash
+export EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT="$PWD/var/research-proofs/larger-model-bundle-stage-$EQUINOX_RUNPOD_NETWORK_VOLUME_ID.json"
+
+bundle_digest="$(jq -r '.bundle_digest' "$bundle_metadata")"
+bundle_size_bytes="$(jq -r '.bundle_size_bytes' "$bundle_metadata")"
+bundle_path="$(jq -r '.bundle_path' "$bundle_metadata")"
+
+runpodctl network-volume get "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" |
+  ./scripts/stage-runpod-workload-bundle \
+    --manifest research/studies/larger-model-eligibility.json \
+    verify-stage-receipt \
+    "$EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT" \
+    - \
+    --bundle-digest "$bundle_digest" \
+    --bundle-size-bytes "$bundle_size_bytes" \
+    --bundle-path "$bundle_path"
+```
+
+The stage receipt binds the profile and source-contract digests, handoff revision, bundle
+digest, size, compression, content-addressed path and allowlist, plus the provider volume
+ID, data center, and minimum size. It expires 24 hours after `staged_at`; bundle bytes
+remaining on the volume do not extend that deadline.
+
+Copy both receipts back before deleting the CPU pod.
 
 ```bash
 runpodctl pod delete PREWARM_POD_ID
@@ -160,7 +253,8 @@ Confirm that:
 - RunPod authentication works, the account has no pod, exactly the verified configured
   network volume is present, and hourly spend is at most `$0.01`;
 - the dashboard and API are running, so the execution is observable before allocation;
-- the volume receipt exists at the path above and is still fresh; and
+- the model-readiness and workload-stage receipts exist at the paths above, still match
+  the current provider volume and canonical bundle, and are fresh;
 - no previous teardown or operator lease is unresolved.
 
 Both launchers fail closed when a required check cannot be completed. A failed provider
@@ -175,10 +269,11 @@ query is not treated as proof that no pod exists.
 Preflight performs local and provider-read-only checks. It validates the profile and
 exact model revision, confirms that the requested GPU class meets the minimum memory,
 verifies the current network volume against its digest-bound readiness receipt, checks
-that it is the account's only network volume, checks data-center availability, and
-verifies the hourly, total-cost, model-load, lifetime, and cleanup limits. Both preflight
-and paid launch refuse allocation when any pod exists or hourly spend exceeds the
-manifest-pinned `$0.01/hour` storage-only baseline.
+that it is the account's only network volume, rebuilds the canonical workload bundle,
+verifies its 24-hour stage receipt against the provider volume, checks data-center
+availability, and verifies the hourly, total-cost, model-load, lifetime, and cleanup
+limits. Both preflight and paid launch refuse allocation when any pod exists or hourly
+spend exceeds the manifest-pinned `$0.01/hour` storage-only baseline.
 
 Expected result: preflight succeeds and RunPod still reports no new allocation. Stop if
 the model metadata cannot be verified, the GPU inventory does not satisfy the memory
@@ -192,12 +287,25 @@ floor, the volume or receipt does not match, or any cap is missing or inconsiste
 
 The launcher rechecks every preallocation condition immediately before requesting a
 worker. It creates the worker from the manifest's exact `tag@sha256` image reference and
-rejects the allocation unless the provider reports that same immutable reference. The
-workload is an XZ-compressed, SHA-256-bound inline artifact, capped at 80 KiB compressed
-and 120 KiB in its serialized environment. The bootstrap installs its exact allowlisted
-files once and removes the encoded bundle and digest before starting the runner; the
-paid path does not depend on proxy POST delivery. Evidence retains only the bundle
-digest, size, and compression.
+rejects the allocation unless the provider reports that same immutable reference.
+
+The paid worker reads the pre-staged XZ bundle from its content-addressed volume path. A
+bundle may be at most 2 MiB. The pod-creation environment contains no workload bytes; it
+contains only the result token and operational identity: the handoff revision, bundle
+path, digest and size, stage-receipt digest, and bootstrap-source digest. That
+identity-only environment is capped at 4 KiB.
+
+Before execution, the container verifies the bootstrap source digest. The bootstrap then
+opens the staged path without following symlinks, verifies its regular-file identity,
+size and SHA-256, enforces the exact file allowlist, and installs the workload once. The
+pre-model readiness check re-verifies the pinned source contract. The first structured
+progress must attest the same handoff revision, bundle path, digest and size,
+stage-receipt digest, bootstrap digest, and network-volume ID. Any mismatch stops the
+worker before the launcher accepts readiness.
+
+The launcher uses authenticated read-only readiness and progress probes after allocation.
+The paid handoff performs no proxy POST mutation. Preflight, the execution resource
+profile, provider receipt, and final proof retain the exact operational handoff identity.
 
 After allocation, the workload verifies the actual GPU identity, memory, free cache
 space, the exact `torch==2.8.0+cu128` build, and every cached file digest before model
@@ -207,8 +315,8 @@ paid H100 sets `HF_HUB_OFFLINE=1`,
 model weights. Missing or changed artifacts fail immediately.
 
 The six-minute readiness limit is one wall-clock deadline beginning immediately before
-the create request. Pod creation, provider inspection, observer updates, proxy probes,
-retries, and sleeps all consume that same budget.
+the create request. Pod creation, provider inspection, observer updates, authenticated
+readiness and progress probes, retries, and sleeps all consume that same budget.
 
 The screen evaluates eight deterministic level-0 tasks, then runs eight static-`K=4`
 branch probes with no policy mutation. Branching starts after one accepted repository
@@ -270,11 +378,16 @@ return `eligible: false`. Do not rerun it merely to search for a passing sample.
 The pilot preflight requires a screen completed within the previous seven days with
 `eligible: true`. The authorization must bind the same profile, model ID, model revision,
 snapshot digest, network volume, result digest, and provider receipt, and it must confirm
-teardown. A result from another model, profile, or volume cannot authorize this pilot.
+teardown. It also binds the handoff revision; bundle digest, size, XZ compression, and
+content-addressed path; stage-receipt digest; and bootstrap-source digest. A result from
+another model, profile, volume, bundle, stage receipt, or bootstrap cannot authorize this
+pilot.
 
 Do not edit or copy receipt fields to bypass this check. If the receipt does not match,
 fix the underlying screen or profile and repeat the screen as an explicitly new
-execution.
+execution. If the 24-hour stage receipt expires or the bootstrap changes after the
+screen, restage and run a new screen; the existing authorization must not cross that
+operational change.
 
 ## 4. Run the bounded pilot
 
@@ -309,6 +422,8 @@ The launcher must stop and tear down the worker when any of these conditions is 
 - observed GPU memory is below the profile minimum;
 - the actual hourly rate exceeds the hourly cap;
 - projected or accrued spend exceeds the total-cost cap;
+- the staged bundle, bootstrap, first-progress attestation, or screen authorization does
+  not match the exact handoff identity;
 - model loading exceeds its timeout;
 - structured progress stops changing for the configured watchdog period;
 - the provider lifetime limit expires;
@@ -401,7 +516,7 @@ Open the execution to inspect:
 - **Trajectory:** the shared prefix, checkpoint, four sibling continuations, actions,
   verifier outcomes, and policy signal;
 - **Evidence:** model and workload revisions, hardware attestation, receipt digest, cost,
-  and teardown; and
+  staged handoff identity, and teardown; and
 - **Operations:** provider handle, timestamps, failure reason, and cleanup state.
 
 For the screen, the deciding evidence is the threshold breakdown and no-policy-mutation

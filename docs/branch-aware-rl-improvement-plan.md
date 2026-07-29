@@ -122,14 +122,34 @@ served the authenticated bootstrap health check but returned `404` for three bun
 posts to the proxy root. The launcher deleted the worker, confirmed zero ongoing spend,
 and retained the attempt as non-probative failed execution evidence. A second attempt
 confirmed that alternate health, dedicated, and root POST paths all fail while
-authenticated GETs remain available. Bundle handoff therefore no longer depends on a
-provider proxy mutation. A profile-6 screen later exposed the same failure before model
-loading and was torn down cleanly. The paid launcher now creates the pod from the exact
-digest-qualified image reference and requires the provider to attest it. A bounded XZ
-bundle travels in the encrypted creation request; the bootstrap verifies its SHA-256
-and exact file allowlist, installs it once, removes it from the child process
-environment, and starts the observable runner. The launcher polls only authenticated
-progress after allocation.
+authenticated GETs remain available. A profile-6 screen later exposed the same failure
+before model loading and was torn down cleanly. These incidents and the subsequent
+inline creation-request workaround are legacy handoff history, not the current
+larger-model transport.
+
+Current screen and pilot launches use `runpod-volume-bundle-handoff@1`. An operator first
+builds a deterministic USTAR-and-XZ bundle from the pinned source contract and stages it
+at a SHA-256-addressed path on the provider-bound network volume. The bundle is limited
+to 2 MiB. A 24-hour stage receipt binds the profile and source-contract digests; bundle
+digest, size, compression, path and allowlist; and provider volume ID, data center and
+size. Preflight fails when the receipt is missing, stale, or inconsistent with the
+current provider volume or rebuilt canonical bundle.
+
+The pod-creation environment carries no workload bytes and is capped at 4 KiB. It
+contains only the result token and exact handoff identity: handoff revision, bundle path,
+digest and size, stage-receipt digest, and bootstrap-source digest. The container verifies
+the bootstrap source before execution; the bootstrap opens the staged bundle without
+following symlinks, verifies its identity and allowlist, and installs it once. The first
+structured progress must attest the same bundle, bootstrap, receipt, and network-volume
+identity. The launcher uses authenticated read-only readiness and progress probes after
+allocation and performs no proxy POST mutation.
+
+The eligibility screen binds its pilot authorization to the handoff revision; bundle
+digest, size, XZ compression and path; stage-receipt digest; and bootstrap-source digest.
+The pilot rejects an expired, restaged, or otherwise changed handoff even if the
+scientific profile is unchanged. Preflight, execution resource profiles, provider
+receipts, and final proofs retain this operational identity alongside the digest-qualified
+runtime image attestation.
 
 The corrected seed `113` revision-20 run proved that sparse policy signal now survives
 update boundaries: eleven policy-bearing updates consumed distinct accumulated groups,
