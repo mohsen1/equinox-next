@@ -48,7 +48,10 @@ def test_unregistered_seed_is_rejected() -> None:
         condition_from_id(manifest(), "k4_adaptive_seed999")
 
 
-def test_launcher_environment_selects_revision31() -> None:
+def test_launcher_environment_selects_revision31(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EQUINOX_RUNPOD_GPU_OVERRIDE", raising=False)
     study_manifest = manifest()
     condition = condition_from_id(study_manifest, "k1_scheduled_dynamic_seed443")
 
@@ -63,6 +66,26 @@ def test_launcher_environment_selects_revision31() -> None:
     assert environment["EQUINOX_RL_TRAINING_TASKS_PER_UPDATE"] == "12"
     assert environment["EQUINOX_STUDY_COMPLETION_BUDGET"] == "320"
     assert environment["EQUINOX_RUNPOD_PREFLIGHT_ONLY"] == "1"
+    assert environment["EQUINOX_RUNPOD_GPU"] == "NVIDIA A40"
+
+
+def test_launcher_allows_recorded_gpu_substitution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "EQUINOX_RUNPOD_GPU_OVERRIDE",
+        "NVIDIA GeForce RTX 4090",
+    )
+    study_manifest = manifest()
+    condition = condition_from_id(study_manifest, "k4_adaptive_seed137")
+
+    environment = launcher_environment(
+        study_manifest,
+        condition,
+        preflight_only=False,
+    )
+
+    assert environment["EQUINOX_RUNPOD_GPU"] == "NVIDIA GeForce RTX 4090"
 
 
 def test_study_identity_is_stable() -> None:

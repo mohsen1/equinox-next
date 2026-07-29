@@ -129,6 +129,8 @@ def launcher_environment(
 ) -> dict[str, str]:
     shared = manifest["shared_configuration"]
     model = manifest["model"]
+    gpu_override = os.environ.get("EQUINOX_RUNPOD_GPU_OVERRIDE", "")
+    selected_gpu = gpu_override or str(shared["hardware_preference"])
     environment = {
         **os.environ,
         "EQUINOX_RUNPOD_EXPERIMENT": "repository-repair",
@@ -150,7 +152,7 @@ def launcher_environment(
         "EQUINOX_STUDY_TEST_SEED_BASE": str(condition["test_seed_base"]),
         "EQUINOX_STUDY_COMPLETION_BUDGET": str(condition["completion_budget"]),
         "EQUINOX_RL_TRAINING_TASKS_PER_UPDATE": str(condition["training_tasks_per_update"]),
-        "EQUINOX_RUNPOD_GPU": str(shared["hardware_preference"]),
+        "EQUINOX_RUNPOD_GPU": selected_gpu,
         "EQUINOX_RUNPOD_MAX_HOURLY_COST": str(shared["maximum_hourly_cost_usd"]),
     }
     if preflight_only:
