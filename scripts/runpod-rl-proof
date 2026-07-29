@@ -285,6 +285,7 @@ larger_model_screen_receipt="${EQUINOX_LARGER_MODEL_SCREEN_RECEIPT:-}"
 larger_model_screen_result_digest=""
 larger_model_expected_snapshot_digest=""
 larger_model_source_contract_digest=""
+verified_image_digest=""
 maximum_storage_only_hourly_spend=""
 volume_readiness_receipt="${EQUINOX_LARGER_MODEL_VOLUME_RECEIPT:-}"
 volume_readiness_receipt_digest=""
@@ -467,6 +468,10 @@ command -v timeout >/dev/null
 command -v base64 >/dev/null
 command -v python3 >/dev/null
 command -v tar >/dev/null
+if [[ -n "$larger_model_mode" ]] && ! command -v docker >/dev/null; then
+  echo "Docker Buildx is required to verify the pinned container image." >&2
+  exit 1
+fi
 if [[ "$(timeout --help)" != *"--kill-after"* ]]; then
   echo "The timeout command must support --kill-after." >&2
   exit 1
@@ -603,7 +608,52 @@ PY
     echo "The larger-model provider settings do not exactly match the immutable profile." >&2
     exit 1
   fi
-  image="$image@$(jq -r '.runtime.image_digest' <<<"$larger_model_manifest")"
+  expected_image_digest="$(jq -r '.runtime.image_digest' <<<"$larger_model_manifest")"
+  if ! registry_image_index="$(
+    run_provider_command 60 docker buildx imagetools inspect --raw "$image"
+  )"; then
+    echo "The pinned container image could not be inspected in its registry." >&2
+    exit 1
+  fi
+  if ! verified_image_digest="$(
+    jq -er '
+      if type != "object"
+        or .schemaVersion != 2
+        or (
+          .mediaType != "application/vnd.oci.image.index.v1+json"
+          and .mediaType != "application/vnd.docker.distribution.manifest.list.v2+json"
+        )
+        or (.manifests | type) != "array"
+      then
+        error("invalid image index")
+      else
+        [
+          .manifests[]
+          | select(type == "object")
+          | select(
+              (.platform | type) == "object"
+              and .platform.os == "linux"
+              and .platform.architecture == "amd64"
+              and ((.platform.variant // "") == "")
+            )
+          | .digest
+        ]
+      end
+      | if length == 1
+          and (.[0] | type) == "string"
+          and (.[0] | test("^sha256:[0-9a-f]{64}$"))
+        then .[0]
+        else error("ambiguous linux/amd64 image manifest")
+        end
+    ' <<<"$registry_image_index"
+  )"; then
+    echo "The container registry did not return exactly one valid linux/amd64 image manifest." >&2
+    exit 1
+  fi
+  if [[ "$verified_image_digest" != "$expected_image_digest" ]]; then
+    echo "The registry linux/amd64 image digest does not match the immutable profile." >&2
+    exit 1
+  fi
 fi
 if [[ "$cloud_type" != "COMMUNITY" && "$cloud_type" != "SECURE" ]]; then
   echo "EQUINOX_RUNPOD_CLOUD_TYPE must be COMMUNITY or SECURE." >&2
@@ -1132,6 +1182,8 @@ if [[ "$preflight_only" == "1" ]]; then
     --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
     --arg source_contract_digest "$larger_model_source_contract_digest" \
     --arg model_id "$model_id" \
+    --arg image "$image" \
+    --arg image_digest "$verified_image_digest" \
     --arg model_revision "$(
       if [[ -n "$larger_model_mode" ]]; then
         jq -r '.model.revision' <<<"$larger_model_manifest"
@@ -1169,6 +1221,10 @@ if [[ "$preflight_only" == "1" ]]; then
         if $study_condition == "" then null else $study_condition end
       ),
       model_id: $model_id,
+      image: $image,
+      image_digest: (
+        if $image_digest == "" then null else $image_digest end
+      ),
       model_revision: (
         if $model_revision == "" then null else $model_revision end
       ),
@@ -1281,6 +1337,7 @@ resource_profile="$(
   jq -cn \
     --arg gpu_id "$gpu_id" \
     --arg image "$image" \
+    --arg image_digest "$verified_image_digest" \
     --arg cloud_type "$cloud_type" \
     --arg data_center_ids "$data_center_ids" \
     --arg network_volume_id "$network_volume_id" \
@@ -1296,6 +1353,9 @@ resource_profile="$(
       gpu_id: $gpu_id,
       gpu_count: 1,
       image: $image,
+      image_digest: (
+        if $image_digest == "" then null else $image_digest end
+      ),
       cloud_type: $cloud_type,
       data_center_ids: (
         if $data_center_ids == ""
@@ -1685,6 +1745,7 @@ resource_profile="$(
   jq -cn \
     --arg gpu_id "$gpu_id" \
     --arg image "$image" \
+    --arg image_digest "$verified_image_digest" \
     --arg cloud_type "$cloud_type" \
     --arg data_center_ids "$data_center_ids" \
     --arg network_volume_id "$network_volume_id" \
@@ -1701,6 +1762,9 @@ resource_profile="$(
       gpu_id: $gpu_id,
       gpu_count: 1,
       image: $image,
+      image_digest: (
+        if $image_digest == "" then null else $image_digest end
+      ),
       cloud_type: $cloud_type,
       data_center_ids: (
         if $data_center_ids == ""
@@ -2543,6 +2607,7 @@ jq -n \
   --arg provider_cli_version "$(run_provider_command 15 runpodctl version | awk '{print $2}')" \
   --arg gpu_id "$gpu_id" \
   --arg image "$image" \
+  --arg image_digest "$verified_image_digest" \
   --arg cloud_type "$cloud_type" \
   --arg data_center_ids "$data_center_ids" \
   --arg network_volume_id "$network_volume_id" \
@@ -2563,6 +2628,9 @@ jq -n \
       gpu_id: $gpu_id,
       gpu_count: 1,
       image: $image,
+      image_digest: (
+        if $image_digest == "" then null else $image_digest end
+      ),
       hourly_cost_usd: $hourly_cost,
       cloud_type: $cloud_type,
       data_center_ids: (

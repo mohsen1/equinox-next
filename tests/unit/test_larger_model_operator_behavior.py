@@ -20,11 +20,28 @@ LAUNCHER = REPOSITORY_ROOT / "scripts/runpod-rl-proof"
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 VOLUME_ID = "network-volume-123"
 DATA_CENTER_ID = "EU-RO-1"
+IMAGE_TAG = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+IMAGE_DIGEST = "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851"
 
 
 def _write_executable(path: Path, source: str) -> None:
     path.write_text(source, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _image_index(*digests: str) -> dict[str, object]:
+    return {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "digest": digest,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "platform": {"architecture": "amd64", "os": "linux"},
+            }
+            for digest in digests
+        ],
+    }
 
 
 def _install_fake_commands(tmp_path: Path) -> tuple[Path, Path]:
@@ -102,6 +119,43 @@ import sys
 
 if "--fail" not in sys.argv:
     raise SystemExit(96)
+""",
+    )
+    _write_executable(
+        binary_directory / "docker",
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+arguments = sys.argv[1:]
+with open(os.environ["FAKE_RUNPOD_LOG"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(["docker", *arguments], separators=(",", ":")) + "\\n")
+scenario = json.loads(os.environ["FAKE_RUNPOD_SCENARIO"])
+if scenario.get("image_inspection_error"):
+    print("registry unavailable", file=sys.stderr)
+    raise SystemExit(95)
+if arguments != [
+    "buildx",
+    "imagetools",
+    "inspect",
+    "--raw",
+    "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404",
+]:
+    raise SystemExit(94)
+print(json.dumps(scenario.get("image_index", {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "manifests": [{
+        "digest": "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {"architecture": "amd64", "os": "linux"}
+    }, {
+        "digest": "sha256:d78392453cbad3551b6330b058d224912b349dc5783759aa998fa091ee9b8826",
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "platform": {"architecture": "unknown", "os": "unknown"}
+    }]
+})))
 """,
     )
     _write_executable(
@@ -405,7 +459,40 @@ def test_valid_preflight_is_read_only_and_reports_the_pinned_profile(tmp_path: P
     assert payload["larger_model_mode"] == "screen"
     assert payload["network_volume_id"] == VOLUME_ID
     assert payload["model_id"] == MODEL_ID
+    assert payload["image"] == IMAGE_TAG
+    assert payload["image_digest"] == IMAGE_DIGEST
     assert payload["optimization_seed"] == 137
+    _assert_no_paid_create(commands)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_error"),
+    [
+        (
+            {"image_index": _image_index("sha256:" + "0" * 64)},
+            "registry linux/amd64 image digest does not match",
+        ),
+        (
+            {"image_inspection_error": True},
+            "pinned container image could not be inspected",
+        ),
+        (
+            {"image_index": _image_index(IMAGE_DIGEST, IMAGE_DIGEST)},
+            "did not return exactly one valid linux/amd64 image manifest",
+        ),
+    ],
+    ids=("digest-mismatch", "inspection-failure", "ambiguous-amd64"),
+)
+def test_image_verification_failure_never_creates_a_paid_pod(
+    tmp_path: Path,
+    scenario: dict[str, object],
+    expected_error: str,
+) -> None:
+    result, commands = _run_preflight(tmp_path, scenario=scenario)
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert ["docker", "buildx", "imagetools", "inspect", "--raw", IMAGE_TAG] in commands
     _assert_no_paid_create(commands)
 
 
@@ -424,6 +511,8 @@ def test_larger_model_launch_allows_only_the_pinned_storage_baseline(
     assert len(paid_creates) == 1
     assert "--network-volume-id" in paid_creates[0]
     assert VOLUME_ID in paid_creates[0]
+    assert paid_creates[0][paid_creates[0].index("--image") + 1] == IMAGE_TAG
+    assert "@" not in paid_creates[0][paid_creates[0].index("--image") + 1]
 
 
 @pytest.mark.parametrize("prepared_layout", ("root", "hub"))
