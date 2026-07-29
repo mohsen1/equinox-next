@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /workspace
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends jq \
+    && apt-get install --yes --no-install-recommends jq xz-utils \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements-dev.txt

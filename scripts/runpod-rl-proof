@@ -543,7 +543,10 @@ command -v jq >/dev/null
 command -v curl >/dev/null
 command -v timeout >/dev/null
 command -v base64 >/dev/null
-command -v xz >/dev/null
+if ! command -v xz >/dev/null; then
+  echo "XZ Utils is required to build the bounded workload bundle." >&2
+  exit 1
+fi
 command -v python3 >/dev/null
 command -v tar >/dev/null
 if [[ -n "$larger_model_mode" ]] && ! command -v docker >/dev/null; then
