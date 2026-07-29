@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_id": "qwen2.5-coder-7b-runpod-h100@5",
+  "profile_id": "qwen2.5-coder-7b-runpod-h100@6",
   "model": {
     "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
     "revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
@@ -66,16 +66,18 @@
     }
   },
   "interface": {
-    "environment_revision": "repository-repair-simulator@8",
-    "action_protocol_revision": "repository-repair-json-tools@7"
+    "environment_revision": "repository-repair-simulator@9",
+    "action_protocol_revision": "repository-repair-json-tools@8",
+    "terminal_submission_contract": "accepted-passing-test-or-finish@1"
   },
   "source_contract": {
     "algorithm": "sha256",
     "files": {
       "repository_repair_env_v31.py": "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657",
       "repository_repair_env_v32.py": "fefade752e6bd82530835a5de493fffe7629a6c8963ae6f5fe7e3073dd1d2557",
-      "repository_repair_large_model_eligibility.py": "8d82180828d8f853e41e1be00531ac536ab89e47c710f24878227b6a8abdd57f",
-      "repository_repair_large_model_pilot.py": "bbca2e068a34d5a45e1cc4201fb1c1189cee848a55d4ffe1462adc4b55b7d339",
+      "repository_repair_env_v33.py": "02b57b074c72e81ae3c72ab82121d226656378ab47c8aa51215091a913c41285",
+      "repository_repair_large_model_eligibility.py": "1634db11cdc1212271aec39257a2c3eb442bcb0a23906acab2626d0fb44e83bf",
+      "repository_repair_large_model_pilot.py": "e4606be45cd6c4b090fd48ef2db75d02fd7a3dc8f784528f6150a3b830f4c1ad",
       "repository_repair_study.py": "7799ff8969d67ad620db0f8c6bc9ee66bd0ef0300866cd0160696ff80fae7a0c"
     }
   },
@@ -128,7 +130,7 @@
   },
   "screen": {
     "workload": "repository-repair-larger-model-eligibility-screen",
-    "workload_revision": "larger-model-eligibility-screen@5",
+    "workload_revision": "larger-model-eligibility-screen@6",
     "admission_levels": [
       0
     ],
@@ -161,8 +163,9 @@
     }
   },
   "pilot": {
-    "workload_revision": "runpod-repository-repair-large-model-pilot@3",
-    "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@16",
+    "workload_revision": "runpod-repository-repair-large-model-pilot@4",
+    "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@17",
+    "reward_contract_revision": "correctness-gated-efficiency@1",
     "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
     "localization_telemetry_strategy": "all_fault_sources_observed",
     "policy_credit_scope": "fault_fixing_edits_and_immediately_upstream_fresh_reads_from_verified_successful_siblings",

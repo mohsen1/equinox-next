@@ -84,10 +84,11 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash() -> None:
     assert snapshot_hash_started is False
 
 
-def test_v32_pilot_constants_do_not_modify_frozen_sources() -> None:
+def test_v33_pilot_constants_do_not_modify_frozen_sources() -> None:
     assert pilot.MODEL_REVISION == gate.MODEL_REVISION
-    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@3"
-    assert pilot.OBJECTIVE_ID == "verified-repair-chain-root-branch-retention-policy-gradient@16"
+    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@4"
+    assert pilot.OBJECTIVE_ID == "verified-repair-chain-root-branch-retention-policy-gradient@17"
+    assert pilot.REWARD_CONTRACT_REVISION == "correctness-gated-efficiency@1"
     assert pilot.SHARED_PREFIX_CHECKPOINT_STRATEGY == "repository_root_observed@1"
     assert Path(pilot.__file__).name == "repository_repair_large_model_pilot.py"
     assert os.path.basename(pilot.frozen.__file__) == "repository_repair_rl.py"
@@ -259,10 +260,9 @@ def test_policy_credit_is_limited_to_fresh_read_and_fix_chain(
             "path": fault.path,
             "old": fault.old,
             "new": fault.new,
-        },
-        {"tool": "test"},
-        {"tool": "finish"},
-    )
+            },
+            {"tool": "test"},
+        )
 
     def sample_one(
         _prompt: str,
@@ -271,7 +271,7 @@ def test_policy_credit_is_limited_to_fresh_read_and_fix_chain(
     ) -> pilot.frozen.GeneratedAction:
         if seed == sampling_seed:
             action = {"tool": "list", "path": ""}
-        elif sampling_seed + 10_000 <= seed < sampling_seed + 10_006:
+        elif sampling_seed + 10_000 <= seed < sampling_seed + 10_005:
             action = successful_actions[seed - sampling_seed - 10_000]
         else:
             action = {"tool": "finish"}
@@ -303,7 +303,6 @@ def test_policy_credit_is_limited_to_fresh_read_and_fix_chain(
         False,
         True,
         True,
-        False,
         False,
     ]
     assert serialized["policy_credit_scope"] == pilot.POLICY_CREDIT_SCOPE
@@ -362,6 +361,7 @@ def test_pilot_result_records_seed_and_source_contract(
             "seed": optimization_seed,
             "policy_update_count": 1,
             "best_validation": {"update": 3},
+            "reward_contract": {"revision": "correctness-gated-efficiency@1"},
             "training_configuration": {
                 "shared_prefix_checkpoint": "stale",
                 "minimum_shared_prefix_actions": 2,
@@ -376,6 +376,10 @@ def test_pilot_result_records_seed_and_source_contract(
 
     assert result["optimization_seed"] == optimization_seed
     assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
+    assert (
+        result["terminal_submission_contract"]
+        == manifest["interface"]["terminal_submission_contract"]
+    )
     assert result["training_configuration"]["shared_prefix_checkpoint"] == (
         "repository_root_observed@1"
     )

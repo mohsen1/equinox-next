@@ -117,6 +117,7 @@ def test_large_model_bundle_requires_the_gate_and_versioned_environment(
         "repository_repair_env.py",
         "repository_repair_env_v31.py",
         "repository_repair_env_v32.py",
+        "repository_repair_env_v33.py",
         "repository_repair_large_model_eligibility.py",
         "repository_repair_large_model_pilot.py",
         "repository_repair_rl.py",

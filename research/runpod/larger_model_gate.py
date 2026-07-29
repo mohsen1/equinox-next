@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@5"
+PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@6"
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 MODEL_REVISION = "c03e6d358207e414f1eca0bb1891e29f1db0e242"
 MODEL_PARAMETER_COUNT = 7_615_616_512
@@ -82,18 +82,21 @@ SOURCE_CONTRACT_SHA256 = {
     "repository_repair_env_v32.py": (
         "fefade752e6bd82530835a5de493fffe7629a6c8963ae6f5fe7e3073dd1d2557"
     ),
+    "repository_repair_env_v33.py": (
+        "02b57b074c72e81ae3c72ab82121d226656378ab47c8aa51215091a913c41285"
+    ),
     "repository_repair_large_model_eligibility.py": (
-        "8d82180828d8f853e41e1be00531ac536ab89e47c710f24878227b6a8abdd57f"
+        "1634db11cdc1212271aec39257a2c3eb442bcb0a23906acab2626d0fb44e83bf"
     ),
     "repository_repair_large_model_pilot.py": (
-        "bbca2e068a34d5a45e1cc4201fb1c1189cee848a55d4ffe1462adc4b55b7d339"
+        "e4606be45cd6c4b090fd48ef2db75d02fd7a3dc8f784528f6150a3b830f4c1ad"
     ),
     "repository_repair_study.py": (
         "7799ff8969d67ad620db0f8c6bc9ee66bd0ef0300866cd0160696ff80fae7a0c"
     ),
 }
 SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
-SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@5"
+SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@6"
 CAPPED_GENERATION_TOKENS = 192
 CLEANUP_COST_RESERVE_SECONDS = 120
 DEFAULT_MANIFEST_PATH = (
@@ -140,8 +143,9 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         },
     },
     "interface": {
-        "environment_revision": "repository-repair-simulator@8",
-        "action_protocol_revision": "repository-repair-json-tools@7",
+        "environment_revision": "repository-repair-simulator@9",
+        "action_protocol_revision": "repository-repair-json-tools@8",
+        "terminal_submission_contract": "accepted-passing-test-or-finish@1",
     },
     "source_contract": {
         "algorithm": "sha256",
@@ -227,8 +231,9 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         },
     },
     "pilot": {
-        "workload_revision": "runpod-repository-repair-large-model-pilot@3",
-        "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@16",
+        "workload_revision": "runpod-repository-repair-large-model-pilot@4",
+        "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@17",
+        "reward_contract_revision": "correctness-gated-efficiency@1",
         "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
         "localization_telemetry_strategy": "all_fault_sources_observed",
         "policy_credit_scope": (
@@ -1040,6 +1045,7 @@ def verify_pilot_authorization(
         "model_revision": manifest["model"]["revision"],
         "environment_revision": manifest["interface"]["environment_revision"],
         "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "terminal_submission_contract": manifest["interface"]["terminal_submission_contract"],
         "screen_levels": manifest["screen"]["admission_levels"],
         "shared_prefix_checkpoint_strategy": manifest["screen"][
             "shared_prefix_checkpoint_strategy"
@@ -1246,6 +1252,7 @@ def verify_pilot_authorization(
         "screen_result_digest": observed_digest,
         "pinned_snapshot_digest": expected_snapshot_digest(manifest),
         "source_contract_digest": expected_source_contract_digest(manifest),
+        "terminal_submission_contract": manifest["interface"]["terminal_submission_contract"],
         "image": manifest["runtime"]["image"],
         "image_digest": manifest["runtime"]["image_digest"],
         "network_volume_id": network_volume_id,

@@ -1,7 +1,7 @@
 """Bounded, non-mutating eligibility screen for the pinned 7B repair policy.
 
 The frozen revision-30 trainer remains byte-identical. This wrapper replaces its
-policy-facing environment with revision 32, measures the starting L0 curriculum,
+policy-facing environment with revision 33, measures the starting L0 curriculum,
 branches after the repository root is observed, restores every optimizer and
 adapter mutation, and stops immediately after one eight-group K=4 collection.
 """
@@ -24,13 +24,13 @@ from typing import Any
 try:
     import larger_model_gate as gate
     import repository_repair_env as frozen_environment
-    import repository_repair_env_v32 as revision32
+    import repository_repair_env_v33 as revision33
     import repository_repair_rl as frozen
     import repository_repair_study as study
 except ModuleNotFoundError:
     from . import larger_model_gate as gate
     from . import repository_repair_env as frozen_environment
-    from . import repository_repair_env_v32 as revision32
+    from . import repository_repair_env_v33 as revision33
     from . import repository_repair_rl as frozen
     from . import repository_repair_study as study
 
@@ -1057,8 +1057,9 @@ def build_screen_result(
         "gate_results": gate_results,
         "elapsed_seconds": round(time.monotonic() - evidence.started_at, 3),
         "completed_at": completed_at or utc_now(),
-        "environment_revision": revision32.ENVIRONMENT_REVISION,
-        "action_protocol_revision": revision32.ACTION_PROTOCOL_REVISION,
+        "environment_revision": revision33.ENVIRONMENT_REVISION,
+        "action_protocol_revision": revision33.ACTION_PROTOCOL_REVISION,
+        "terminal_submission_contract": revision33.TERMINAL_SUBMISSION_CONTRACT,
     }
     result["digest"] = gate.result_digest(result)
     return result
@@ -1150,7 +1151,7 @@ def install_environment_hooks(
     evidence: ScreenEvidence,
     manifest: dict[str, Any],
 ) -> None:
-    """Install revision-32 semantics, the L0 screen, K4, and isolation guards."""
+    """Install revision-33 semantics, the L0 screen, K4, and isolation guards."""
 
     screen = manifest["screen"]
     if screen["admission_levels"] != [0]:
@@ -1164,11 +1165,11 @@ def install_environment_hooks(
     if screen["training_tasks_per_update"] != screen["branch_groups"]:
         raise RuntimeError("larger-model eligibility requires one task per branch group")
     frozen.SUPPORTED_MODELS[manifest["model"]["id"]] = manifest["model"]["revision"]
-    frozen.SYSTEM_PROMPT = revision32.SYSTEM_PROMPT
-    frozen.ENVIRONMENT_REVISION = revision32.ENVIRONMENT_REVISION
-    frozen.ACTION_PROTOCOL_REVISION = revision32.ACTION_PROTOCOL_REVISION
-    frozen_environment.ENVIRONMENT_REVISION = revision32.ENVIRONMENT_REVISION
-    frozen_environment.ACTION_PROTOCOL_REVISION = revision32.ACTION_PROTOCOL_REVISION
+    frozen.SYSTEM_PROMPT = revision33.SYSTEM_PROMPT
+    frozen.ENVIRONMENT_REVISION = revision33.ENVIRONMENT_REVISION
+    frozen.ACTION_PROTOCOL_REVISION = revision33.ACTION_PROTOCOL_REVISION
+    frozen_environment.ENVIRONMENT_REVISION = revision33.ENVIRONMENT_REVISION
+    frozen_environment.ACTION_PROTOCOL_REVISION = revision33.ACTION_PROTOCOL_REVISION
     frozen.BRANCH_WIDTH = screen["branch_width"]
     frozen_environment.BRANCH_WIDTH = screen["branch_width"]
     frozen.TRAINING_MICROBATCH_SIZE = screen["training_microbatch_size"]
@@ -1180,7 +1181,7 @@ def install_environment_hooks(
 
     frozen.branch_checkpoint_diagnostic_actions = root_checkpoint_diagnostic_actions
 
-    class AuditedEnvironment(revision32.RepositoryRepairEnvironment):
+    class AuditedEnvironment(revision33.RepositoryRepairEnvironment):
         def policy_prompt(self, phase: Any) -> str:
             prompt = super().policy_prompt(phase)
             if phase != "shared_prefix":
@@ -1191,7 +1192,7 @@ def install_environment_hooks(
                 "Use only list, read, search, or test; do not edit or finish before the checkpoint."
             )
             if prompt.count(previous_instruction) != 1:
-                raise RuntimeError("revision-32 shared-prefix prompt shape drifted")
+                raise RuntimeError("revision-33 shared-prefix prompt shape drifted")
             return prompt.replace(
                 previous_instruction,
                 ROOT_CHECKPOINT_PHASE_INSTRUCTION,
@@ -1505,7 +1506,9 @@ def self_test(manifest: dict[str, Any]) -> dict[str, Any]:
         "workload": manifest["screen"]["workload"],
         "workload_revision": manifest["screen"]["workload_revision"],
         "profile_id": manifest["profile_id"],
-        "environment_revision": revision32.ENVIRONMENT_REVISION,
+        "environment_revision": revision33.ENVIRONMENT_REVISION,
+        "action_protocol_revision": revision33.ACTION_PROTOCOL_REVISION,
+        "terminal_submission_contract": revision33.TERMINAL_SUBMISSION_CONTRACT,
     }
     print(json.dumps(result, sort_keys=True))
     return result

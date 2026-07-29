@@ -22,6 +22,7 @@ except ModuleNotFoundError:
 
 ENVIRONMENT_REVISION = "repository-repair-simulator@9"
 ACTION_PROTOCOL_REVISION = "repository-repair-json-tools@8"
+TERMINAL_SUBMISSION_CONTRACT = "accepted-passing-test-or-finish@1"
 _PASSING_TEST_RULE = (
     "- An accepted test whose verifier passes finishes immediately; "
     "do not send a redundant finish action."
@@ -143,5 +144,6 @@ __all__ = [
     "ACTION_REMINDER",
     "ENVIRONMENT_REVISION",
     "SYSTEM_PROMPT",
+    "TERMINAL_SUBMISSION_CONTRACT",
     "RepositoryRepairEnvironment",
 ]

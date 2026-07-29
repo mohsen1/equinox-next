@@ -122,6 +122,7 @@ def eligible_screen(**overrides: object) -> dict[str, object]:
         "source_contract_digest": expected_source_contract_digest(manifest),
         "environment_revision": manifest["interface"]["environment_revision"],
         "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "terminal_submission_contract": manifest["interface"]["terminal_submission_contract"],
         "screen_levels": manifest["screen"]["admission_levels"],
         "shared_prefix_checkpoint_strategy": manifest["screen"][
             "shared_prefix_checkpoint_strategy"
@@ -264,8 +265,9 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     assert manifest["hardware"]["minimum_cuda_memory_bytes"] == 78_000_000_000
     assert manifest["hardware"]["maximum_peak_reserved_vram_fraction"] == 0.85
     assert manifest["interface"] == {
-        "environment_revision": "repository-repair-simulator@8",
-        "action_protocol_revision": "repository-repair-json-tools@7",
+        "environment_revision": "repository-repair-simulator@9",
+        "action_protocol_revision": "repository-repair-json-tools@8",
+        "terminal_submission_contract": "accepted-passing-test-or-finish@1",
     }
     assert manifest["source_contract"] == {
         "algorithm": "sha256",
@@ -300,8 +302,9 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     }
     assert manifest["screen"]["thresholds"]["maximum_predicted_final_evaluation_seconds"] == 1_440
     assert manifest["pilot"] == {
-        "workload_revision": "runpod-repository-repair-large-model-pilot@3",
-        "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@16",
+        "workload_revision": "runpod-repository-repair-large-model-pilot@4",
+        "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@17",
+        "reward_contract_revision": "correctness-gated-efficiency@1",
         "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
         "localization_telemetry_strategy": "all_fault_sources_observed",
         "policy_credit_scope": (
@@ -827,6 +830,18 @@ def test_volume_readiness_receipt_requires_valid_digest_and_freshness() -> None:
         )
 
 
+def test_profile5_volume_receipt_fails_closed_under_profile6() -> None:
+    previous_receipt = volume_receipt(profile_id="qwen2.5-coder-7b-runpod-h100@5")
+
+    with pytest.raises(GateError, match="profile_id"):
+        verify_volume_readiness_receipt(
+            load_manifest(),
+            previous_receipt,
+            {"id": "network-volume-123", "dataCenterId": "EU-RO-1", "size": 50},
+            now=NOW,
+        )
+
+
 def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
     screen = eligible_screen()
     receipt = receipt_for(screen)
@@ -845,6 +860,7 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
     assert authorization["source_contract_digest"] == expected_source_contract_digest(
         load_manifest()
     )
+    assert authorization["terminal_submission_contract"] == ("accepted-passing-test-or-finish@1")
     assert authorization["screen_result_digest"] == result_digest(screen)
     assert authorization["pinned_snapshot_digest"] == expected_snapshot_digest(load_manifest())
     assert authorization["image"] == IMAGE_TAG
@@ -852,6 +868,40 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
     assert authorization["network_volume_id"] == "network-volume-123"
     assert authorization["provider_handle"] == "runpod://pods/pod-123"
     assert authorization["digest"].startswith("sha256:")
+
+
+def test_profile5_screen_and_provider_receipt_fail_closed_under_profile6() -> None:
+    previous_screen = eligible_screen(
+        profile_id="qwen2.5-coder-7b-runpod-h100@5",
+        workload_revision="larger-model-eligibility-screen@5",
+    )
+    previous_receipt = receipt_for(
+        previous_screen,
+        profile_id="qwen2.5-coder-7b-runpod-h100@5",
+        screen_workload_revision="larger-model-eligibility-screen@5",
+    )
+
+    with pytest.raises(GateError, match="result workload_revision"):
+        verify_pilot_authorization(
+            load_manifest(),
+            previous_screen,
+            previous_receipt,
+            now=NOW,
+        )
+
+    current_screen = eligible_screen()
+    old_profile_receipt = receipt_for(
+        current_screen,
+        profile_id="qwen2.5-coder-7b-runpod-h100@5",
+        screen_workload_revision="larger-model-eligibility-screen@5",
+    )
+    with pytest.raises(GateError, match="receipt profile_id"):
+        verify_pilot_authorization(
+            load_manifest(),
+            current_screen,
+            old_profile_receipt,
+            now=NOW,
+        )
 
 
 @pytest.mark.parametrize(
@@ -863,6 +913,11 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
         ({"source_contract_digest": "sha256:" + "0" * 64}, {}, "source_contract_digest"),
         ({"environment_revision": "simulator@old"}, {}, "environment_revision"),
         ({"action_protocol_revision": "tools@old"}, {}, "action_protocol_revision"),
+        (
+            {"terminal_submission_contract": "accepted-finish-only@1"},
+            {},
+            "terminal_submission_contract",
+        ),
         ({"branch_width": 1}, {}, "branch_width"),
         ({"training_microbatch_size": 2}, {}, "training_microbatch_size"),
         ({"maximum_input_tokens": 4_096}, {}, "maximum_input_tokens"),

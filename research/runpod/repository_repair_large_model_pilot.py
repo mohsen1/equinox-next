@@ -12,21 +12,22 @@ from typing import Any
 try:
     import larger_model_gate as gate
     import repository_repair_env as frozen_environment
-    import repository_repair_env_v32 as interface
+    import repository_repair_env_v33 as interface
     import repository_repair_large_model_eligibility as eligibility
     import repository_repair_rl as frozen
     import repository_repair_study as study
 except ModuleNotFoundError:
     from . import larger_model_gate as gate
     from . import repository_repair_env as frozen_environment
-    from . import repository_repair_env_v32 as interface
+    from . import repository_repair_env_v33 as interface
     from . import repository_repair_large_model_eligibility as eligibility
     from . import repository_repair_rl as frozen
     from . import repository_repair_study as study
 
 
-WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@3"
-OBJECTIVE_ID = "verified-repair-chain-root-branch-retention-policy-gradient@16"
+WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@4"
+OBJECTIVE_ID = "verified-repair-chain-root-branch-retention-policy-gradient@17"
+REWARD_CONTRACT_REVISION = "correctness-gated-efficiency@1"
 SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed@1"
 LOCALIZATION_TELEMETRY_STRATEGY = "all_fault_sources_observed"
 POLICY_CREDIT_SCOPE = (
@@ -385,7 +386,7 @@ def install_bootstrap_checkpoint_contract(branch_width: int) -> None:
     frozen.serialize_branch_group = serialize_pilot_branch_group
 
 
-def install_v32_contract(manifest: dict[str, Any], authorization_digest: str) -> None:
+def install_v33_contract(manifest: dict[str, Any], authorization_digest: str) -> None:
     """Install the new model/interface identity around the byte-frozen trainer."""
 
     pilot = manifest["pilot"]
@@ -395,6 +396,7 @@ def install_v32_contract(manifest: dict[str, Any], authorization_digest: str) ->
         "shared_prefix_checkpoint_strategy": SHARED_PREFIX_CHECKPOINT_STRATEGY,
         "localization_telemetry_strategy": LOCALIZATION_TELEMETRY_STRATEGY,
         "policy_credit_scope": POLICY_CREDIT_SCOPE,
+        "reward_contract_revision": REWARD_CONTRACT_REVISION,
     }
     for name, expected in expected_identity.items():
         if pilot[name] != expected:
@@ -491,6 +493,12 @@ def augment_result(
     )
     total_policy_updates = result.get("policy_update_count")
     optimization_seed = manifest["pilot_limits"]["optimization_seed"]
+    reward_contract = result.get("reward_contract")
+    if (
+        not isinstance(reward_contract, dict)
+        or reward_contract.get("revision") != REWARD_CONTRACT_REVISION
+    ):
+        raise RuntimeError("the larger-model pilot reward contract drifted")
     if result.get("seed") != optimization_seed:
         raise RuntimeError("the larger-model pilot optimization seed drifted")
     if (
@@ -524,6 +532,7 @@ def augment_result(
         "authorization_digest": authorization_digest,
         "environment_revision": interface.ENVIRONMENT_REVISION,
         "action_protocol_revision": interface.ACTION_PROTOCOL_REVISION,
+        "terminal_submission_contract": interface.TERMINAL_SUBMISSION_CONTRACT,
         "gpu_id": hardware.gpu_name,
         "gpu_name": hardware.gpu_name,
         "gpu_total_memory_bytes": hardware.total_memory_bytes,
@@ -550,7 +559,7 @@ def main() -> None:
         raise ValueError("the larger-model pilot requires the manifest-pinned model")
     authorization_digest = require_authorization_digest()
     study.verify_frozen_sources()
-    install_v32_contract(manifest, authorization_digest)
+    install_v33_contract(manifest, authorization_digest)
     runtime = frozen.configure_from_environment()
     validate_runtime_configuration(runtime, manifest)
     if "--validate-configuration" in sys.argv:

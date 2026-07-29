@@ -10,6 +10,7 @@ from research.runpod.repository_repair_env_v33 import (
     ACTION_REMINDER,
     ENVIRONMENT_REVISION,
     SYSTEM_PROMPT,
+    TERMINAL_SUBMISSION_CONTRACT,
     RepositoryRepairEnvironment,
 )
 
@@ -292,6 +293,7 @@ def test_prompt_and_revision_contract_only_add_passing_test_semantics() -> None:
 
     assert ENVIRONMENT_REVISION == "repository-repair-simulator@9"
     assert ACTION_PROTOCOL_REVISION == "repository-repair-json-tools@8"
+    assert TERMINAL_SUBMISSION_CONTRACT == "accepted-passing-test-or-finish@1"
     assert expected_system_prompt == SYSTEM_PROMPT
     assert expected_action_reminder == ACTION_REMINDER
     assert SYSTEM_PROMPT.count(passing_test_rule) == 1

@@ -188,6 +188,10 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
     assert result["environment_revision"] == manifest["interface"]["environment_revision"]
     assert result["action_protocol_revision"] == manifest["interface"]["action_protocol_revision"]
+    assert (
+        result["terminal_submission_contract"]
+        == manifest["interface"]["terminal_submission_contract"]
+    )
     assert result["action_counts_by_tool"] == {}
     assert result["accepted_action_counts_by_tool"] == {}
     assert result["rejected_action_counts_by_tool"] == {}
@@ -851,7 +855,7 @@ def test_runner_adapter_path_is_disarmed_only_when_empty(
         eligibility.disarm_empty_adapter_path()
 
 
-def test_runtime_hooks_install_l0_root_checkpoint_v32_k4_screen_and_isolate_test_split(
+def test_runtime_hooks_install_l0_root_checkpoint_v33_k4_screen_and_isolate_test_split(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manifest = gate.load_manifest()
@@ -961,7 +965,7 @@ def test_runtime_hooks_install_l0_root_checkpoint_v32_k4_screen_and_isolate_test
         )
         assert (
             eligibility.frozen.RepositoryRepairEnvironment.__mro__[1]
-            is eligibility.revision32.RepositoryRepairEnvironment
+            is eligibility.revision33.RepositoryRepairEnvironment
         )
         environment = eligibility.frozen.RepositoryRepairEnvironment(tasks[0])
         prompt = environment.policy_prompt("shared_prefix")

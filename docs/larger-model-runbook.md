@@ -5,13 +5,21 @@ stage below require an explicit operator command.
 
 The guarded larger-model flow targets the manifest-pinned
 `Qwen/Qwen2.5-Coder-7B-Instruct` revision under profile
-`qwen2.5-coder-7b-runpod-h100@5`. It has two paid stages:
+`qwen2.5-coder-7b-runpod-h100@6`. It has two paid stages:
 
 1. a bounded eligibility screen that does not update the policy; and
 2. a branch-aware training pilot authorized by the screen receipt.
 
 A completed screen is not evidence of learning. It only decides whether the exact model,
 revision, profile, and hardware combination may enter the pilot.
+
+Profile `@6` binds simulator `repository-repair-simulator@9`, action protocol
+`repository-repair-json-tools@8`, and terminal submission contract
+`accepted-passing-test-or-finish@1`. An accepted passing test now completes a repair
+without a redundant finish action; an accepted finish remains terminal. The pilot is
+`runpod-repository-repair-large-model-pilot@4`, its objective is
+`verified-repair-chain-root-branch-retention-policy-gradient@17`, and its reward contract
+remains `correctness-gated-efficiency@1`.
 
 The versioned
 [larger-model eligibility profile](../research/studies/larger-model-eligibility.json) is
@@ -40,7 +48,7 @@ the authorized `$25.00` for CPU prewarm, network-volume storage, and contingency
 The launcher never creates or populates a network volume. With no existing volume and
 matching readiness receipt, both `--preflight-only` and paid launch are blocked.
 Readiness receipts and screen authorizations from the former L40 profile or the H100
-`@1`, `@2`, `@3`, or `@4` profiles do not match this profile and cannot be reused.
+`@1`, `@2`, `@3`, `@4`, or `@5` profiles do not match this profile and cannot be reused.
 
 Create a 50 GB volume in a data center that offers an `NVIDIA H100 80GB HBM3`:
 
@@ -211,6 +219,11 @@ silently discard the oldest prompt content. Before the screen, the reversible H1
 capacity smoke exercises 2,240 tokens: the larger screen/pilot input envelope plus the
 192-token generation cap.
 
+Both stages run the same `@6` terminal contract. A schema-valid, accepted test action
+that passes hidden verification ends the trajectory as solved immediately. A failing
+test remains nonterminal unless it consumes the repair horizon, and the existing finish
+action retains its prior solved or finished-with-failures behavior.
+
 The pilot-runtime gate extrapolates the observed level-0 baseline across every pilot
 level. It multiplies by `(8 + 10 + 14 + 18) / 8 = 6.25` for the four repair horizons,
 then accounts for paired base/final evaluation and the pinned `1.5` safety factor. The
@@ -227,6 +240,7 @@ The screen does not access the sealed final-test pack or persist a trained adapt
 result records:
 
 - the exact model, revision, eligibility profile, and workload revisions;
+- the simulator, action protocol, and terminal submission contract;
 - requested and observed GPU identity and memory;
 - model-load completion and peak memory;
 - schema-valid action rate and semantic acceptance rate as separate metrics;
