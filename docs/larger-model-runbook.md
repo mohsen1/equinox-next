@@ -1,10 +1,11 @@
 # Larger-model RunPod runbook
 
-Installing this change creates no provider resource. The CPU prewarm and each paid L40
+Installing this change creates no provider resource. The CPU prewarm and each paid H100
 stage below require an explicit operator command.
 
 The guarded larger-model flow targets the manifest-pinned
-`Qwen/Qwen2.5-Coder-7B-Instruct` revision. It has two paid stages:
+`Qwen/Qwen2.5-Coder-7B-Instruct` revision under profile
+`qwen2.5-coder-7b-runpod-h100@1`. It has two paid stages:
 
 1. a bounded eligibility screen that does not update the policy; and
 2. a branch-aware training pilot authorized by the screen receipt.
@@ -17,26 +18,30 @@ The versioned
 the source of truth. It pins optimization seed `137` and the SHA-256 digest of every
 larger-model scientific wrapper and interface source used by the screen and pilot:
 
-| Guard                  |              Screen |               Pilot |
-| ---------------------- | ------------------: | ------------------: |
-| GPU                    | L40, at least 48 GB | L40, at least 48 GB |
-| Maximum hourly cost    |               $1.00 |               $1.00 |
-| Maximum total cost     |               $0.75 |               $4.00 |
-| Model-load timeout     |          20 minutes |          20 minutes |
-| No-progress watchdog   |          10 minutes |          15 minutes |
-| Paid launcher lifetime |          43 minutes |         238 minutes |
-| Cleanup cost reserve   |         120 seconds |         120 seconds |
-| Workload attempts      |                   1 |                   1 |
+| Guard                  |                   Screen |                    Pilot |
+| ---------------------- | -----------------------: | -----------------------: |
+| GPU                    | H100 SXM, at least 80 GB | H100 SXM, at least 80 GB |
+| Maximum hourly cost    |                    $4.00 |                    $4.00 |
+| Maximum total cost     |                    $3.00 |                   $16.00 |
+| Model-load timeout     |               20 minutes |               20 minutes |
+| No-progress watchdog   |               10 minutes |               15 minutes |
+| Paid launcher lifetime |               43 minutes |              238 minutes |
+| Cleanup cost reserve   |              120 seconds |              120 seconds |
+| Workload attempts      |                        1 |                        1 |
 
 The paid cost envelope is therefore at most 45 minutes for the screen and 240 minutes for
-the pilot. The 120-second reserve is not training time.
+the pilot. The two paid GPU stages have a combined `$19.00` ceiling, leaving `$6.00` of
+the authorized `$25.00` for CPU prewarm, network-volume storage, and contingency. The
+120-second reserve is not training time.
 
 ## Prepare the network volume on CPU
 
 The launcher never creates or populates a network volume. With no existing volume and
 matching readiness receipt, both `--preflight-only` and paid launch are blocked.
+Readiness receipts and screen authorizations from the former L40 profile do not match
+this profile and cannot be reused.
 
-Create a 50 GB volume in a data center that offers an L40:
+Create a 50 GB volume in a data center that offers an `NVIDIA H100 80GB HBM3`:
 
 ```bash
 runpodctl network-volume create \
@@ -176,7 +181,7 @@ The launcher rechecks every preallocation condition immediately before requestin
 worker. After allocation, it verifies the actual GPU identity, memory, free cache space,
 the exact `torch==2.8.0+cu128` build, and every cached file digest before model
 initialization. It also requires the exact dependency versions from the volume. The paid
-L40 sets `HF_HUB_OFFLINE=1`,
+H100 sets `HF_HUB_OFFLINE=1`,
 `TRANSFORMERS_OFFLINE=1`, and `PIP_NO_INDEX=1`: it never installs packages or downloads
 model weights. Missing or changed artifacts fail immediately.
 

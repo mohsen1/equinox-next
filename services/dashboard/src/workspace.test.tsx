@@ -26,16 +26,16 @@ function largerModelEligibilityExecution(eligible: boolean) {
     provider_name: "RunPod",
     provider_handle: "runpod://pods/larger-model-screen",
     resource_profile: {
-      gpu_id: "NVIDIA L40",
+      gpu_id: "NVIDIA H100 80GB HBM3",
       cloud_type: "SECURE",
-      hourly_cost_usd: 0.69,
-      maximum_hourly_cost_usd: 1,
+      hourly_cost_usd: 3.49,
+      maximum_hourly_cost_usd: 4,
     },
     progress: {
       phase: "complete",
       screen_completed: true,
       eligible,
-      larger_model_profile_id: "qwen25-coder-7b-l40@1",
+      larger_model_profile_id: "qwen2.5-coder-7b-runpod-h100@1",
       model_revision: "c03e6d358207e414f1eca0bb1891e29f1db0e242",
       checkpoint_admission_rate: 0.875,
       informative_group_rate: 0.25,
@@ -326,7 +326,7 @@ describe("Runs and Proofs workspaces", () => {
         eligibilitySection?.querySelector(".status")?.classList.contains(tone),
       ).toBe(true);
       expect(eligibilitySection?.textContent).toContain(
-        "qwen25-coder-7b-l40@1",
+        "qwen2.5-coder-7b-runpod-h100@1",
       );
       expect(
         eligibilitySection?.querySelector(

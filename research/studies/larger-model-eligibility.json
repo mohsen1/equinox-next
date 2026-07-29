@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_id": "qwen2.5-coder-7b-runpod-l40@1",
+  "profile_id": "qwen2.5-coder-7b-runpod-h100@1",
   "model": {
     "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
     "revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
@@ -82,10 +82,10 @@
   "hardware": {
     "provider": "runpod",
     "cloud_type": "SECURE",
-    "gpu_id": "NVIDIA L40",
-    "gpu_display_name": "L40",
-    "minimum_gpu_memory_gb": 48,
-    "minimum_cuda_memory_bytes": 47000000000,
+    "gpu_id": "NVIDIA H100 80GB HBM3",
+    "gpu_display_name": "H100 SXM",
+    "minimum_gpu_memory_gb": 80,
+    "minimum_cuda_memory_bytes": 78000000000,
     "container_disk_gb": 50,
     "volume_disk_gb": 50,
     "minimum_free_cache_bytes": 25000000000,
@@ -98,8 +98,8 @@
     "allow_network_model_download_during_screen": false
   },
   "screen_limits": {
-    "maximum_hourly_cost_usd": 1.0,
-    "maximum_total_cost_usd": 0.75,
+    "maximum_hourly_cost_usd": 4.0,
+    "maximum_total_cost_usd": 3.0,
     "maximum_lifetime_seconds": 2580,
     "boot_timeout_seconds": 360,
     "model_load_timeout_seconds": 1200,
@@ -111,8 +111,8 @@
     "optimization_seed": 137
   },
   "pilot_limits": {
-    "maximum_hourly_cost_usd": 1.0,
-    "maximum_total_cost_usd": 4.0,
+    "maximum_hourly_cost_usd": 4.0,
+    "maximum_total_cost_usd": 16.0,
     "maximum_lifetime_seconds": 14280,
     "boot_timeout_seconds": 360,
     "model_load_timeout_seconds": 1200,

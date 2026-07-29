@@ -71,9 +71,9 @@ def inventory_row(**overrides: object) -> dict[str, object]:
     row: dict[str, object] = {
         "available": True,
         "communityCloud": True,
-        "displayName": "L40",
-        "gpuId": "NVIDIA L40",
-        "memoryInGb": 48,
+        "displayName": "H100 SXM",
+        "gpuId": "NVIDIA H100 80GB HBM3",
+        "memoryInGb": 80,
         "secureCloud": True,
         "stockStatus": "Low",
     }
@@ -160,7 +160,7 @@ def receipt_for(result: dict[str, object], **overrides: object) -> dict[str, obj
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,
         "screen_workload_revision": SCREEN_WORKLOAD_REVISION,
-        "gpu_id": "NVIDIA L40",
+        "gpu_id": "NVIDIA H100 80GB HBM3",
         "result_digest": result_digest(result),
         "teardown_confirmed": True,
         "completed_at": "2026-07-29T11:00:00Z",
@@ -220,9 +220,10 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
         "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851"
     )
     assert manifest["runtime"]["torch_version"] == "2.8.0+cu128"
-    assert manifest["hardware"]["gpu_id"] == "NVIDIA L40"
-    assert manifest["hardware"]["minimum_gpu_memory_gb"] == 48
-    assert manifest["hardware"]["minimum_cuda_memory_bytes"] == 47_000_000_000
+    assert manifest["hardware"]["gpu_id"] == "NVIDIA H100 80GB HBM3"
+    assert manifest["hardware"]["gpu_display_name"] == "H100 SXM"
+    assert manifest["hardware"]["minimum_gpu_memory_gb"] == 80
+    assert manifest["hardware"]["minimum_cuda_memory_bytes"] == 78_000_000_000
     assert manifest["hardware"]["maximum_peak_reserved_vram_fraction"] == 0.85
     assert manifest["interface"] == {
         "environment_revision": "repository-repair-simulator@6",
@@ -260,11 +261,11 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     assert lifetime_cost_bound(
         manifest["screen_limits"]["maximum_hourly_cost_usd"],
         manifest["screen_limits"]["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS,
-    ) == Decimal("0.75")
+    ) == Decimal("3.0")
     assert lifetime_cost_bound(
         manifest["pilot_limits"]["maximum_hourly_cost_usd"],
         manifest["pilot_limits"]["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS,
-    ) == Decimal("4.0")
+    ) == Decimal("16.0")
 
 
 @pytest.mark.parametrize("tampered_name", tuple(SOURCE_CONTRACT_SHA256))
@@ -346,11 +347,15 @@ def test_lifetime_cost_rejects_unbounded_inputs(hourly: object, lifetime: object
         lifetime_cost_bound(hourly, lifetime)
 
 
-def test_runpod_inventory_requires_exact_available_secure_l40() -> None:
+def test_runpod_inventory_requires_exact_available_secure_h100() -> None:
     manifest = load_manifest()
     inventory = json.dumps(
         [
-            inventory_row(gpuId="NVIDIA L40S", displayName="L40S", memoryInGb=48),
+            inventory_row(
+                gpuId="NVIDIA H100 PCIe",
+                displayName="H100 PCIe",
+                memoryInGb=80,
+            ),
             inventory_row(),
         ]
     )
@@ -359,16 +364,17 @@ def test_runpod_inventory_requires_exact_available_secure_l40() -> None:
     matches = matching_runpod_gpus(manifest, parsed)
 
     assert len(parsed) == 2
-    assert [match.gpu_id for match in matches] == ["NVIDIA L40"]
-    assert require_runpod_gpu(manifest, inventory).memory_gb == 48
+    assert [match.gpu_id for match in matches] == ["NVIDIA H100 80GB HBM3"]
+    assert require_runpod_gpu(manifest, inventory).memory_gb == 80
 
 
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"memoryInGb": 47},
+        {"memoryInGb": 79},
         {"available": False},
         {"secureCloud": False},
+        {"displayName": "H100 PCIe"},
         {"gpuId": "NVIDIA A40", "displayName": "A40"},
     ],
 )
@@ -379,7 +385,7 @@ def test_runpod_inventory_rejects_ineligible_hardware(overrides: dict[str, objec
 
 def test_runpod_inventory_rejects_malformed_or_duplicate_rows() -> None:
     with pytest.raises(GateError, match="invalid type"):
-        parse_runpod_inventory([inventory_row(memoryInGb="48")])
+        parse_runpod_inventory([inventory_row(memoryInGb="80")])
     with pytest.raises(GateError, match="duplicate"):
         parse_runpod_inventory([inventory_row(), inventory_row()])
 
@@ -389,8 +395,8 @@ def test_actual_cuda_hardware_requires_exact_identity_byte_floor_and_bf16() -> N
         def __init__(
             self,
             *,
-            name: str = "NVIDIA L40",
-            total_memory: int = 47_000_000_000,
+            name: str = "NVIDIA H100 80GB HBM3",
+            total_memory: int = 78_000_000_000,
             bf16: bool = True,
         ) -> None:
             self.name = name
@@ -414,13 +420,13 @@ def test_actual_cuda_hardware_requires_exact_identity_byte_floor_and_bf16() -> N
         manifest,
         type("Torch", (), {"__version__": "2.8.0+cu128", "cuda": FakeCuda()})(),
     )
-    assert observed.gpu_name == "NVIDIA L40"
-    assert observed.total_memory_bytes == 47_000_000_000
+    assert observed.gpu_name == "NVIDIA H100 80GB HBM3"
+    assert observed.total_memory_bytes == 78_000_000_000
     assert observed.bf16_supported is True
 
     for cuda in (
         FakeCuda(name="NVIDIA A40"),
-        FakeCuda(total_memory=46_999_999_999),
+        FakeCuda(total_memory=77_999_999_999),
         FakeCuda(bf16=False),
     ):
         with pytest.raises(GateError, match="does not match"):

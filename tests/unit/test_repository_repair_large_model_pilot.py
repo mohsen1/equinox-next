@@ -43,11 +43,11 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash() -> None:
 
         @staticmethod
         def get_device_name(_index: int) -> str:
-            return "NVIDIA L40"
+            return "NVIDIA H100 80GB HBM3"
 
         @staticmethod
         def get_device_properties(_index: int) -> object:
-            return SimpleNamespace(total_memory=46_999_999_999)
+            return SimpleNamespace(total_memory=77_999_999_999)
 
         @staticmethod
         def is_bf16_supported() -> bool:
@@ -112,8 +112,8 @@ def test_pilot_result_records_seed_and_source_contract(
         pilot.gate,
         "require_cuda_hardware",
         lambda _manifest, _torch: gate.CUDAHardware(
-            gpu_name="NVIDIA L40",
-            total_memory_bytes=48_000_000_000,
+            gpu_name="NVIDIA H100 80GB HBM3",
+            total_memory_bytes=80_000_000_000,
             bf16_supported=True,
         ),
     )

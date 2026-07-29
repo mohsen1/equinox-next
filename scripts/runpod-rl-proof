@@ -193,7 +193,7 @@ case "$experiment" in
     default_replay_tasks_per_level="1"
     if [[ "$larger_model_mode" == "screen" ]]; then
       default_model_id="Qwen/Qwen2.5-Coder-7B-Instruct"
-      default_gpu_id="NVIDIA L40"
+      default_gpu_id="NVIDIA H100 80GB HBM3"
       default_target_runtime_seconds="1500"
       default_maximum_lifetime_minutes="43"
       default_retry_reserve_seconds="300"
@@ -206,7 +206,7 @@ case "$experiment" in
       default_replay_tasks_per_level="1"
     elif [[ "$larger_model_mode" == "pilot" ]]; then
       default_model_id="Qwen/Qwen2.5-Coder-7B-Instruct"
-      default_gpu_id="NVIDIA L40"
+      default_gpu_id="NVIDIA H100 80GB HBM3"
       default_target_runtime_seconds="9000"
       default_maximum_lifetime_minutes="238"
       default_retry_reserve_seconds="1800"
@@ -257,17 +257,17 @@ default_container_disk_in_gb="30"
 default_persistent_volume_in_gb="10"
 default_stale_progress_timeout_seconds="1800"
 if [[ "$larger_model_mode" == "screen" ]]; then
-  default_maximum_hourly_cost="1.00"
-  default_maximum_total_cost="0.75"
-  default_minimum_gpu_memory_gb="48"
+  default_maximum_hourly_cost="4.00"
+  default_maximum_total_cost="3.00"
+  default_minimum_gpu_memory_gb="80"
   default_maximum_workload_attempts="1"
   default_container_disk_in_gb="50"
   default_persistent_volume_in_gb="50"
   default_stale_progress_timeout_seconds="600"
 elif [[ "$larger_model_mode" == "pilot" ]]; then
-  default_maximum_hourly_cost="1.00"
-  default_maximum_total_cost="4.00"
-  default_minimum_gpu_memory_gb="48"
+  default_maximum_hourly_cost="4.00"
+  default_maximum_total_cost="16.00"
+  default_minimum_gpu_memory_gb="80"
   default_maximum_workload_attempts="1"
   default_container_disk_in_gb="50"
   default_persistent_volume_in_gb="50"
@@ -645,8 +645,8 @@ if [[ -n "$larger_model_mode" ]]; then
     echo "The larger-model profile pins Qwen/Qwen2.5-Coder-7B-Instruct." >&2
     exit 1
   fi
-  if [[ "$gpu_id" != "NVIDIA L40" || "$minimum_gpu_memory_gb" -lt 48 ]]; then
-    echo "The larger-model profile requires exactly one NVIDIA L40 with at least 48 GB." >&2
+  if [[ "$gpu_id" != "NVIDIA H100 80GB HBM3" || "$minimum_gpu_memory_gb" -lt 80 ]]; then
+    echo "The larger-model profile requires exactly one NVIDIA H100 80GB HBM3 with at least 80 GB." >&2
     exit 1
   fi
   if [[ -z "$network_volume_id" ]]; then
@@ -717,7 +717,7 @@ if [[ -n "$larger_model_mode" ]]; then
         )
       )
     ' >/dev/null <<<"$data_center_inventory"; then
-    echo "The network volume data center does not currently report a profile-matching L40." >&2
+    echo "The network volume data center does not currently report a profile-matching H100 80GB HBM3." >&2
     exit 1
   fi
   if [[ "$larger_model_mode" == "pilot" ]]; then
@@ -776,6 +776,7 @@ if [[ -n "$larger_model_mode" ]]; then
     '
       any(.[];
         .gpuId == $gpu_id
+        and .displayName == "H100 SXM"
         and .available == true
         and .memoryInGb >= $minimum_memory
         and (
@@ -784,7 +785,7 @@ if [[ -n "$larger_model_mode" ]]; then
         )
       )
     ' >/dev/null <<<"$gpu_inventory"; then
-    echo "RunPod does not currently report an available profile-matching L40." >&2
+    echo "RunPod does not currently report an available profile-matching H100 80GB HBM3." >&2
     exit 1
   fi
 fi
@@ -1845,7 +1846,7 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     .device == "cuda"
     and .workload == "repository-repair-larger-model-eligibility-screen"
     and .workload_revision == "larger-model-eligibility-screen@1"
-    and .profile_id == "qwen2.5-coder-7b-runpod-l40@1"
+    and .profile_id == "qwen2.5-coder-7b-runpod-h100@1"
     and .model_id == $expected_model
     and .model_revision == "c03e6d358207e414f1eca0bb1891e29f1db0e242"
     and .optimization_seed == $expected_optimization_seed
@@ -1856,8 +1857,8 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     and .optimizer_state_restored == true
     and .test_split_accessed == false
     and .branch_width == 4
-    and .gpu_id == "NVIDIA L40"
-    and .gpu_total_memory_bytes >= 47000000000
+    and .gpu_id == "NVIDIA H100 80GB HBM3"
+    and .gpu_total_memory_bytes >= 78000000000
     and .pinned_snapshot_digest == $expected_snapshot_digest
     and (.peak_reserved_vram_fraction | type) == "number"
     and (.predicted_final_evaluation_seconds | type) == "number"
@@ -2239,16 +2240,16 @@ else
 fi
 if [[ "$larger_model_mode" == "pilot" ]]; then
   proof_assertion="($proof_assertion)"'
-    and .profile_id == "qwen2.5-coder-7b-runpod-l40@1"
+    and .profile_id == "qwen2.5-coder-7b-runpod-h100@1"
     and .model_revision == "c03e6d358207e414f1eca0bb1891e29f1db0e242"
     and .authorization_digest == $expected_authorization_digest
     and .optimization_seed == $expected_optimization_seed
     and .source_contract_digest == $expected_source_contract_digest
     and .environment_revision == "repository-repair-simulator@6"
     and .action_protocol_revision == "repository-repair-json-tools@5"
-    and .gpu_id == "NVIDIA L40"
-    and .gpu_name == "NVIDIA L40"
-    and .gpu_total_memory_bytes >= 47000000000
+    and .gpu_id == "NVIDIA H100 80GB HBM3"
+    and .gpu_name == "NVIDIA H100 80GB HBM3"
+    and .gpu_total_memory_bytes >= 78000000000
     and .offline_mode_active == true
     and .pinned_snapshot_digest == $expected_snapshot_digest
     and .network_volume_id == $expected_network_volume_id

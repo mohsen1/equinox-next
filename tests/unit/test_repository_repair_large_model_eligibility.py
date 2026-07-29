@@ -113,7 +113,7 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["environment_revision"] == manifest["interface"]["environment_revision"]
     assert result["action_protocol_revision"] == manifest["interface"]["action_protocol_revision"]
     assert result["pinned_snapshot_digest"] == (
-        "sha256:bb69dcfbff5e882148de91296f0cfedceea6e07ecbd9d5b5689cdad0ec209f90"
+        "sha256:c8f3de2d313d832c1387260b6f09aaa269180bc343ae3e92b4a1d64b313bdf9d"
     )
     assert result["baseline_runtime_seconds"] == 100.0
     assert result["predicted_final_evaluation_seconds"] == 450.0
@@ -195,7 +195,7 @@ def test_runtime_gate_is_derived_from_capacity_and_baseline_timestamps() -> None
 def test_hardware_gate_uses_the_exact_cuda_byte_floor() -> None:
     manifest = gate.load_manifest()
     evidence = passing_evidence()
-    assert evidence.gpu_total_memory_bytes == 47_000_000_000
+    assert evidence.gpu_total_memory_bytes == 78_000_000_000
     assert eligibility.build_screen_result(evidence, manifest)["gate_results"]["hardware_verified"]
 
     evidence.gpu_total_memory_bytes -= 1
@@ -218,7 +218,7 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash(
 
         @staticmethod
         def get_device_properties(_index: int) -> object:
-            return SimpleNamespace(total_memory=48_000_000_000)
+            return SimpleNamespace(total_memory=80_000_000_000)
 
         @staticmethod
         def is_bf16_supported() -> bool:
@@ -340,7 +340,7 @@ def test_snapshot_readiness_propagates_the_exact_snapshot_digest(
     model_cache = "models--" + manifest["model"]["id"].replace("/", "--")
     snapshot = tmp_path / "hub" / model_cache / "snapshots" / manifest["model"]["revision"]
     snapshot.mkdir(parents=True)
-    expected_digest = "sha256:bb69dcfbff5e882148de91296f0cfedceea6e07ecbd9d5b5689cdad0ec209f90"
+    expected_digest = "sha256:c8f3de2d313d832c1387260b6f09aaa269180bc343ae3e92b4a1d64b313bdf9d"
 
     def verify_exact(
         observed_manifest: dict[str, object],

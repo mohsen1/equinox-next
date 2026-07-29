@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-PROFILE_ID = "qwen2.5-coder-7b-runpod-l40@1"
+PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@1"
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 MODEL_REVISION = "c03e6d358207e414f1eca0bb1891e29f1db0e242"
 MODEL_PARAMETER_COUNT = 7_615_616_512
@@ -149,10 +149,10 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
     "hardware": {
         "provider": "runpod",
         "cloud_type": "SECURE",
-        "gpu_id": "NVIDIA L40",
-        "gpu_display_name": "L40",
-        "minimum_gpu_memory_gb": 48,
-        "minimum_cuda_memory_bytes": 47_000_000_000,
+        "gpu_id": "NVIDIA H100 80GB HBM3",
+        "gpu_display_name": "H100 SXM",
+        "minimum_gpu_memory_gb": 80,
+        "minimum_cuda_memory_bytes": 78_000_000_000,
         "container_disk_gb": 50,
         "volume_disk_gb": 50,
         "minimum_free_cache_bytes": 25_000_000_000,
@@ -165,8 +165,8 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "allow_network_model_download_during_screen": False,
     },
     "screen_limits": {
-        "maximum_hourly_cost_usd": 1.0,
-        "maximum_total_cost_usd": 0.75,
+        "maximum_hourly_cost_usd": 4.0,
+        "maximum_total_cost_usd": 3.0,
         "maximum_lifetime_seconds": 2_580,
         "boot_timeout_seconds": 360,
         "model_load_timeout_seconds": 1_200,
@@ -178,8 +178,8 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "optimization_seed": 137,
     },
     "pilot_limits": {
-        "maximum_hourly_cost_usd": 1.0,
-        "maximum_total_cost_usd": 4.0,
+        "maximum_hourly_cost_usd": 4.0,
+        "maximum_total_cost_usd": 16.0,
         "maximum_lifetime_seconds": 14_280,
         "boot_timeout_seconds": 360,
         "model_load_timeout_seconds": 1_200,
@@ -452,7 +452,7 @@ def require_runpod_gpu(manifest: Mapping[str, Any], inventory: Any) -> RunPodGPU
 
     matches = matching_runpod_gpus(manifest, inventory)
     if not matches:
-        raise GateError("the pinned RunPod L40 48 GB secure-cloud profile is unavailable")
+        raise GateError("the pinned RunPod H100 80GB HBM3 secure-cloud profile is unavailable")
     if len(matches) != 1:
         raise GateError("RunPod returned an ambiguous pinned GPU inventory")
     return matches[0]

@@ -60,7 +60,7 @@ elif arguments == ["datacenter", "list"]:
     print(json.dumps([{
         "id": "EU-RO-1",
         "gpuAvailability": [{
-            "gpuId": "NVIDIA L40",
+            "gpuId": "NVIDIA H100 80GB HBM3",
             "stockStatus": "Low"
         }]
     }]))
@@ -68,9 +68,9 @@ elif arguments == ["gpu", "list", "--include-unavailable"]:
     print(json.dumps(scenario.get("gpu_inventory", [{
         "available": True,
         "communityCloud": False,
-        "displayName": "L40",
-        "gpuId": "NVIDIA L40",
-        "memoryInGb": 48,
+        "displayName": "H100 SXM",
+        "gpuId": "NVIDIA H100 80GB HBM3",
+        "memoryInGb": 80,
         "secureCloud": True,
         "stockStatus": "Low"
     }])))
@@ -144,13 +144,13 @@ def _preflight_environment(
             "EQUINOX_RUNPOD_PREFLIGHT_ONLY": "1",
             "EQUINOX_RUNPOD_NETWORK_VOLUME_ID": VOLUME_ID,
             "EQUINOX_RUNPOD_DATA_CENTER_IDS": DATA_CENTER_ID,
-            "EQUINOX_RUNPOD_GPU": "NVIDIA L40",
+            "EQUINOX_RUNPOD_GPU": "NVIDIA H100 80GB HBM3",
             "EQUINOX_RUNPOD_CLOUD_TYPE": "SECURE",
             "EQUINOX_RUNPOD_CONTAINER_DISK_GB": "50",
             "EQUINOX_RUNPOD_VOLUME_GB": "50",
-            "EQUINOX_RUNPOD_MIN_GPU_MEMORY_GB": "48",
-            "EQUINOX_RUNPOD_MAX_HOURLY_COST": "1.00",
-            "EQUINOX_RUNPOD_MAX_TOTAL_COST": "0.75",
+            "EQUINOX_RUNPOD_MIN_GPU_MEMORY_GB": "80",
+            "EQUINOX_RUNPOD_MAX_HOURLY_COST": "4.00",
+            "EQUINOX_RUNPOD_MAX_TOTAL_COST": "3.00",
             "EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES": "43",
             "EQUINOX_RUNPOD_BOOT_TIMEOUT_SECONDS": "360",
             "EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS": "1200",
@@ -242,7 +242,25 @@ def _shell_function(source: str, name: str) -> str:
             {"gpu_inventory": {"unexpected": []}},
             False,
             False,
-            "RunPod does not currently report an available profile-matching L40.",
+            "RunPod does not currently report an available profile-matching H100 80GB HBM3.",
+        ),
+        (
+            {
+                "gpu_inventory": [
+                    {
+                        "available": True,
+                        "communityCloud": False,
+                        "displayName": "H100 PCIe",
+                        "gpuId": "NVIDIA H100 80GB HBM3",
+                        "memoryInGb": 80,
+                        "secureCloud": True,
+                        "stockStatus": "Medium",
+                    }
+                ]
+            },
+            False,
+            False,
+            "RunPod does not currently report an available profile-matching H100 80GB HBM3.",
         ),
         (
             {"pods": {"unexpected": []}},
@@ -267,6 +285,7 @@ def _shell_function(source: str, name: str) -> str:
         "missing-volume",
         "missing-receipt",
         "malformed-gpu-inventory",
+        "wrong-gpu-display-name",
         "malformed-pod-inventory",
         "active-spend",
         "active-pod",

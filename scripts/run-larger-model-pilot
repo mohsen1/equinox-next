@@ -54,7 +54,7 @@ python3 "$repository_root/research/runpod/larger_model_gate.py" manifest >/dev/n
 python3 "$repository_root/research/runpod/larger_model_gate.py" verify-sources >/dev/null
 python3 "$repository_root/research/runpod/larger_model_gate.py" verify-model >/dev/null
 timeout --kill-after=5 30 runpodctl gpu list --include-unavailable |
-  jq '[.[] | select(.gpuId == "NVIDIA L40")]' |
+  jq '[.[] | select(.gpuId == "NVIDIA H100 80GB HBM3")]' |
   python3 "$repository_root/research/runpod/larger_model_gate.py" inventory - >/dev/null
 authorization="$(
   python3 "$repository_root/research/runpod/larger_model_gate.py" \
@@ -69,13 +69,13 @@ export EQUINOX_LARGER_MODEL_SCREEN_RECEIPT="$screen_receipt"
 export EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST
 EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST="$(jq -r '.digest' <<<"$authorization")"
 export EQUINOX_RL_MODEL_ID=Qwen/Qwen2.5-Coder-7B-Instruct
-export EQUINOX_RUNPOD_GPU="NVIDIA L40"
+export EQUINOX_RUNPOD_GPU="NVIDIA H100 80GB HBM3"
 export EQUINOX_RUNPOD_CLOUD_TYPE=SECURE
 export EQUINOX_RUNPOD_CONTAINER_DISK_GB=50
 export EQUINOX_RUNPOD_VOLUME_GB=50
-export EQUINOX_RUNPOD_MIN_GPU_MEMORY_GB=48
-export EQUINOX_RUNPOD_MAX_HOURLY_COST=1.00
-export EQUINOX_RUNPOD_MAX_TOTAL_COST=4.00
+export EQUINOX_RUNPOD_MIN_GPU_MEMORY_GB=80
+export EQUINOX_RUNPOD_MAX_HOURLY_COST=4.00
+export EQUINOX_RUNPOD_MAX_TOTAL_COST=16.00
 export EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES=238
 export EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS=1200
 export EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS=900
