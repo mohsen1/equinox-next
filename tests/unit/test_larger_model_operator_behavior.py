@@ -30,6 +30,11 @@ SCREEN_FAIL_FAST_REASONS = [
     "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE",
     "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE",
 ]
+SCREEN_BASELINE_FAIL_FAST_REASONS = [
+    "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "OVERALL_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "BASELINE_EXACT_HEADROOM_GATE_MATHEMATICALLY_IMPOSSIBLE",
+]
 
 
 def _write_executable(path: Path, source: str) -> None:
@@ -454,7 +459,7 @@ def test_terminal_screen_progress_preserves_live_branch_observer_fields() -> Non
         "branch_width": 4,
         "elapsed_seconds": 93.5,
         "eligible": True,
-        "profile_id": "qwen2.5-coder-7b-runpod-h100@5",
+        "profile_id": load_manifest()["profile_id"],
         "model_revision": "model-revision",
         "branch_checkpoint_rate": 1.0,
         "informative_group_rate": 0.5,
@@ -1062,7 +1067,170 @@ def test_terminal_screen_progress_matches_only_exact_or_whitelisted_fail_fast_re
     }
     harness = f"""set -euo pipefail
 larger_model_expected_branch_groups=8
+larger_model_expected_baseline_examples=8
 larger_model_screen_fail_fast_reasons='{json.dumps(SCREEN_FAIL_FAST_REASONS)}'
+larger_model_screen_baseline_fail_fast_reasons='{json.dumps(SCREEN_BASELINE_FAIL_FAST_REASONS)}'
+{helper}
+screen_result='{json.dumps(screen_result, separators=(",", ":"))}'
+larger_model_screen_progress_matches_result "$screen_result" <<'JSON'
+{json.dumps(progress, separators=(",", ":"))}
+JSON
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert (result.returncode == 0) is expected_match
+
+
+@pytest.mark.parametrize(
+    (
+        "reason",
+        "eligible",
+        "completed_baseline",
+        "failed_gate",
+        "failed_gate_value",
+        "branch_state",
+        "expected_match",
+    ),
+    [
+        (
+            "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            False,
+            8,
+            "baseline_checkpoint_rate",
+            False,
+            "absent",
+            True,
+        ),
+        (
+            "OVERALL_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            False,
+            8,
+            "baseline_checkpoint_rate",
+            False,
+            "empty",
+            True,
+        ),
+        (
+            "BASELINE_EXACT_HEADROOM_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            False,
+            8,
+            "baseline_exact_rate",
+            False,
+            "absent",
+            True,
+        ),
+        (
+            "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            True,
+            8,
+            "baseline_checkpoint_rate",
+            False,
+            "absent",
+            False,
+        ),
+        (
+            "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            False,
+            7,
+            "baseline_checkpoint_rate",
+            False,
+            "absent",
+            False,
+        ),
+        (
+            "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            False,
+            8,
+            "baseline_checkpoint_rate",
+            True,
+            "absent",
+            False,
+        ),
+        (
+            "screen_collection_incomplete",
+            False,
+            8,
+            "baseline_checkpoint_rate",
+            False,
+            "absent",
+            False,
+        ),
+        (
+            "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+            False,
+            8,
+            "baseline_checkpoint_rate",
+            False,
+            "nonempty",
+            False,
+        ),
+    ],
+    ids=(
+        "level-checkpoint-impossible",
+        "overall-checkpoint-impossible-explicit-empty-tree",
+        "baseline-exact-headroom-impossible",
+        "eligible-cannot-have-zero-branch-tree",
+        "baseline-count-must-be-exact",
+        "reason-must-match-failed-gate",
+        "non-mathematical-stop",
+        "zero-branch-result-cannot-hide-snapshot",
+    ),
+)
+def test_terminal_screen_progress_accepts_only_exact_empty_baseline_fail_fast(
+    reason: str,
+    eligible: bool,
+    completed_baseline: int,
+    failed_gate: str,
+    failed_gate_value: bool,
+    branch_state: str,
+    expected_match: bool,
+) -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    helper = _shell_function(source, "larger_model_screen_progress_matches_result")
+    progress: dict[str, object] = {
+        "phase": "baseline_evaluation",
+        "evaluation_completed": 7,
+        "evaluation_total": 8,
+    }
+    if branch_state == "empty":
+        progress.update(
+            {
+                "branch_groups_completed": 0,
+                "branch_groups_total": 8,
+                "branch_snapshots": [],
+                "latest_branch_snapshot": None,
+            }
+        )
+    elif branch_state == "nonempty":
+        snapshot = {"snapshot_id": "unexpected-branch"}
+        progress.update(
+            {
+                "branch_groups_completed": 1,
+                "branch_groups_total": 8,
+                "branch_snapshots": [snapshot],
+                "latest_branch_snapshot": snapshot,
+            }
+        )
+    screen_result = {
+        "eligible": eligible,
+        "branch_groups": 0,
+        "completed_baseline_examples": completed_baseline,
+        "early_stop_reason": reason,
+        "gate_results": {failed_gate: failed_gate_value},
+    }
+    harness = f"""set -euo pipefail
+larger_model_expected_branch_groups=8
+larger_model_expected_baseline_examples=8
+larger_model_screen_fail_fast_reasons='{json.dumps(SCREEN_FAIL_FAST_REASONS)}'
+larger_model_screen_baseline_fail_fast_reasons='{json.dumps(SCREEN_BASELINE_FAIL_FAST_REASONS)}'
 {helper}
 screen_result='{json.dumps(screen_result, separators=(",", ":"))}'
 larger_model_screen_progress_matches_result "$screen_result" <<'JSON'

@@ -57,11 +57,12 @@ case "$experiment" in
         exit 1
       fi
       contract_workload_file="repository_repair_large_model_pilot.py"
-      environment_file="repository_repair_env_v32.py"
+      environment_file="repository_repair_env_v33.py"
       support_files=(
         "larger_model_gate.py"
         "repository_repair_env.py"
         "repository_repair_env_v31.py"
+        "repository_repair_env_v32.py"
         "$environment_file"
         "repository_repair_rl.py"
         "repository_repair_study.py"
@@ -299,6 +300,11 @@ larger_model_screen_fail_fast_reasons='[
   "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE",
   "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE",
   "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE"
+]'
+larger_model_screen_baseline_fail_fast_reasons='[
+  "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+  "OVERALL_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+  "BASELINE_EXACT_HEADROOM_GATE_MATHEMATICALLY_IMPOSSIBLE"
 ]'
 larger_model_localization_telemetry_strategy=""
 larger_model_policy_credit_scope=""
@@ -586,6 +592,7 @@ expected_workload_revision=""
 expected_objective_id=""
 expected_environment_revision=""
 expected_action_protocol_revision=""
+expected_terminal_submission_contract=""
 expected_shared_prefix_checkpoint=""
 expected_learning_signal=""
 if [[ "$experiment" == "repository-repair" ]]; then
@@ -640,6 +647,14 @@ PY
   )"
   larger_model_profile_id="$(jq -r '.profile_id' <<<"$larger_model_manifest")"
   larger_model_model_revision="$(jq -r '.model.revision' <<<"$larger_model_manifest")"
+  expected_terminal_submission_contract="$(
+    jq -r '.interface.terminal_submission_contract' <<<"$larger_model_manifest"
+  )"
+  if [[ "$expected_terminal_submission_contract" != \
+    "accepted-passing-test-or-finish@1" ]]; then
+    echo "The larger-model terminal submission contract is unsupported." >&2
+    exit 1
+  fi
   larger_model_screen_workload="$(jq -r '.screen.workload' <<<"$larger_model_manifest")"
   larger_model_screen_workload_revision="$(
     jq -r '.screen.workload_revision' <<<"$larger_model_manifest"
@@ -1572,54 +1587,88 @@ larger_model_screen_progress_matches_result() {
   jq -e \
     --argjson result "$result" \
     --argjson expected_branch_groups "$larger_model_expected_branch_groups" \
+    --argjson expected_baseline_examples "$larger_model_expected_baseline_examples" \
     --argjson fail_fast_reasons "$larger_model_screen_fail_fast_reasons" \
+    --argjson baseline_fail_fast_reasons \
+    "$larger_model_screen_baseline_fail_fast_reasons" \
     '
       ($result.eligible | type) == "boolean"
       and ($result.branch_groups | type) == "number"
       and ($result.branch_groups | floor) == $result.branch_groups
-      and $result.branch_groups >= 1
+      and $result.branch_groups >= 0
       and $result.branch_groups <= $expected_branch_groups
-      and .branch_groups_completed == $result.branch_groups
-      and .branch_groups_total == $expected_branch_groups
-      and (.branch_snapshots | type) == "array"
-      and (.branch_snapshots | length) == $result.branch_groups
-      and .latest_branch_snapshot == .branch_snapshots[-1]
       and (
-        $result.branch_groups == $expected_branch_groups
-        or (
+        if $result.branch_groups == 0 then
           $result.eligible == false
+          and $result.completed_baseline_examples == $expected_baseline_examples
           and (
-            $fail_fast_reasons | index($result.early_stop_reason)
+            $baseline_fail_fast_reasons | index($result.early_stop_reason)
           ) != null
           and (
             (
-              $result.early_stop_reason
-              == "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
-              and $result.gate_results.branch_checkpoint_rate == false
-            )
-            or (
-              $result.early_stop_reason
-              == "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"
-              and $result.gate_results.informative_group_rate == false
-            )
-            or (
               (
                 $result.early_stop_reason
-                == "SOLVED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                == "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
                 or $result.early_stop_reason
-                == "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
-                or $result.early_stop_reason
-                == "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                == "OVERALL_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
               )
-              and $result.gate_results.solved_sibling_rate == false
+              and $result.gate_results.baseline_checkpoint_rate == false
             )
             or (
               $result.early_stop_reason
-              == "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE"
-              and $result.gate_results.action_protocol_validity == false
+              == "BASELINE_EXACT_HEADROOM_GATE_MATHEMATICALLY_IMPOSSIBLE"
+              and $result.gate_results.baseline_exact_rate == false
             )
           )
-        )
+          and (.branch_groups_completed // 0) == 0
+          and (.branch_groups_total // $expected_branch_groups) == $expected_branch_groups
+          and ((.branch_snapshots // []) | type) == "array"
+          and ((.branch_snapshots // []) | length) == 0
+          and (.latest_branch_snapshot // null) == null
+        else
+          .branch_groups_completed == $result.branch_groups
+          and .branch_groups_total == $expected_branch_groups
+          and (.branch_snapshots | type) == "array"
+          and (.branch_snapshots | length) == $result.branch_groups
+          and .latest_branch_snapshot == .branch_snapshots[-1]
+          and (
+            $result.branch_groups == $expected_branch_groups
+            or (
+              $result.eligible == false
+              and (
+                $fail_fast_reasons | index($result.early_stop_reason)
+              ) != null
+              and (
+                (
+                  $result.early_stop_reason
+                  == "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                  and $result.gate_results.branch_checkpoint_rate == false
+                )
+                or (
+                  $result.early_stop_reason
+                  == "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                  and $result.gate_results.informative_group_rate == false
+                )
+                or (
+                  (
+                    $result.early_stop_reason
+                    == "SOLVED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                    or $result.early_stop_reason
+                    == "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                    or $result.early_stop_reason
+                    == "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                  )
+                  and $result.gate_results.solved_sibling_rate == false
+                )
+                or (
+                  $result.early_stop_reason
+                  == "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE"
+                  and $result.gate_results.action_protocol_validity == false
+                )
+              )
+            )
+          )
+        end
       )
     ' >/dev/null
 }
@@ -2331,6 +2380,7 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     and .source_contract_digest == $expected_source_contract_digest
     and .environment_revision == $expected_environment_revision
     and .action_protocol_revision == $expected_action_protocol_revision
+    and .terminal_submission_contract == $expected_terminal_submission_contract
     and .screen_levels == $expected_admission_levels
     and .shared_prefix_checkpoint_strategy == $expected_shared_prefix_checkpoint
     and .screen_completed == true
@@ -2381,6 +2431,31 @@ if [[ "$larger_model_mode" == "screen" ]]; then
             .early_stop_reason
             == "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE"
             and .gate_results.action_protocol_validity == false
+          )
+        )
+      )
+      or (
+        .eligible == false
+        and .branch_groups == 0
+        and .completed_baseline_examples == $expected_baseline_examples
+        and (
+          .early_stop_reason as $early_stop_reason
+          | $screen_baseline_fail_fast_reasons | index($early_stop_reason)
+        ) != null
+        and (
+          (
+            (
+              .early_stop_reason
+              == "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
+              or .early_stop_reason
+              == "OVERALL_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
+            )
+            and .gate_results.baseline_checkpoint_rate == false
+          )
+          or (
+            .early_stop_reason
+            == "BASELINE_EXACT_HEADROOM_GATE_MATHEMATICALLY_IMPOSSIBLE"
+            and .gate_results.baseline_exact_rate == false
           )
         )
       )
@@ -2493,7 +2568,13 @@ else
     and .optimizer_contract.reference_kl_estimator == "k3_log_ratio_penalty"
     and .optimizer_contract.reference_policy == "disabled_adapter_base"
     and .optimizer_contract.reference_anchor_scope == "all_accepted_actions_including_greedy_prefix"
-    and .optimizer_contract.policy_credit_scope == "fault_fixing_edits_from_verified_successful_siblings"
+    and .optimizer_contract.policy_credit_scope == (
+      if $larger_model_mode == "pilot" then
+        $expected_policy_credit_scope
+      else
+        "fault_fixing_edits_from_verified_successful_siblings"
+      end
+    )
     and .optimizer_contract.failed_sibling_policy_weight == 0
     and .optimizer_contract.advantage_standard_deviation_floor == 0.1
     and .optimizer_contract.maximum_absolute_advantage == 1
@@ -2825,6 +2906,7 @@ if [[ "$larger_model_mode" == "pilot" ]]; then
     and .source_contract_digest == $expected_source_contract_digest
     and .environment_revision == $expected_environment_revision
     and .action_protocol_revision == $expected_action_protocol_revision
+    and .terminal_submission_contract == $expected_terminal_submission_contract
     and .policy_credit_scope == $expected_policy_credit_scope
     and .gpu_id == "NVIDIA H100 80GB HBM3"
     and .gpu_name == "NVIDIA H100 80GB HBM3"
@@ -2864,6 +2946,8 @@ if ! jq -e \
   --arg expected_frontier_probe_routing "$expected_frontier_probe_routing" \
   --arg expected_training_level_allocation "$expected_training_level_allocation" \
   --arg expected_action_protocol_revision "$expected_action_protocol_revision" \
+  --arg expected_terminal_submission_contract \
+  "$expected_terminal_submission_contract" \
   --arg expected_shared_prefix_checkpoint "$expected_shared_prefix_checkpoint" \
   --arg expected_policy_credit_scope "$larger_model_policy_credit_scope" \
   --arg expected_learning_signal "$expected_learning_signal" \
@@ -2876,6 +2960,8 @@ if ! jq -e \
   --argjson expected_baseline_examples "$larger_model_expected_baseline_examples" \
   --argjson expected_branch_groups "$larger_model_expected_branch_groups" \
   --argjson screen_fail_fast_reasons "$larger_model_screen_fail_fast_reasons" \
+  --argjson screen_baseline_fail_fast_reasons \
+  "$larger_model_screen_baseline_fail_fast_reasons" \
   --argjson expected_branch_width "$expected_branch_width" \
   --argjson expected_optimization_seed "$optimization_seed" \
   --argjson expected_validation_seed_base "${study_validation_seed_base:-null}" \

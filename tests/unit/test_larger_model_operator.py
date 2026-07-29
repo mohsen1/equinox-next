@@ -21,6 +21,11 @@ SCREEN_FAIL_FAST_REASONS = [
     "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE",
     "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE",
 ]
+SCREEN_BASELINE_FAIL_FAST_REASONS = [
+    "LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "OVERALL_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
+    "BASELINE_EXACT_HEADROOM_GATE_MATHEMATICALLY_IMPOSSIBLE",
+]
 
 
 def screen_proof_assertion() -> str:
@@ -59,6 +64,9 @@ def run_screen_proof_assertion(payload: dict[str, object]) -> subprocess.Complet
             "expected_action_protocol_revision",
             manifest["interface"]["action_protocol_revision"],
             "--arg",
+            "expected_terminal_submission_contract",
+            manifest["interface"]["terminal_submission_contract"],
+            "--arg",
             "expected_shared_prefix_checkpoint",
             manifest["screen"]["shared_prefix_checkpoint_strategy"],
             "--arg",
@@ -85,6 +93,9 @@ def run_screen_proof_assertion(payload: dict[str, object]) -> subprocess.Complet
             "--argjson",
             "screen_fail_fast_reasons",
             json.dumps(SCREEN_FAIL_FAST_REASONS),
+            "--argjson",
+            "screen_baseline_fail_fast_reasons",
+            json.dumps(SCREEN_BASELINE_FAIL_FAST_REASONS),
             screen_proof_assertion(),
         ],
         input=json.dumps(payload),
@@ -249,6 +260,41 @@ def test_larger_model_direct_launch_caps_are_manifest_pinned() -> None:
     assert ".source_contract_digest == $expected_source_contract_digest" in launcher
 
 
+def test_larger_model_launcher_binds_profile_six_interface_and_transport_chain() -> None:
+    manifest = load_manifest()
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    larger_model_case = launcher[
+        launcher.index('if [[ -n "$larger_model_mode" ]]; then') : launcher.index(
+            'elif [[ -z "$study_condition" ]]; then'
+        )
+    ]
+
+    assert manifest["profile_id"] == "qwen2.5-coder-7b-runpod-h100@6"
+    assert manifest["screen"]["workload_revision"] == "larger-model-eligibility-screen@6"
+    assert manifest["pilot"]["workload_revision"] == "runpod-repository-repair-large-model-pilot@4"
+    assert (
+        manifest["pilot"]["objective_id"]
+        == "verified-repair-chain-root-branch-retention-policy-gradient@17"
+    )
+    assert (
+        manifest["pilot"]["policy_credit_scope"]
+        == "fault_fixing_edits_and_immediately_upstream_fresh_reads_from_verified_successful_siblings"
+    )
+    assert manifest["interface"] == {
+        "environment_revision": "repository-repair-simulator@9",
+        "action_protocol_revision": "repository-repair-json-tools@8",
+        "terminal_submission_contract": "accepted-passing-test-or-finish@1",
+    }
+    assert 'environment_file="repository_repair_env_v33.py"' in larger_model_case
+    assert '"repository_repair_env_v31.py"' in larger_model_case
+    assert '"repository_repair_env_v32.py"' in larger_model_case
+    assert ".terminal_submission_contract == $expected_terminal_submission_contract" in launcher
+    assert (
+        launcher.count(".terminal_submission_contract == $expected_terminal_submission_contract")
+        == 2
+    )
+
+
 def test_total_cost_and_phase_deadlines_are_enforced_during_polling() -> None:
     source = LAUNCHER.read_text(encoding="utf-8")
 
@@ -282,6 +328,7 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
         "source_contract_digest": "sha256:source",
         "environment_revision": manifest["interface"]["environment_revision"],
         "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "terminal_submission_contract": manifest["interface"]["terminal_submission_contract"],
         "screen_levels": manifest["screen"]["admission_levels"],
         "shared_prefix_checkpoint_strategy": manifest["screen"][
             "shared_prefix_checkpoint_strategy"
@@ -349,6 +396,41 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
     fail_fast_payload["early_stop_reason"] = "screen_collection_deadline"
     assert run_screen_proof_assertion(fail_fast_payload).returncode != 0
 
+    baseline_fail_fast_payload = json.loads(json.dumps(payload))
+    baseline_fail_fast_gates = {
+        gate_name: True for gate_name in manifest["authorization"]["required_gate_results"]
+    }
+    baseline_fail_fast_gates["baseline_checkpoint_rate"] = False
+    baseline_fail_fast_payload.update(
+        {
+            "branch_groups": 0,
+            "early_stop_reason": ("LEVEL_0_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"),
+            "baseline_checkpoint_rate": 0.5,
+            "per_level_checkpoint_rates": {"0": 0.5},
+            "informative_groups": 0,
+            "informative_group_rate": 0.0,
+            "solved_siblings": 0,
+            "failed_siblings": 0,
+            "gate_results": baseline_fail_fast_gates,
+            "ineligibility_reasons": ["baseline_checkpoint_rate"],
+            "ineligible_reasons": ["baseline_checkpoint_rate"],
+        }
+    )
+    assert run_screen_proof_assertion(baseline_fail_fast_payload).returncode == 0
+
+    baseline_fail_fast_payload["eligible"] = True
+    assert run_screen_proof_assertion(baseline_fail_fast_payload).returncode != 0
+    baseline_fail_fast_payload["eligible"] = False
+    baseline_fail_fast_payload["completed_baseline_examples"] = 7
+    assert run_screen_proof_assertion(baseline_fail_fast_payload).returncode != 0
+
+    baseline_fail_fast_payload["completed_baseline_examples"] = 8
+    baseline_fail_fast_payload["gate_results"]["baseline_checkpoint_rate"] = True
+    baseline_fail_fast_payload["gate_results"]["pilot_runtime_feasible"] = False
+    baseline_fail_fast_payload["ineligibility_reasons"] = ["pilot_runtime_feasible"]
+    baseline_fail_fast_payload["ineligible_reasons"] = ["pilot_runtime_feasible"]
+    assert run_screen_proof_assertion(baseline_fail_fast_payload).returncode != 0
+
     payload["ineligibility_reasons"] = ["pilot_runtime_feasible"]
     payload["ineligible_reasons"] = ["pilot_runtime_feasible"]
     assert run_screen_proof_assertion(payload).returncode != 0
@@ -361,6 +443,7 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
         ("persistent_policy_updates", 1),
         ("policy_mutation_enabled", True),
         ("test_examples_accessed", 1),
+        ("terminal_submission_contract", "finish-only@0"),
         ("branch_groups", 7),
         ("completed_baseline_examples", 7),
         ("expected_baseline_examples", 7),
@@ -386,6 +469,7 @@ def test_screen_proof_rejects_non_isolated_or_incomplete_result(
         "source_contract_digest": "sha256:source",
         "environment_revision": manifest["interface"]["environment_revision"],
         "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "terminal_submission_contract": manifest["interface"]["terminal_submission_contract"],
         "screen_levels": manifest["screen"]["admission_levels"],
         "shared_prefix_checkpoint_strategy": manifest["screen"][
             "shared_prefix_checkpoint_strategy"
