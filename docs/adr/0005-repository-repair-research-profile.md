@@ -383,11 +383,15 @@ The first revision-20 provisioning attempt was terminated before workload handof
 RunPod's proxy returned `404` for bundle posts to its root despite serving authenticated
 bootstrap health. A second attempt showed the same behavior on health, dedicated, and
 root POST paths. Both workers were deleted and provider spend returned to zero. The
-launcher now sends a compressed bundle capped at 256 KiB in the encrypted pod creation
-request. The bootstrap decodes it, validates the 2 MiB hard size bound and exact file
-allowlist, installs it durably, removes it from the child process environment, and
-executes the runner. The authenticated HTTP upload remains a fallback for operators,
-but paid automation no longer depends on proxy POST behavior.
+profile-6 screen reproduced the method-specific proxy failure after an authenticated
+health response; that worker was also deleted before model loading. Paid automation no
+longer uses proxy POST for workload handoff. The launcher verifies the mutable image tag
+twice before allocation, creates the worker from the exact `tag@sha256` manifest, and
+requires `pod get` to attest that same immutable reference. An XZ bundle capped at 80
+KiB travels in the encrypted creation request, whose serialized environment is capped
+at 120 KiB. The bootstrap verifies the bundle SHA-256 and exact file allowlist, installs
+it once, removes both bundle and digest from the child environment, and executes the
+runner. Observer evidence records only its digest, size, and compression.
 
 The completed seed `113` revision-20 run stopped safely at update 17 after two recent
 malformed-action windows exceeded `5%`. It rolled back to update 15, persisted a verified

@@ -191,10 +191,18 @@ floor, the volume or receipt does not match, or any cap is missing or inconsiste
 ```
 
 The launcher rechecks every preallocation condition immediately before requesting a
-worker. After allocation, it verifies the actual GPU identity, memory, free cache space,
-the exact `torch==2.8.0+cu128` build, and every cached file digest before model
-initialization. It also requires the exact dependency versions from the volume. The paid
-H100 sets `HF_HUB_OFFLINE=1`,
+worker. It creates the worker from the manifest's exact `tag@sha256` image reference and
+rejects the allocation unless the provider reports that same immutable reference. The
+workload is an XZ-compressed, SHA-256-bound inline artifact, capped at 80 KiB compressed
+and 120 KiB in its serialized environment. The bootstrap installs its exact allowlisted
+files once and removes the encoded bundle and digest before starting the runner; the
+paid path does not depend on proxy POST delivery. Evidence retains only the bundle
+digest, size, and compression.
+
+After allocation, the workload verifies the actual GPU identity, memory, free cache
+space, the exact `torch==2.8.0+cu128` build, and every cached file digest before model
+initialization. It also requires the exact dependency versions from the volume. The
+paid H100 sets `HF_HUB_OFFLINE=1`,
 `TRANSFORMERS_OFFLINE=1`, and `PIP_NO_INDEX=1`: it never installs packages or downloads
 model weights. Missing or changed artifacts fail immediately.
 

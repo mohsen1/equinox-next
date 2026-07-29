@@ -123,10 +123,13 @@ posts to the proxy root. The launcher deleted the worker, confirmed zero ongoing
 and retained the attempt as non-probative failed execution evidence. A second attempt
 confirmed that alternate health, dedicated, and root POST paths all fail while
 authenticated GETs remain available. Bundle handoff therefore no longer depends on a
-provider proxy mutation: the bounded compressed bundle travels in the encrypted pod
-creation request, and the bootstrap decodes it, enforces the same exact file allowlist,
-installs it durably, removes it from the child process environment, and starts the
-observable runner.
+provider proxy mutation. A profile-6 screen later exposed the same failure before model
+loading and was torn down cleanly. The paid launcher now creates the pod from the exact
+digest-qualified image reference and requires the provider to attest it. A bounded XZ
+bundle travels in the encrypted creation request; the bootstrap verifies its SHA-256
+and exact file allowlist, installs it once, removes it from the child process
+environment, and starts the observable runner. The launcher polls only authenticated
+progress after allocation.
 
 The corrected seed `113` revision-20 run proved that sparse policy signal now survives
 update boundaries: eleven policy-bearing updates consumed distinct accumulated groups,
