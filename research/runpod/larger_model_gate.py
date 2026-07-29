@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@3"
+PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@4"
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 MODEL_REVISION = "c03e6d358207e414f1eca0bb1891e29f1db0e242"
 MODEL_PARAMETER_COUNT = 7_615_616_512
@@ -83,7 +83,7 @@ SOURCE_CONTRACT_SHA256 = {
         "fefade752e6bd82530835a5de493fffe7629a6c8963ae6f5fe7e3073dd1d2557"
     ),
     "repository_repair_large_model_eligibility.py": (
-        "12e82d00682da655449c9977bc09cda6fbe42f3e1c49b1a828683f54b2aa6ff1"
+        "260b96baac2974cee8ce12a38875c17d6e8a62d4e288c69a05ffc90456487fed"
     ),
     "repository_repair_large_model_pilot.py": (
         "bbca2e068a34d5a45e1cc4201fb1c1189cee848a55d4ffe1462adc4b55b7d339"
@@ -93,7 +93,7 @@ SOURCE_CONTRACT_SHA256 = {
     ),
 }
 SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
-SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@3"
+SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@4"
 CAPPED_GENERATION_TOKENS = 192
 CLEANUP_COST_RESERVE_SECONDS = 120
 DEFAULT_MANIFEST_PATH = (

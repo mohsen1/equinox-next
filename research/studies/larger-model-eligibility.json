@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_id": "qwen2.5-coder-7b-runpod-h100@3",
+  "profile_id": "qwen2.5-coder-7b-runpod-h100@4",
   "model": {
     "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
     "revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
@@ -74,7 +74,7 @@
     "files": {
       "repository_repair_env_v31.py": "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657",
       "repository_repair_env_v32.py": "fefade752e6bd82530835a5de493fffe7629a6c8963ae6f5fe7e3073dd1d2557",
-      "repository_repair_large_model_eligibility.py": "12e82d00682da655449c9977bc09cda6fbe42f3e1c49b1a828683f54b2aa6ff1",
+      "repository_repair_large_model_eligibility.py": "260b96baac2974cee8ce12a38875c17d6e8a62d4e288c69a05ffc90456487fed",
       "repository_repair_large_model_pilot.py": "bbca2e068a34d5a45e1cc4201fb1c1189cee848a55d4ffe1462adc4b55b7d339",
       "repository_repair_study.py": "7799ff8969d67ad620db0f8c6bc9ee66bd0ef0300866cd0160696ff80fae7a0c"
     }
@@ -128,7 +128,7 @@
   },
   "screen": {
     "workload": "repository-repair-larger-model-eligibility-screen",
-    "workload_revision": "larger-model-eligibility-screen@3",
+    "workload_revision": "larger-model-eligibility-screen@4",
     "admission_levels": [
       0
     ],

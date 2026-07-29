@@ -411,7 +411,7 @@ def test_terminal_screen_progress_preserves_live_branch_observer_fields() -> Non
         "branch_width": 4,
         "elapsed_seconds": 93.5,
         "eligible": True,
-        "profile_id": "qwen2.5-coder-7b-runpod-h100@3",
+        "profile_id": "qwen2.5-coder-7b-runpod-h100@4",
         "model_revision": "model-revision",
         "branch_checkpoint_rate": 1.0,
         "informative_group_rate": 0.5,

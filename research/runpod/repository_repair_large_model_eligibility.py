@@ -38,6 +38,8 @@ except ModuleNotFoundError:
 SCREEN_SCHEMA_VERSION = 1
 SCREEN_LEVELS = ("0",)
 SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed@1"
+SCREEN_RUNTIME_TEST_EXAMPLES = 4
+SCREEN_FINAL_EVALUATION_RESERVE_SECONDS = 0
 ROOT_CHECKPOINT_PHASE_INSTRUCTION = (
     "Observe the repository root before branching. If no repository path has been "
     'exposed, return exactly {"tool":"list","path":""}. The checkpoint is captured '
@@ -1057,6 +1059,7 @@ def validate_runtime_configuration(runtime: Any, manifest: dict[str, Any]) -> No
         "model_id": manifest["model"]["id"],
         "model_revision": manifest["model"]["revision"],
         "validation_examples": screen["validation_examples"],
+        "test_examples": SCREEN_RUNTIME_TEST_EXAMPLES,
         "training_tasks_per_update": screen["training_tasks_per_update"],
         "maximum_updates": screen["maximum_updates"],
         "optimization_seed": manifest["screen_limits"]["optimization_seed"],
@@ -1081,6 +1084,57 @@ def disarm_empty_adapter_path() -> None:
     os.environ.pop("EQUINOX_ADAPTER_PATH", None)
 
 
+def record_screen_branch_collection(
+    evidence: ScreenEvidence,
+    manifest: dict[str, Any],
+    collection: Any,
+) -> None:
+    """Record one group and leave the trainer at the exact screen budget."""
+
+    expected_groups = manifest["screen"]["branch_groups"]
+    if len(evidence.branch_collections) >= expected_groups:
+        raise RuntimeError("eligibility screen exceeded its branch-group budget")
+    if int(collection.task.level) != 0:
+        raise RuntimeError("eligibility screen collected a task outside level 0")
+    evidence.branch_collections.append(collection)
+    if evidence.runtime_configuration is not None:
+        branch_snapshots = [
+            frozen.serialize_branch_group(
+                observed,
+                update=index,
+                optimizer_update=None,
+            )
+            for index, observed in enumerate(evidence.branch_collections, start=1)
+        ]
+        frozen.emit_progress(
+            "eligibility_branch_collection",
+            (f"Collected eligibility branch group {len(branch_snapshots)} of {expected_groups}."),
+            evidence.runtime_configuration,
+            preserve_context=True,
+            update=0,
+            current_level=0,
+            evaluation_split="validation",
+            evaluation_completed=len(branch_snapshots),
+            evaluation_total=expected_groups,
+            branch_groups_completed=len(branch_snapshots),
+            branch_groups_total=expected_groups,
+            branch_snapshots=branch_snapshots,
+            latest_branch_snapshot=branch_snapshots[-1],
+            policy_update_count=0,
+            optimizer_update_count=0,
+            training_started=False,
+            elapsed_seconds=round(time.monotonic() - evidence.started_at, 3),
+        )
+    if collection.exclusion_reason == "TRAINING_DEADLINE_REACHED":
+        evidence.early_stop_reason = "screen_collection_deadline"
+        raise EligibilityScreenComplete(build_screen_result(evidence, manifest))
+    reason = branch_collection_impossible(evidence, manifest)
+    if reason is not None:
+        evidence.early_stop_reason = reason
+    if reason is not None or len(evidence.branch_collections) == expected_groups:
+        raise EligibilityScreenComplete(build_screen_result(evidence, manifest))
+
+
 def install_environment_hooks(
     evidence: ScreenEvidence,
     manifest: dict[str, Any],
@@ -1096,6 +1150,8 @@ def install_environment_hooks(
         raise RuntimeError("larger-model eligibility localization telemetry drifted")
     if screen["branch_width"] != 4:
         raise RuntimeError("larger-model eligibility is defined only for static K=4")
+    if screen["training_tasks_per_update"] != screen["branch_groups"]:
+        raise RuntimeError("larger-model eligibility requires one task per branch group")
     frozen.SUPPORTED_MODELS[manifest["model"]["id"]] = manifest["model"]["revision"]
     frozen.SYSTEM_PROMPT = revision32.SYSTEM_PROMPT
     frozen.ENVIRONMENT_REVISION = revision32.ENVIRONMENT_REVISION
@@ -1154,6 +1210,26 @@ def install_environment_hooks(
         return not prefix.terminal and repository_root_observed(prefix)
 
     frozen.branch_checkpoint_reached = nonterminal_checkpoint
+    original_training_allocation = frozen.training_level_allocation
+
+    def level_zero_training_allocation(
+        current_level: int,
+        task_count: int,
+        *,
+        probe_level: int | None = None,
+        maximum_level: int = frozen.MAXIMUM_COMPLEXITY_LEVEL,
+    ) -> list[int]:
+        original_training_allocation(
+            current_level,
+            task_count,
+            probe_level=probe_level,
+            maximum_level=maximum_level,
+        )
+        if current_level != 0 or task_count != screen["training_tasks_per_update"]:
+            raise RuntimeError("eligibility screen training allocation drifted")
+        return [0] * task_count
+
+    frozen.training_level_allocation = level_zero_training_allocation
     original_make_tasks = frozen.make_tasks
 
     def isolated_make_tasks(
@@ -1166,6 +1242,15 @@ def install_environment_hooks(
     ) -> Any:
         if split == "test":
             evidence.test_split_accessed = True
+            frozen.emit_progress(
+                "test_split_isolation_violation",
+                "Blocked eligibility-screen test split access.",
+                evidence.runtime_configuration,
+                preserve_context=True,
+                evaluation_split="test",
+                test_examples_accessed=0,
+                test_split_accessed=True,
+            )
             raise RuntimeError("eligibility screen attempted to access the test split")
         return original_make_tasks(
             level,
@@ -1192,6 +1277,17 @@ def install_environment_hooks(
 
     frozen.fixed_retention_guard_example_count = screen_baseline_count
     frozen.family_balanced_validation_tasks = active_level_baseline
+
+    def no_test_final_evaluation_reserve(
+        estimated_seconds: int,
+        maximum_seconds: int = frozen.DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS,
+    ) -> tuple[int, bool]:
+        """Reserve no screen time for the final-test path that is forbidden below."""
+
+        del estimated_seconds, maximum_seconds
+        return SCREEN_FINAL_EVALUATION_RESERVE_SECONDS, False
+
+    frozen.bounded_final_evaluation_reserve = no_test_final_evaluation_reserve
     original_greedy = frozen.collect_greedy_trajectory
 
     def observed_greedy(task: Any, *args: Any, **kwargs: Any) -> Any:
@@ -1219,14 +1315,8 @@ def install_environment_hooks(
     original_collect = frozen.collect_branch_group
 
     def observed_collection(task: Any, *args: Any, **kwargs: Any) -> Any:
-        if len(evidence.branch_collections) >= screen["branch_groups"]:
-            raise RuntimeError("eligibility screen exceeded its branch-group budget")
         collection = original_collect(task, *args, **kwargs)
-        evidence.branch_collections.append(collection)
-        reason = branch_collection_impossible(evidence, manifest)
-        if reason is not None:
-            evidence.early_stop_reason = reason
-            raise EligibilityScreenComplete(build_screen_result(evidence, manifest))
+        record_screen_branch_collection(evidence, manifest, collection)
         return collection
 
     frozen.collect_branch_group = observed_collection
@@ -1341,6 +1431,7 @@ def install_progress_hook(evidence: ScreenEvidence, manifest: dict[str, Any]) ->
         preserve_context: bool = False,
         **values: Any,
     ) -> None:
+        values.pop("test_split_accessed", None)
         original_emit(
             phase,
             message,
@@ -1349,9 +1440,16 @@ def install_progress_hook(evidence: ScreenEvidence, manifest: dict[str, Any]) ->
             larger_model_profile_id=manifest["profile_id"],
             larger_model_screen_revision=manifest["screen"]["workload_revision"],
             policy_mutation_enabled=False,
-            test_split_accessed=False,
+            test_split_accessed=evidence.test_split_accessed,
             **values,
         )
+        if phase == "finalizing":
+            if len(evidence.branch_collections) >= manifest["screen"]["branch_groups"]:
+                raise RuntimeError(
+                    "eligibility screen reached finalization after its branch-group budget"
+                )
+            evidence.early_stop_reason = "screen_collection_incomplete"
+            raise EligibilityScreenComplete(build_screen_result(evidence, manifest))
         if phase != "training":
             return
         if len(evidence.branch_collections) != manifest["screen"]["branch_groups"]:

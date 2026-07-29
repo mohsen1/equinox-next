@@ -109,7 +109,7 @@ def collection(
     return SimpleNamespace(
         snapshot=object() if checkpointed else None,
         exclusion_reason=None if checkpointed else "PREFIX_CHECKPOINT_NOT_REACHED",
-        task=SimpleNamespace(faults=[fault]),
+        task=SimpleNamespace(level=0, faults=[fault]),
         prefix=SimpleNamespace(terminal=False, steps=[root_step]),
         informative=informative,
         solved_siblings=solved if checkpointed else 0,
@@ -223,6 +223,114 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     )
     assert authorization["screen_result_digest"] == result["digest"]
     assert authorization["pinned_snapshot_digest"] == result["pinned_snapshot_digest"]
+
+
+def test_eighth_branch_group_completes_before_the_policy_update_path() -> None:
+    evidence = passing_evidence()
+    final_collection = evidence.branch_collections.pop()
+
+    with pytest.raises(eligibility.EligibilityScreenComplete) as completed:
+        eligibility.record_screen_branch_collection(
+            evidence,
+            gate.load_manifest(),
+            final_collection,
+        )
+
+    assert len(evidence.branch_collections) == 8
+    assert completed.value.result["screen_completed"] is True
+    assert completed.value.result["eligible"] is True
+    assert completed.value.result["persistent_policy_updates"] == 0
+
+
+def test_branch_progress_contains_cumulative_observer_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = passing_evidence()
+    final_collection = evidence.branch_collections.pop()
+    evidence.runtime_configuration = SimpleNamespace(
+        optimization_seed=137,
+        validation_examples=8,
+    )
+    emitted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        eligibility.frozen,
+        "serialize_branch_group",
+        lambda _collection, *, update, optimizer_update: {
+            "snapshot_id": f"screen-group-{update}",
+            "update": update,
+            "optimizer_update": optimizer_update,
+        },
+    )
+
+    def capture_progress(
+        phase: str,
+        _message: str,
+        _runtime_configuration: object,
+        **values: object,
+    ) -> None:
+        emitted.update(values)
+        emitted["phase"] = phase
+
+    monkeypatch.setattr(eligibility.frozen, "emit_progress", capture_progress)
+
+    with pytest.raises(eligibility.EligibilityScreenComplete):
+        eligibility.record_screen_branch_collection(
+            evidence,
+            gate.load_manifest(),
+            final_collection,
+        )
+
+    assert emitted["phase"] == "eligibility_branch_collection"
+    assert emitted["preserve_context"] is True
+    assert emitted["evaluation_completed"] == 8
+    assert emitted["evaluation_total"] == 8
+    assert emitted["branch_snapshots"] == [
+        {
+            "snapshot_id": f"screen-group-{index}",
+            "update": index,
+            "optimizer_update": None,
+        }
+        for index in range(1, 9)
+    ]
+    assert emitted["latest_branch_snapshot"] == emitted["branch_snapshots"][-1]
+    assert emitted["policy_update_count"] == 0
+    assert emitted["optimizer_update_count"] == 0
+
+
+def test_deadline_excluded_collection_finishes_ineligible_without_test_access() -> None:
+    evidence = passing_evidence()
+    evidence.branch_collections = []
+    deadline_collection = collection(checkpointed=False)
+    deadline_collection.exclusion_reason = "TRAINING_DEADLINE_REACHED"
+
+    with pytest.raises(eligibility.EligibilityScreenComplete) as completed:
+        eligibility.record_screen_branch_collection(
+            evidence,
+            gate.load_manifest(),
+            deadline_collection,
+        )
+
+    assert completed.value.result["eligible"] is False
+    assert completed.value.result["test_split_accessed"] is False
+    assert completed.value.result["early_stop_reason"] == "screen_collection_deadline"
+    assert completed.value.result["branch_groups"] == 1
+
+
+def test_screen_rejects_a_collected_probe_outside_level_zero() -> None:
+    evidence = passing_evidence()
+    evidence.branch_collections = []
+    wrong_level = collection()
+    wrong_level.task.level = 1
+
+    with pytest.raises(RuntimeError, match="outside level 0"):
+        eligibility.record_screen_branch_collection(
+            evidence,
+            gate.load_manifest(),
+            wrong_level,
+        )
+
+    assert evidence.branch_collections == []
 
 
 def test_starting_level_checkpoint_gate_requires_six_of_eight_examples() -> None:
@@ -697,6 +805,7 @@ def test_runtime_configuration_is_bound_to_exact_model_and_screen_shape(
         model_id=manifest["model"]["id"],
         model_revision=manifest["model"]["revision"],
         validation_examples=manifest["screen"]["validation_examples"],
+        test_examples=eligibility.SCREEN_RUNTIME_TEST_EXAMPLES,
         training_tasks_per_update=manifest["screen"]["training_tasks_per_update"],
         maximum_updates=manifest["screen"]["maximum_updates"],
         optimization_seed=manifest["screen_limits"]["optimization_seed"],
@@ -714,6 +823,11 @@ def test_runtime_configuration_is_bound_to_exact_model_and_screen_shape(
         eligibility.validate_runtime_configuration(runtime, manifest)
 
     runtime.optimization_seed = manifest["screen_limits"]["optimization_seed"]
+    runtime.test_examples += 1
+    with pytest.raises(ValueError, match="test_examples"):
+        eligibility.validate_runtime_configuration(runtime, manifest)
+
+    runtime.test_examples = eligibility.SCREEN_RUNTIME_TEST_EXAMPLES
     monkeypatch.setenv("EQUINOX_ADAPTER_PATH", "/tmp/old-adapter")
     with pytest.raises(ValueError, match="must not load"):
         eligibility.validate_runtime_configuration(runtime, manifest)
@@ -767,7 +881,9 @@ def test_runtime_hooks_install_l0_root_checkpoint_v32_k4_screen_and_isolate_test
         "RepositoryRepairEnvironment",
         "branch_checkpoint_diagnostic_actions",
         "branch_checkpoint_reached",
+        "training_level_allocation",
         "make_tasks",
+        "bounded_final_evaluation_reserve",
         "fixed_retention_guard_example_count",
         "family_balanced_validation_tasks",
         "collect_greedy_trajectory",
@@ -809,6 +925,18 @@ def test_runtime_hooks_install_l0_root_checkpoint_v32_k4_screen_and_isolate_test
         assert eligibility.frozen.BRANCH_WIDTH == 4
         assert eligibility.frozen.TRAINING_MICROBATCH_SIZE == 1
         assert eligibility.frozen.MAX_INPUT_TOKENS == 2_048
+        assert eligibility.frozen.bounded_final_evaluation_reserve(10_000, 300) == (
+            0,
+            False,
+        )
+        assert (
+            eligibility.frozen.training_level_allocation(
+                0,
+                8,
+                probe_level=1,
+            )
+            == [0] * 8
+        )
         assert (
             eligibility.frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY
             == eligibility.SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY
@@ -852,6 +980,79 @@ def test_runtime_hooks_install_l0_root_checkpoint_v32_k4_screen_and_isolate_test
         assert evidence.rejection_reason_counts == {}
         environment.terminal = True
         assert eligibility.frozen.branch_checkpoint_reached(tasks[0], environment) is False
+        isolation_progress: dict[str, object] = {}
+
+        def capture_isolation_progress(
+            phase: str,
+            _message: str,
+            _runtime_configuration: object,
+            **values: object,
+        ) -> None:
+            isolation_progress.update(values)
+            isolation_progress["phase"] = phase
+
+        restore.setattr(
+            eligibility.frozen,
+            "emit_progress",
+            capture_isolation_progress,
+        )
         with pytest.raises(RuntimeError, match="test split"):
             eligibility.frozen.make_tasks(0, 1, 190_000, split="test")
         assert evidence.test_split_accessed is True
+        assert isolation_progress["phase"] == "test_split_isolation_violation"
+        assert isolation_progress["test_split_accessed"] is True
+        assert isolation_progress["test_examples_accessed"] == 0
+
+
+def test_progress_reports_the_current_test_isolation_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: dict[str, object] = {}
+
+    def capture_progress(
+        _phase: str,
+        _message: str,
+        _runtime_configuration: object,
+        *,
+        preserve_context: bool = False,
+        **values: object,
+    ) -> None:
+        emitted.update(values)
+        emitted["preserve_context"] = preserve_context
+
+    monkeypatch.setattr(eligibility.frozen, "emit_progress", capture_progress)
+    evidence = eligibility.ScreenEvidence(test_split_accessed=True)
+    eligibility.install_progress_hook(evidence, gate.load_manifest())
+
+    eligibility.frozen.emit_progress(
+        "baseline_evaluation",
+        "blocked",
+        SimpleNamespace(),
+    )
+
+    assert emitted["test_split_accessed"] is True
+
+
+def test_pretest_finalization_returns_an_ineligible_screen_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        eligibility.frozen,
+        "emit_progress",
+        lambda *_args, **_kwargs: None,
+    )
+    evidence = passing_evidence()
+    evidence.branch_collections = evidence.branch_collections[:2]
+    eligibility.install_progress_hook(evidence, gate.load_manifest())
+
+    with pytest.raises(eligibility.EligibilityScreenComplete) as completed:
+        eligibility.frozen.emit_progress(
+            "finalizing",
+            "generic trainer attempted final evaluation",
+            SimpleNamespace(),
+        )
+
+    assert completed.value.result["screen_completed"] is True
+    assert completed.value.result["eligible"] is False
+    assert completed.value.result["early_stop_reason"] == "screen_collection_incomplete"
+    assert completed.value.result["test_split_accessed"] is False
