@@ -5,7 +5,7 @@ stage below require an explicit operator command.
 
 The guarded larger-model flow targets the manifest-pinned
 `Qwen/Qwen2.5-Coder-7B-Instruct` revision under profile
-`qwen2.5-coder-7b-runpod-h100@1`. It has two paid stages:
+`qwen2.5-coder-7b-runpod-h100@2`. It has two paid stages:
 
 1. a bounded eligibility screen that does not update the policy; and
 2. a branch-aware training pilot authorized by the screen receipt.
@@ -39,8 +39,8 @@ the authorized `$25.00` for CPU prewarm, network-volume storage, and contingency
 
 The launcher never creates or populates a network volume. With no existing volume and
 matching readiness receipt, both `--preflight-only` and paid launch are blocked.
-Readiness receipts and screen authorizations from the former L40 profile do not match
-this profile and cannot be reused.
+Readiness receipts and screen authorizations from the former L40 profile or the H100
+`@1` profile do not match this profile and cannot be reused.
 
 Create a 50 GB volume in a data center that offers an `NVIDIA H100 80GB HBM3`:
 
@@ -194,14 +194,21 @@ The six-minute readiness limit is one wall-clock deadline beginning immediately 
 the create request. Pod creation, provider inspection, observer updates, proxy probes,
 retries, and sleeps all consume that same budget.
 
-The screen runs fixed baseline and `K=4` branch probes with no policy mutation. It does
-not access the sealed final-test pack or persist a trained adapter. Its result records:
+The screen evaluates eight deterministic level-0 tasks, then runs eight static-`K=4`
+branch probes with no policy mutation. Branching starts after one accepted repository
+root listing. Localization and repair happen independently in each sibling. Higher
+levels remain pilot curriculum targets; requiring them before training would defeat the
+adaptive starting frontier.
+
+The screen does not access the sealed final-test pack or persist a trained adapter. Its
+result records:
 
 - the exact model, revision, eligibility profile, and workload revisions;
 - requested and observed GPU identity and memory;
 - model-load completion and peak memory;
-- action-protocol validity, checkpoint attainment, branch signal density, and solution
-  headroom;
+- schema-valid action rate and semantic acceptance rate as separate metrics;
+- root-checkpoint attainment, all-fault-source localization telemetry, branch signal
+  density, and solution headroom;
 - confirmation that policy parameters were not changed;
 - the eligibility decision and each failed threshold; and
 - runtime, cost, provider receipt, and teardown evidence.
@@ -233,6 +240,12 @@ execution.
 The pilot revalidates its authorization and all provider safety checks before allocation.
 It then runs the static `K=4`, dynamically complex repository-repair workload. The pilot
 is a bounded experiment, not authorization for a larger follow-on study.
+
+Only verified successful siblings contribute positive policy weight. The credited
+actions are the fault-fixing edit and its immediately preceding accepted read of the
+same path. Unrelated reads, searches, tests, finishes, and failed siblings receive no
+positive weight; every accepted action remains anchored to the disabled-adapter base
+policy.
 
 The pilot authorization is single-use. `--preflight-only` does not consume it. A paid
 pilot writes a consumption record at

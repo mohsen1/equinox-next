@@ -388,6 +388,17 @@ def install_bootstrap_checkpoint_contract(branch_width: int) -> None:
 def install_v32_contract(manifest: dict[str, Any], authorization_digest: str) -> None:
     """Install the new model/interface identity around the byte-frozen trainer."""
 
+    pilot = manifest["pilot"]
+    expected_identity = {
+        "workload_revision": WORKLOAD_REVISION,
+        "objective_id": OBJECTIVE_ID,
+        "shared_prefix_checkpoint_strategy": SHARED_PREFIX_CHECKPOINT_STRATEGY,
+        "localization_telemetry_strategy": LOCALIZATION_TELEMETRY_STRATEGY,
+        "policy_credit_scope": POLICY_CREDIT_SCOPE,
+    }
+    for name, expected in expected_identity.items():
+        if pilot[name] != expected:
+            raise RuntimeError(f"larger-model pilot {name} drifted")
     reset_retained_update_evidence()
     original_emit_progress = frozen.emit_progress
     original_training_stop_decision = frozen.training_stop_decision

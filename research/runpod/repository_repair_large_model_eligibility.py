@@ -847,6 +847,15 @@ def install_environment_hooks(
     """Install revision-32 semantics, the L0 screen, K4, and isolation guards."""
 
     screen = manifest["screen"]
+    if screen["admission_levels"] != [0]:
+        raise RuntimeError("larger-model eligibility must screen only the entry level")
+    if (
+        screen["shared_prefix_checkpoint_strategy"]
+        != SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY
+    ):
+        raise RuntimeError("larger-model eligibility checkpoint strategy drifted")
+    if screen["localization_telemetry_strategy"] != "all_fault_sources_observed":
+        raise RuntimeError("larger-model eligibility localization telemetry drifted")
     if screen["branch_width"] != 4:
         raise RuntimeError("larger-model eligibility is defined only for static K=4")
     frozen.SUPPORTED_MODELS[manifest["model"]["id"]] = manifest["model"]["revision"]
@@ -1143,6 +1152,13 @@ def prepare_runtime(
 def self_test(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest["screen"]["branch_width"] != 4:
         raise AssertionError("eligibility screen is not K=4")
+    if manifest["screen"]["admission_levels"] != [0]:
+        raise AssertionError("eligibility screen is not entry-level-only")
+    if (
+        manifest["screen"]["shared_prefix_checkpoint_strategy"]
+        != SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY
+    ):
+        raise AssertionError("eligibility screen checkpoint strategy drifted")
     if manifest["screen"]["training_microbatch_size"] != 1:
         raise AssertionError("eligibility screen microbatch drifted")
     result = {

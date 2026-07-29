@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@1"
+PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@2"
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 MODEL_REVISION = "c03e6d358207e414f1eca0bb1891e29f1db0e242"
 MODEL_PARAMETER_COUNT = 7_615_616_512
@@ -80,20 +80,20 @@ SOURCE_CONTRACT_SHA256 = {
         "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657"
     ),
     "repository_repair_env_v32.py": (
-        "3ebc2ced3fa7b790dfda0b3788ddd4a71383644e4c79902b0aec13add49aec30"
+        "82053cfee4863024f8f5e7d45381bea508f737412fcfebdf3721e664b434cf5b"
     ),
     "repository_repair_large_model_eligibility.py": (
-        "b1d2ab48e702d05b4b3b3ca7c0c7eb74d8caa228eae20e4f5b4c094ecaec23af"
+        "724f331dd1487f14dc7590c2c893c1d20dd5297371d2e9b65a6a1a2f59a613d5"
     ),
     "repository_repair_large_model_pilot.py": (
-        "d64fbf8bb4c7e62b434b5214c9a773e9aa247d860e88a42ef01fcd336d805cdf"
+        "cf577f3c621acef4c0e0a9a6b07f54e8c472cad02e4fd2c09a0506c7f8e29d65"
     ),
     "repository_repair_study.py": (
         "7799ff8969d67ad620db0f8c6bc9ee66bd0ef0300866cd0160696ff80fae7a0c"
     ),
 }
 SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
-SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@1"
+SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@2"
 CLEANUP_COST_RESERVE_SECONDS = 120
 DEFAULT_MANIFEST_PATH = (
     Path(__file__).resolve().parents[1] / "studies/larger-model-eligibility.json"
@@ -139,8 +139,8 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         },
     },
     "interface": {
-        "environment_revision": "repository-repair-simulator@6",
-        "action_protocol_revision": "repository-repair-json-tools@5",
+        "environment_revision": "repository-repair-simulator@7",
+        "action_protocol_revision": "repository-repair-json-tools@6",
     },
     "source_contract": {
         "algorithm": "sha256",
@@ -196,6 +196,9 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
     "screen": {
         "workload": SCREEN_WORKLOAD,
         "workload_revision": SCREEN_WORKLOAD_REVISION,
+        "admission_levels": [0],
+        "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
+        "localization_telemetry_strategy": "all_fault_sources_observed",
         "branch_width": 4,
         "validation_examples": 8,
         "training_tasks_per_update": 8,
@@ -204,7 +207,7 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "maximum_updates": 1,
         "test_examples": 0,
         "baseline_examples_per_level": 8,
-        "minimum_completed_baseline_examples": 12,
+        "minimum_completed_baseline_examples": 8,
         "branch_groups": 8,
         "thresholds": {
             "minimum_baseline_checkpoint_rate": 0.8,
@@ -223,6 +226,14 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         },
     },
     "pilot": {
+        "workload_revision": "runpod-repository-repair-large-model-pilot@2",
+        "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@16",
+        "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
+        "localization_telemetry_strategy": "all_fault_sources_observed",
+        "policy_credit_scope": (
+            "fault_fixing_edits_and_immediately_upstream_fresh_reads_"
+            "from_verified_successful_siblings"
+        ),
         "target_runtime_seconds": 9_000,
         "maximum_updates": 40,
         "validation_examples": 8,
@@ -1028,6 +1039,10 @@ def verify_pilot_authorization(
         "model_revision": manifest["model"]["revision"],
         "environment_revision": manifest["interface"]["environment_revision"],
         "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "screen_levels": manifest["screen"]["admission_levels"],
+        "shared_prefix_checkpoint_strategy": manifest["screen"][
+            "shared_prefix_checkpoint_strategy"
+        ],
         "branch_width": manifest["screen"]["branch_width"],
         "training_microbatch_size": manifest["screen"]["training_microbatch_size"],
         "maximum_input_tokens": manifest["screen"]["maximum_input_tokens"],
@@ -1112,10 +1127,13 @@ def verify_pilot_authorization(
         "screen result completed_baseline_examples",
     )
     per_level_rates = screen_result.get("per_level_checkpoint_rates")
-    if not isinstance(per_level_rates, dict) or set(per_level_rates) != {"0", "1", "2", "3"}:
-        raise GateError("screen result per-level checkpoint rates must cover levels 0 through 3")
+    expected_level_keys = {
+        str(level) for level in manifest["screen"]["admission_levels"]
+    }
+    if not isinstance(per_level_rates, dict) or set(per_level_rates) != expected_level_keys:
+        raise GateError("screen result checkpoint rates do not match the admission levels")
     expected_baseline_examples = manifest["screen"]["baseline_examples_per_level"] * len(
-        per_level_rates
+        expected_level_keys
     )
     if completed_baseline_examples != expected_baseline_examples:
         raise GateError("eligible screen did not complete the full baseline")

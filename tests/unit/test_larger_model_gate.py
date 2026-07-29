@@ -111,6 +111,7 @@ def huggingface_metadata(**overrides: object) -> dict[str, object]:
 
 
 def eligible_screen(**overrides: object) -> dict[str, object]:
+    manifest = load_manifest()
     result: dict[str, object] = {
         "workload": SCREEN_WORKLOAD,
         "workload_revision": SCREEN_WORKLOAD_REVISION,
@@ -118,15 +119,19 @@ def eligible_screen(**overrides: object) -> dict[str, object]:
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,
         "optimization_seed": 137,
-        "source_contract_digest": expected_source_contract_digest(load_manifest()),
-        "environment_revision": "repository-repair-simulator@6",
-        "action_protocol_revision": "repository-repair-json-tools@5",
+        "source_contract_digest": expected_source_contract_digest(manifest),
+        "environment_revision": manifest["interface"]["environment_revision"],
+        "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "screen_levels": manifest["screen"]["admission_levels"],
+        "shared_prefix_checkpoint_strategy": manifest["screen"][
+            "shared_prefix_checkpoint_strategy"
+        ],
         "branch_width": 4,
         "training_microbatch_size": 1,
         "maximum_input_tokens": 1_536,
         "capacity_smoke_completed": True,
         "gradient_checkpointing_enabled": True,
-        "pinned_snapshot_digest": expected_snapshot_digest(load_manifest()),
+        "pinned_snapshot_digest": expected_snapshot_digest(manifest),
         "screen_completed": True,
         "eligible": True,
         "policy_mutation_detected": False,
@@ -140,13 +145,8 @@ def eligible_screen(**overrides: object) -> dict[str, object]:
         "baseline_exact_rate": 0.2,
         "peak_reserved_vram_fraction": 0.8,
         "predicted_final_evaluation_seconds": 1_200.0,
-        "completed_baseline_examples": 32,
-        "per_level_checkpoint_rates": {
-            "0": 0.875,
-            "1": 0.875,
-            "2": 0.875,
-            "3": 0.875,
-        },
+        "completed_baseline_examples": 8,
+        "per_level_checkpoint_rates": {"0": 0.875},
         "informative_groups": 2,
         "solved_siblings": 8,
         "failed_siblings": 24,
@@ -257,19 +257,33 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     assert manifest["hardware"]["minimum_cuda_memory_bytes"] == 78_000_000_000
     assert manifest["hardware"]["maximum_peak_reserved_vram_fraction"] == 0.85
     assert manifest["interface"] == {
-        "environment_revision": "repository-repair-simulator@6",
-        "action_protocol_revision": "repository-repair-json-tools@5",
+        "environment_revision": "repository-repair-simulator@7",
+        "action_protocol_revision": "repository-repair-json-tools@6",
     }
     assert manifest["source_contract"] == {
         "algorithm": "sha256",
         "files": SOURCE_CONTRACT_SHA256,
     }
     assert manifest["screen"]["validation_examples"] == 8
+    assert manifest["screen"]["admission_levels"] == [0]
+    assert (
+        manifest["screen"]["shared_prefix_checkpoint_strategy"]
+        == "repository_root_observed@1"
+    )
+    assert manifest["screen"]["minimum_completed_baseline_examples"] == 8
     assert manifest["screen"]["baseline_examples_per_level"] == 8
     assert manifest["screen"]["training_microbatch_size"] == 1
     assert manifest["screen"]["maximum_input_tokens"] == 1_536
     assert manifest["screen"]["thresholds"]["maximum_predicted_final_evaluation_seconds"] == 1_440
     assert manifest["pilot"] == {
+        "workload_revision": "runpod-repository-repair-large-model-pilot@2",
+        "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@16",
+        "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
+        "localization_telemetry_strategy": "all_fault_sources_observed",
+        "policy_credit_scope": (
+            "fault_fixing_edits_and_immediately_upstream_fresh_reads_"
+            "from_verified_successful_siblings"
+        ),
         "target_runtime_seconds": 9_000,
         "maximum_updates": 40,
         "validation_examples": 8,
@@ -838,18 +852,11 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
         ({"peak_reserved_vram_fraction": 0.86}, {}, "outside"),
         ({"predicted_final_evaluation_seconds": 0.0}, {}, "positive pilot runtime"),
         ({"predicted_final_evaluation_seconds": 1_441.0}, {}, "outside"),
-        ({"completed_baseline_examples": 12}, {}, "full baseline"),
+        ({"completed_baseline_examples": 7}, {}, "full baseline"),
         (
-            {
-                "per_level_checkpoint_rates": {
-                    "0": 0.875,
-                    "1": 0.875,
-                    "2": 0.625,
-                    "3": 0.875,
-                }
-            },
+            {"per_level_checkpoint_rates": {"0": 0.625}},
             {},
-            "level 2 checkpoint rate",
+            "level 0 checkpoint rate",
         ),
         ({"informative_groups": 1}, {}, "informative_groups"),
         ({"solved_siblings": 1}, {}, "solved_siblings"),

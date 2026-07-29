@@ -136,9 +136,7 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
     assert result["environment_revision"] == manifest["interface"]["environment_revision"]
     assert result["action_protocol_revision"] == manifest["interface"]["action_protocol_revision"]
-    assert result["pinned_snapshot_digest"] == (
-        "sha256:c8f3de2d313d832c1387260b6f09aaa269180bc343ae3e92b4a1d64b313bdf9d"
-    )
+    assert result["pinned_snapshot_digest"] == gate.expected_snapshot_digest(manifest)
     assert result["baseline_runtime_seconds"] == 100.0
     assert result["predicted_final_evaluation_seconds"] == 450.0
     assert result["gate_results"] == dict.fromkeys(gate.REQUIRED_GATE_RESULTS, True)
@@ -376,7 +374,7 @@ def test_snapshot_readiness_propagates_the_exact_snapshot_digest(
     model_cache = "models--" + manifest["model"]["id"].replace("/", "--")
     snapshot = tmp_path / "hub" / model_cache / "snapshots" / manifest["model"]["revision"]
     snapshot.mkdir(parents=True)
-    expected_digest = "sha256:c8f3de2d313d832c1387260b6f09aaa269180bc343ae3e92b4a1d64b313bdf9d"
+    expected_digest = gate.expected_snapshot_digest(manifest)
 
     def verify_exact(
         observed_manifest: dict[str, object],

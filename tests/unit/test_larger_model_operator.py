@@ -22,13 +22,35 @@ def screen_proof_assertion() -> str:
 
 
 def run_screen_proof_assertion(payload: dict[str, object]) -> subprocess.CompletedProcess[str]:
+    manifest = load_manifest()
     return subprocess.run(
         [
             "jq",
             "-e",
             "--arg",
+            "expected_screen_workload",
+            manifest["screen"]["workload"],
+            "--arg",
+            "expected_screen_workload_revision",
+            manifest["screen"]["workload_revision"],
+            "--arg",
+            "expected_profile_id",
+            manifest["profile_id"],
+            "--arg",
             "expected_model",
-            "Qwen/Qwen2.5-Coder-7B-Instruct",
+            manifest["model"]["id"],
+            "--arg",
+            "expected_model_revision",
+            manifest["model"]["revision"],
+            "--arg",
+            "expected_environment_revision",
+            manifest["interface"]["environment_revision"],
+            "--arg",
+            "expected_action_protocol_revision",
+            manifest["interface"]["action_protocol_revision"],
+            "--arg",
+            "expected_shared_prefix_checkpoint",
+            manifest["screen"]["shared_prefix_checkpoint_strategy"],
             "--arg",
             "expected_snapshot_digest",
             "sha256:snapshot",
@@ -38,6 +60,15 @@ def run_screen_proof_assertion(payload: dict[str, object]) -> subprocess.Complet
             "--argjson",
             "expected_optimization_seed",
             "137",
+            "--argjson",
+            "expected_admission_levels",
+            json.dumps(manifest["screen"]["admission_levels"]),
+            "--argjson",
+            "expected_baseline_examples",
+            str(
+                manifest["screen"]["baseline_examples_per_level"]
+                * len(manifest["screen"]["admission_levels"])
+            ),
             screen_proof_assertion(),
         ],
         input=json.dumps(payload),
@@ -217,21 +248,28 @@ def test_total_cost_and_phase_deadlines_are_enforced_during_polling() -> None:
 
 
 def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates() -> None:
+    manifest = load_manifest()
     gate_results = {
-        gate_name: True for gate_name in load_manifest()["authorization"]["required_gate_results"]
+        gate_name: True for gate_name in manifest["authorization"]["required_gate_results"]
     }
     gate_results["peak_reserved_vram_within_limit"] = False
     gate_results["pilot_runtime_feasible"] = False
     failed_gates = sorted(gate_name for gate_name, passed in gate_results.items() if not passed)
     payload: dict[str, object] = {
         "device": "cuda",
-        "workload": "repository-repair-larger-model-eligibility-screen",
-        "workload_revision": "larger-model-eligibility-screen@1",
-        "profile_id": "qwen2.5-coder-7b-runpod-h100@1",
-        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "model_revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
+        "workload": manifest["screen"]["workload"],
+        "workload_revision": manifest["screen"]["workload_revision"],
+        "profile_id": manifest["profile_id"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
         "optimization_seed": 137,
         "source_contract_digest": "sha256:source",
+        "environment_revision": manifest["interface"]["environment_revision"],
+        "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "screen_levels": manifest["screen"]["admission_levels"],
+        "shared_prefix_checkpoint_strategy": manifest["screen"][
+            "shared_prefix_checkpoint_strategy"
+        ],
         "screen_completed": True,
         "eligible": False,
         "policy_mutation_detected": False,
@@ -243,8 +281,15 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
         "peak_reserved_vram_fraction": 0.9,
         "pinned_snapshot_digest": "sha256:snapshot",
         "predicted_final_evaluation_seconds": 1_500,
-        "completed_baseline_examples": 32,
-        "per_level_checkpoint_rates": {"0": 1.0, "1": 1.0, "2": 1.0, "3": 1.0},
+        "completed_baseline_examples": 8,
+        "per_level_checkpoint_rates": {"0": 1.0},
+        "action_protocol_validity": 1.0,
+        "schema_valid_action_rate": 1.0,
+        "semantic_acceptance_rate": 0.9,
+        "accepted_action_rate": 0.9,
+        "baseline_all_fault_sources_observed_rate": 0.5,
+        "branch_all_fault_sources_observed_rate": 0.5,
+        "sibling_all_fault_sources_observed_rate": 0.5,
         "informative_groups": 2,
         "solved_siblings": 2,
         "failed_siblings": 2,
