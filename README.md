@@ -44,6 +44,10 @@ active hourly spend.
 EQUINOX_RUNPOD_EXPERIMENT=repository-repair ./scripts/runpod-rl-proof
 ```
 
+Use the [larger-model RunPod runbook](docs/larger-model-runbook.md) for the guarded 7B
+eligibility screen and receipt-authorized pilot. Preparing that workflow does not launch
+a GPU; each allocation requires an explicit operator command.
+
 The repository-repair workload fine-tunes Qwen2.5-Coder-1.5B-Instruct with LoRA and a
 leave-one-out group-normalized REINFORCE objective. It
 collects a shared diagnostic prefix without gradient, saves an exact logical checkpoint,
