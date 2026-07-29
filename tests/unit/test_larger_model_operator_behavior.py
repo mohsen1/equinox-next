@@ -132,7 +132,24 @@ with open(os.environ["FAKE_RUNPOD_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(["curl", *arguments], separators=(",", ":")) + "\\n")
 scenario = json.loads(os.environ["FAKE_RUNPOD_SCENARIO"])
 transport = scenario.get("transport")
-url = arguments[-1]
+url = next(
+    (argument for argument in arguments if argument.startswith(("http://", "https://"))),
+    arguments[-1],
+)
+
+def sequenced_response(key, suffix, default):
+    responses = scenario.get(key)
+    if responses is None:
+        return default
+    with open(os.environ["FAKE_RUNPOD_LOG"], encoding="utf-8") as handle:
+        call_count = sum(
+            1
+            for line in handle
+            if (entry := json.loads(line))[0:1] == ["curl"]
+            and any(argument.endswith(suffix) for argument in entry[1:])
+        )
+    return responses[min(call_count - 1, len(responses) - 1)]
+
 if transport and url.endswith("/bootstrap-health"):
     print(json.dumps({"status": "awaiting_bundle"}, separators=(",", ":")))
 elif transport and url.endswith("/bundle"):
@@ -148,9 +165,22 @@ elif transport and url.endswith("/bundle"):
         print(json.dumps({"status": "bundle_installed"}, separators=(",", ":")))
         print("202")
 elif transport and url.endswith("/progress.json"):
-    print(json.dumps({"phase": "running"}, separators=(",", ":")))
+    response = sequenced_response(
+        "progress_responses",
+        "/progress.json",
+        {"phase": "running"},
+    )
+    if response is not None:
+        print(json.dumps(response, separators=(",", ":")))
 elif transport and url.endswith("/exit_code"):
-    print("1")
+    response = sequenced_response("exit_code_responses", "/exit_code", "1")
+    if response is not None:
+        print(response)
+elif url.startswith("http://operator-test.invalid/internal/"):
+    if arguments[arguments.index("--data-binary") + 1] == "@-":
+        payload = sys.stdin.read()
+        with open(os.environ["FAKE_RUNPOD_PAYLOAD_LOG"], "a", encoding="utf-8") as handle:
+            handle.write(payload.strip() + "\\n")
 elif "--fail" not in arguments:
     raise SystemExit(96)
 """,
@@ -255,6 +285,7 @@ def _preflight_environment(
         {
             "PATH": f"{binary_directory}{os.pathsep}{environment['PATH']}",
             "FAKE_RUNPOD_LOG": str(command_log),
+            "FAKE_RUNPOD_PAYLOAD_LOG": str(tmp_path / "observer-payloads.jsonl"),
             "FAKE_RUNPOD_SCENARIO": json.dumps(scenario),
             "EQUINOX_INTERNAL_TOKEN": "test-internal-token-" + "x" * 40,
             "EQUINOX_API_ROOT": "http://operator-test.invalid",
@@ -411,7 +442,7 @@ def test_terminal_screen_progress_preserves_live_branch_observer_fields() -> Non
         "branch_width": 4,
         "elapsed_seconds": 93.5,
         "eligible": True,
-        "profile_id": "qwen2.5-coder-7b-runpod-h100@4",
+        "profile_id": "qwen2.5-coder-7b-runpod-h100@5",
         "model_revision": "model-revision",
         "branch_checkpoint_rate": 1.0,
         "informative_group_rate": 0.5,
@@ -767,6 +798,127 @@ def test_paid_create_carries_only_token_then_uploads_after_image_postcheck(
     assert delete_indexes
     assert all(commands[index] == ["pod", "delete", "fake-paid-pod"] for index in delete_indexes)
     assert upload_indexes[0] < min(delete_indexes)
+
+
+def test_exit_visibility_cannot_drop_the_final_remote_progress(tmp_path: Path) -> None:
+    branch_snapshots = [
+        {
+            "snapshot_id": f"screen-branch-{index}",
+            "update": index + 1,
+            "level": 0,
+            "siblings": [{"index": sibling, "steps": []} for sibling in range(4)],
+        }
+        for index in range(8)
+    ]
+    progress_at_readiness = {
+        "phase": "screen_branching",
+        "branch_groups_completed": 7,
+        "branch_groups_total": 8,
+        "branch_snapshots": branch_snapshots[:7],
+    }
+    final_progress = {
+        "phase": "screen_complete",
+        "branch_groups_completed": 8,
+        "branch_groups_total": 8,
+        "branch_snapshots": branch_snapshots,
+        "latest_branch_snapshot": branch_snapshots[-1],
+    }
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "transport": "accept",
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+            ],
+            "progress_responses": [
+                progress_at_readiness,
+                None,
+                None,
+                None,
+                final_progress,
+            ],
+            "exit_code_responses": ["1"],
+        },
+    )
+
+    assert result.returncode != 0
+    progress_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:1] == ["curl"]
+        and any(argument.endswith("/progress.json") for argument in command[1:])
+    ]
+    exit_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:1] == ["curl"]
+        and any(argument.endswith("/exit_code") for argument in command[1:])
+    ]
+    assert len(progress_indexes) == 5
+    assert len(exit_indexes) == 1
+    assert progress_indexes[1] < exit_indexes[0] < progress_indexes[2]
+
+    payload_log = tmp_path / "observer-payloads.jsonl"
+    payloads = [
+        json.loads(line) for line in payload_log.read_text(encoding="utf-8").splitlines() if line
+    ]
+    terminal_tree_payloads = [
+        payload for payload in payloads if payload["progress"].get("branch_groups_completed") == 8
+    ]
+    assert terminal_tree_payloads
+    assert terminal_tree_payloads[0]["progress"]["branch_snapshots"] == branch_snapshots
+    assert terminal_tree_payloads[0]["progress"]["latest_branch_snapshot"] == branch_snapshots[-1]
+
+
+@pytest.mark.parametrize(
+    ("branch_groups_completed", "branch_snapshot_count", "expected_complete"),
+    [
+        (8, 8, True),
+        (7, 7, False),
+        (8, 7, False),
+    ],
+)
+def test_larger_model_screen_terminal_progress_requires_the_exact_cumulative_tree(
+    branch_groups_completed: int,
+    branch_snapshot_count: int,
+    expected_complete: bool,
+) -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    helper = _shell_function(source, "larger_model_screen_progress_complete")
+    snapshots = [
+        {"snapshot_id": f"screen-branch-{index}"} for index in range(branch_snapshot_count)
+    ]
+    progress = {
+        "branch_groups_completed": branch_groups_completed,
+        "branch_groups_total": 8,
+        "branch_snapshots": snapshots,
+        "latest_branch_snapshot": snapshots[-1] if snapshots else None,
+    }
+    harness = f"""set -euo pipefail
+larger_model_expected_branch_groups=8
+{helper}
+larger_model_screen_progress_complete <<'JSON'
+{json.dumps(progress, separators=(",", ":"))}
+JSON
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert (result.returncode == 0) is expected_complete
+    assert '[[ "$terminal_progress_complete" != true ]]' in source, (
+        "successful screens must fail closed when terminal progress is incomplete"
+    )
 
 
 def test_rejected_bundle_upload_deletes_the_exact_pod_without_retry(

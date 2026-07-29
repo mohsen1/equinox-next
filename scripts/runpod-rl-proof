@@ -291,6 +291,7 @@ larger_model_screen_workload=""
 larger_model_screen_workload_revision=""
 larger_model_admission_levels="null"
 larger_model_expected_baseline_examples="null"
+larger_model_expected_branch_groups="null"
 larger_model_localization_telemetry_strategy=""
 larger_model_policy_credit_scope=""
 verified_image_digest=""
@@ -641,6 +642,9 @@ PY
   larger_model_expected_baseline_examples="$(
     jq '.screen.baseline_examples_per_level * (.screen.admission_levels | length)' \
       <<<"$larger_model_manifest"
+  )"
+  larger_model_expected_branch_groups="$(
+    jq '.screen.branch_groups' <<<"$larger_model_manifest"
   )"
   larger_model_localization_telemetry_strategy="$(
     jq -r '.screen.localization_telemetry_strategy' <<<"$larger_model_manifest"
@@ -1362,6 +1366,7 @@ execution_registered=false
 terminal_published=false
 failure_message="The operator harness exited before the proof was persisted."
 last_remote_progress=""
+last_remote_progress_fetch_valid=false
 last_progress="$(
   jq -cn \
     --argjson maximum_updates "$maximum_updates" \
@@ -1437,14 +1442,13 @@ publish_execution() {
   local request_timeout
   local retry_delay
   payload="$(
-    jq -cn \
+    jq -c \
       --arg name "$execution_name" \
       --arg workload_id "$workload_id" \
       --arg model_id "$model_id" \
       --arg status "$status" \
       --arg provider_handle "$provider_handle" \
       --argjson resource_profile "$resource_profile" \
-      --argjson progress "$progress" \
       --arg started_at "$started_at" \
       --arg completed_at "$completed_at" \
       --argjson branch_width "$expected_branch_width" \
@@ -1461,11 +1465,11 @@ publish_execution() {
           if $provider_handle == "" then null else $provider_handle end
         ),
         resource_profile: $resource_profile,
-        progress: $progress,
+        progress: .,
         started_at: $started_at,
         completed_at: (if $completed_at == "" then null else $completed_at end),
         teardown_confirmed: $teardown_confirmed
-      }'
+      }' <<<"$progress"
   )"
   for attempt in 1 2 3; do
     request_timeout=15
@@ -1477,7 +1481,7 @@ publish_execution() {
       -X PUT "$api_root/internal/research-compute-executions/$proof_id" \
       -H "Authorization: Bearer $internal_token" \
       -H 'Content-Type: application/json' \
-      --data-binary "$payload" >/dev/null; then
+      --data-binary @- <<<"$payload" >/dev/null; then
       return 0
     fi
     if ((attempt < 3)); then
@@ -1490,6 +1494,61 @@ publish_execution() {
     fi
   done
   return 1
+}
+
+fetch_and_publish_remote_progress() {
+  local observed_epoch="$1"
+  local observed_progress
+  local remote_phase
+  last_remote_progress_fetch_valid=false
+  observed_progress="$(
+    curl --fail --silent --show-error --max-time 10 \
+      -H "$remote_authorization" "$progress_url" 2>/dev/null || true
+  )"
+  if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$observed_progress" ||
+    [[ "$observed_progress" == "$last_remote_progress" ]]; then
+    if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$observed_progress"; then
+      last_remote_progress_fetch_valid=true
+    fi
+    return 0
+  fi
+  last_remote_progress_fetch_valid=true
+  last_progress_change_epoch="$observed_epoch"
+  remote_phase="$(jq -r '.phase // empty' <<<"$observed_progress")"
+  if [[ -z "$preparation_started_epoch" ]] &&
+    [[ "$remote_phase" == "dependency_setup" || "$remote_phase" == "model_loading" ]]; then
+    preparation_started_epoch="$observed_epoch"
+  elif [[ "$remote_phase" != "dependency_setup" && "$remote_phase" != "model_loading" ]]; then
+    preparation_started_epoch=""
+  fi
+  last_progress="$(
+    {
+      printf '%s\n' "$last_progress"
+      printf '%s\n' "$observed_progress"
+    } | jq -cs '
+      if length == 2 and (.[0] | type) == "object" and (.[1] | type) == "object"
+      then .[0] + .[1]
+      else error("remote progress merge requires two objects")
+      end
+    '
+  )"
+  if publish_execution "RUNNING" "$last_progress"; then
+    last_remote_progress="$observed_progress"
+  else
+    echo "Observer progress publish failed after retries; monitoring continues." >&2
+  fi
+}
+
+larger_model_screen_progress_complete() {
+  jq -e \
+    --argjson expected_branch_groups "$larger_model_expected_branch_groups" \
+    '
+      .branch_groups_completed == $expected_branch_groups
+      and .branch_groups_total == $expected_branch_groups
+      and (.branch_snapshots | type) == "array"
+      and (.branch_snapshots | length) == $expected_branch_groups
+      and .latest_branch_snapshot == .branch_snapshots[-1]
+    ' >/dev/null
 }
 
 reconcile_pod_id_by_name() {
@@ -1995,10 +2054,10 @@ while readiness_poll_timeout="$(
       preparation_started_epoch="$(date +%s)"
     fi
     last_progress="$(
-      jq -cn \
-        --argjson previous "$last_progress" \
-        --argjson current "$remote_progress" \
-        '$previous + $current'
+      {
+        printf '%s\n' "$last_progress"
+        printf '%s\n' "$remote_progress"
+      } | jq -cs '.[0] + .[1]'
     )"
     publish_execution "RUNNING" "$last_progress" "" false "$readiness_deadline_epoch"
     workload_transport_ready=true
@@ -2075,38 +2134,31 @@ while (( $(date +%s) < result_deadline_epoch )); do
     echo "No progress change for ${stale_progress_timeout_seconds}s; terminating the worker." >&2
     exit 1
   fi
+  fetch_and_publish_remote_progress "$current_epoch"
   exit_code="$(
     curl --fail --silent --show-error --max-time 10 \
       -H "$remote_authorization" "$proxy_root/exit_code" 2>/dev/null || true
   )"
   if [[ -n "$exit_code" ]]; then
+    # The worker writes progress before exit_code. Fetch once more after observing the
+    # terminal marker so a delayed or transiently missed final branch tree is retained.
+    terminal_progress_complete=false
+    for final_progress_attempt in 1 2 3; do
+      fetch_and_publish_remote_progress "$(date +%s)"
+      if [[ "$larger_model_mode" == "screen" ]]; then
+        if larger_model_screen_progress_complete <<<"$last_progress"; then
+          terminal_progress_complete=true
+          break
+        fi
+      elif [[ "$last_remote_progress_fetch_valid" == true ]]; then
+        terminal_progress_complete=true
+        break
+      fi
+      if ((final_progress_attempt < 3)); then
+        sleep 1
+      fi
+    done
     break
-  fi
-  remote_progress="$(
-    curl --fail --silent --show-error --max-time 10 \
-      -H "$remote_authorization" "$progress_url" 2>/dev/null || true
-  )"
-  if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress" &&
-    [[ "$remote_progress" != "$last_remote_progress" ]]; then
-    last_progress_change_epoch="$current_epoch"
-    remote_phase="$(jq -r '.phase // empty' <<<"$remote_progress")"
-    if [[ -z "$preparation_started_epoch" ]] &&
-      [[ "$remote_phase" == "dependency_setup" || "$remote_phase" == "model_loading" ]]; then
-      preparation_started_epoch="$current_epoch"
-    elif [[ "$remote_phase" != "dependency_setup" && "$remote_phase" != "model_loading" ]]; then
-      preparation_started_epoch=""
-    fi
-    last_progress="$(
-      jq -cn \
-        --argjson previous "$last_progress" \
-        --argjson current "$remote_progress" \
-        '$previous + $current'
-    )"
-    if publish_execution "RUNNING" "$last_progress"; then
-      last_remote_progress="$remote_progress"
-    else
-      echo "Observer progress publish failed after retries; monitoring continues." >&2
-    fi
   fi
   sleep 5
 done
@@ -2121,6 +2173,12 @@ if [[ "$exit_code" != "0" ]]; then
     -H "$remote_authorization" \
     "$proxy_root/error.log" 2>/dev/null |
     tail -40 >&2 || true
+  exit 1
+fi
+if [[ "$larger_model_mode" == "screen" ]] &&
+  [[ "$terminal_progress_complete" != true ]]; then
+  failure_message="The completed eligibility screen did not expose its full terminal branch tree."
+  echo "The eligibility screen exited without exact cumulative terminal branch progress." >&2
   exit 1
 fi
 metrics="$(
@@ -2200,10 +2258,15 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     and .shared_prefix_checkpoint_strategy == $expected_shared_prefix_checkpoint
     and .screen_completed == true
     and (.eligible | type) == "boolean"
+    and .training_started == false
+    and .persistent_policy_updates == 0
+    and .policy_mutation_enabled == false
     and .policy_mutation_detected == false
     and .optimizer_state_restored == true
     and .test_split_accessed == false
+    and .test_examples_accessed == 0
     and .branch_width == 4
+    and .branch_groups == $expected_branch_groups
     and .maximum_input_tokens == 2048
     and .capacity_smoke_sequence_tokens == 2240
     and .gpu_id == "NVIDIA H100 80GB HBM3"
@@ -2211,7 +2274,9 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     and .pinned_snapshot_digest == $expected_snapshot_digest
     and (.peak_reserved_vram_fraction | type) == "number"
     and (.predicted_final_evaluation_seconds | type) == "number"
-    and (.completed_baseline_examples | type) == "number"
+    and .completed_baseline_examples == $expected_baseline_examples
+    and .expected_baseline_examples == $expected_baseline_examples
+    and .minimum_completed_baseline_examples == $expected_baseline_examples
     and (.per_level_checkpoint_rates | type) == "object"
     and (.schema_valid_action_rate | type) == "number"
     and .action_protocol_validity == .schema_valid_action_rate
@@ -2228,7 +2293,6 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     and (
       if .eligible then
         ([.gate_results[]] | all)
-        and .completed_baseline_examples == $expected_baseline_examples
         and (.per_level_checkpoint_rates | keys) == ["0"]
         and .peak_reserved_vram_fraction <= 0.85
         and .predicted_final_evaluation_seconds > 0
@@ -2692,6 +2756,7 @@ if ! jq -e \
   --arg expected_network_volume_id "$network_volume_id" \
   --argjson expected_admission_levels "$larger_model_admission_levels" \
   --argjson expected_baseline_examples "$larger_model_expected_baseline_examples" \
+  --argjson expected_branch_groups "$larger_model_expected_branch_groups" \
   --argjson expected_branch_width "$expected_branch_width" \
   --argjson expected_optimization_seed "$optimization_seed" \
   --argjson expected_validation_seed_base "${study_validation_seed_base:-null}" \

@@ -5,6 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from research.runpod.larger_model_gate import load_manifest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +71,9 @@ def run_screen_proof_assertion(payload: dict[str, object]) -> subprocess.Complet
                 manifest["screen"]["baseline_examples_per_level"]
                 * len(manifest["screen"]["admission_levels"])
             ),
+            "--argjson",
+            "expected_branch_groups",
+            str(manifest["screen"]["branch_groups"]),
             screen_proof_assertion(),
         ],
         input=json.dumps(payload),
@@ -272,10 +277,15 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
         ],
         "screen_completed": True,
         "eligible": False,
+        "training_started": False,
+        "persistent_policy_updates": 0,
+        "policy_mutation_enabled": False,
         "policy_mutation_detected": False,
         "optimizer_state_restored": True,
         "test_split_accessed": False,
+        "test_examples_accessed": 0,
         "branch_width": 4,
+        "branch_groups": manifest["screen"]["branch_groups"],
         "maximum_input_tokens": 2_048,
         "capacity_smoke_sequence_tokens": 2_240,
         "gpu_id": "NVIDIA H100 80GB HBM3",
@@ -284,6 +294,8 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
         "pinned_snapshot_digest": "sha256:snapshot",
         "predicted_final_evaluation_seconds": 1_500,
         "completed_baseline_examples": 8,
+        "expected_baseline_examples": 8,
+        "minimum_completed_baseline_examples": 8,
         "per_level_checkpoint_rates": {"0": 1.0},
         "action_protocol_validity": 1.0,
         "schema_valid_action_rate": 1.0,
@@ -303,4 +315,83 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
     assert run_screen_proof_assertion(payload).returncode == 0
     payload["ineligibility_reasons"] = ["pilot_runtime_feasible"]
     payload["ineligible_reasons"] = ["pilot_runtime_feasible"]
+    assert run_screen_proof_assertion(payload).returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("training_started", True),
+        ("persistent_policy_updates", 1),
+        ("policy_mutation_enabled", True),
+        ("test_examples_accessed", 1),
+        ("branch_groups", 7),
+        ("completed_baseline_examples", 7),
+        ("expected_baseline_examples", 7),
+        ("minimum_completed_baseline_examples", 7),
+    ],
+)
+def test_screen_proof_rejects_non_isolated_or_incomplete_result(
+    field: str,
+    invalid_value: object,
+) -> None:
+    manifest = load_manifest()
+    gate_results = {
+        gate_name: True for gate_name in manifest["authorization"]["required_gate_results"]
+    }
+    payload: dict[str, object] = {
+        "device": "cuda",
+        "workload": manifest["screen"]["workload"],
+        "workload_revision": manifest["screen"]["workload_revision"],
+        "profile_id": manifest["profile_id"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+        "optimization_seed": 137,
+        "source_contract_digest": "sha256:source",
+        "environment_revision": manifest["interface"]["environment_revision"],
+        "action_protocol_revision": manifest["interface"]["action_protocol_revision"],
+        "screen_levels": manifest["screen"]["admission_levels"],
+        "shared_prefix_checkpoint_strategy": manifest["screen"][
+            "shared_prefix_checkpoint_strategy"
+        ],
+        "screen_completed": True,
+        "eligible": True,
+        "training_started": False,
+        "persistent_policy_updates": 0,
+        "policy_mutation_enabled": False,
+        "policy_mutation_detected": False,
+        "optimizer_state_restored": True,
+        "test_split_accessed": False,
+        "test_examples_accessed": 0,
+        "branch_width": manifest["screen"]["branch_width"],
+        "branch_groups": manifest["screen"]["branch_groups"],
+        "maximum_input_tokens": 2_048,
+        "capacity_smoke_sequence_tokens": 2_240,
+        "gpu_id": "NVIDIA H100 80GB HBM3",
+        "gpu_total_memory_bytes": 80_000_000_000,
+        "peak_reserved_vram_fraction": 0.5,
+        "pinned_snapshot_digest": "sha256:snapshot",
+        "predicted_final_evaluation_seconds": 1_000,
+        "completed_baseline_examples": 8,
+        "expected_baseline_examples": 8,
+        "minimum_completed_baseline_examples": 8,
+        "per_level_checkpoint_rates": {"0": 1.0},
+        "action_protocol_validity": 1.0,
+        "schema_valid_action_rate": 1.0,
+        "semantic_acceptance_rate": 0.9,
+        "accepted_action_rate": 0.9,
+        "baseline_all_fault_sources_observed_rate": 1.0,
+        "branch_all_fault_sources_observed_rate": 1.0,
+        "sibling_all_fault_sources_observed_rate": 1.0,
+        "informative_groups": 2,
+        "solved_siblings": 2,
+        "failed_siblings": 2,
+        "gate_results": gate_results,
+        "ineligibility_reasons": [],
+        "ineligible_reasons": [],
+    }
+    assert run_screen_proof_assertion(payload).returncode == 0
+
+    payload[field] = invalid_value
+
     assert run_screen_proof_assertion(payload).returncode != 0
