@@ -246,9 +246,7 @@ def _run_launch(
         timeout=20,
     )
     commands = [
-        json.loads(line)
-        for line in command_log.read_text(encoding="utf-8").splitlines()
-        if line
+        json.loads(line) for line in command_log.read_text(encoding="utf-8").splitlines() if line
     ]
     return result, commands
 
@@ -259,6 +257,20 @@ def _assert_no_paid_create(commands: list[list[str]]) -> None:
         for command in commands
         if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
     ]
+
+
+def _model_cache_setup_from(commands: list[list[str]]) -> str:
+    paid_creates = [
+        command
+        for command in commands
+        if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
+    ]
+    assert len(paid_creates) == 1
+    create = paid_creates[0]
+    docker_args = create[create.index("--docker-args") + 1]
+    start = docker_args.index("test -d /workspace/equinox-state/python")
+    end = docker_args.index(" echo ", start)
+    return docker_args[start:end]
 
 
 def _shell_function(source: str, name: str) -> str:
@@ -412,6 +424,63 @@ def test_larger_model_launch_allows_only_the_pinned_storage_baseline(
     assert len(paid_creates) == 1
     assert "--network-volume-id" in paid_creates[0]
     assert VOLUME_ID in paid_creates[0]
+
+
+@pytest.mark.parametrize("prepared_layout", ("root", "hub"))
+def test_larger_model_launch_normalizes_both_verified_cache_layouts(
+    tmp_path: Path,
+    prepared_layout: str,
+) -> None:
+    result, commands = _run_launch(tmp_path, scenario={"spend": 0.005})
+
+    assert result.returncode != 0
+    setup = _model_cache_setup_from(commands)
+    state_root = tmp_path / "remote-state"
+    cache_root = state_root / "huggingface"
+    model_cache_name = "models--Qwen--Qwen2.5-Coder-7B-Instruct"
+    revision = load_manifest()["model"]["revision"]
+    root_model = cache_root / model_cache_name
+    hub_model = cache_root / "hub" / model_cache_name
+    root_snapshot = root_model / "snapshots" / revision
+    hub_snapshot = hub_model / "snapshots" / revision
+    (state_root / "python").mkdir(parents=True)
+    prepared_snapshot = root_snapshot if prepared_layout == "root" else hub_snapshot
+    prepared_snapshot.mkdir(parents=True)
+    local_setup = setup.replace("/workspace/equinox-state", str(state_root))
+
+    subprocess.run(["bash", "-c", f"set -e; {local_setup}"], check=True)
+
+    assert root_snapshot.samefile(hub_snapshot)
+    if prepared_layout == "root":
+        assert hub_model.is_symlink()
+        assert os.readlink(hub_model) == f"../{model_cache_name}"
+    else:
+        assert root_model.is_symlink()
+        assert os.readlink(root_model) == f"hub/{model_cache_name}"
+
+
+def test_larger_model_launch_rejects_divergent_cache_layouts(tmp_path: Path) -> None:
+    result, commands = _run_launch(tmp_path, scenario={"spend": 0.005})
+
+    assert result.returncode != 0
+    setup = _model_cache_setup_from(commands)
+    state_root = tmp_path / "remote-state"
+    cache_root = state_root / "huggingface"
+    model_cache_name = "models--Qwen--Qwen2.5-Coder-7B-Instruct"
+    revision = load_manifest()["model"]["revision"]
+    (state_root / "python").mkdir(parents=True)
+    (cache_root / model_cache_name / "snapshots" / revision).mkdir(parents=True)
+    (cache_root / "hub" / model_cache_name / "snapshots" / revision).mkdir(parents=True)
+    local_setup = setup.replace("/workspace/equinox-state", str(state_root))
+
+    completed = subprocess.run(
+        ["bash", "-c", f"set -e; {local_setup}"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode != 0
 
 
 @pytest.mark.parametrize(
