@@ -247,7 +247,10 @@ export function ResearchRunPage() {
                       <StatusBadge
                         status={
                           eligibility.eligible === null
-                            ? "SCREENING"
+                            ? run.status === "SUCCEEDED" ||
+                              run.status === "FAILED"
+                              ? "INCOMPLETE"
+                              : "SCREENING"
                             : eligibility.eligible
                               ? "ELIGIBLE"
                               : "INELIGIBLE"
@@ -301,6 +304,9 @@ export function ResearchRunPage() {
                         <Link to={`/proofs/${run.proof_id}`}>
                           <MachineId value={run.proof_id} />
                         </Link>
+                      ) : run.status === "SUCCEEDED" ||
+                        run.status === "FAILED" ? (
+                        "Not produced"
                       ) : (
                         "Pending"
                       ),
@@ -319,6 +325,13 @@ export function ResearchRunPage() {
 
 function largerModelEligibility(run: ResearchComputeExecution) {
   const progress = run.progress;
+  const terminal = run.status === "SUCCEEDED" || run.status === "FAILED";
+  const missingRate =
+    run.status === "FAILED"
+      ? "Incomplete"
+      : terminal
+        ? "Unavailable"
+        : "Awaiting samples";
   const evidence =
     recordValue(progress.larger_model_eligibility) ??
     recordValue(progress.eligibility);
@@ -377,18 +390,23 @@ function largerModelEligibility(run: ResearchComputeExecution) {
         label: "Revision",
         value: revision ? (
           <MachineId value={revision} />
+        ) : terminal ? (
+          "Unavailable"
         ) : (
           "Awaiting model load"
         ),
       },
-      { label: "Profile", value: profile ?? "Awaiting screen" },
+      {
+        label: "Profile",
+        value: profile ?? (terminal ? "Unavailable" : "Awaiting screen"),
+      },
       {
         label: "Checkpoint admission",
-        value: percent(checkpointAdmission, "Awaiting samples"),
+        value: percent(checkpointAdmission, missingRate),
       },
       {
         label: "Informative branching",
-        value: percent(informativeBranching, "Awaiting samples"),
+        value: percent(informativeBranching, missingRate),
       },
       {
         label: "Peak GPU memory",
@@ -396,7 +414,9 @@ function largerModelEligibility(run: ResearchComputeExecution) {
           peakReservedVramFraction !== null
             ? `${percent(peakReservedVramFraction)} reserved`
             : peakGpuMemoryGb === null
-              ? "Awaiting model load"
+              ? terminal
+                ? "Unavailable"
+                : "Awaiting model load"
               : `${formatDecimal(peakGpuMemoryGb)} GB`,
       },
       {
@@ -409,10 +429,14 @@ function largerModelEligibility(run: ResearchComputeExecution) {
                 mutationEnabled === true
               ? "Detected"
               : mutationDetected === false
-                ? "None · verification pending"
+                ? `None · verification ${terminal ? "unavailable" : "pending"}`
                 : mutationEnabled === false
-                  ? "Disabled · verification pending"
-                  : "Verification pending",
+                  ? `Disabled · verification ${
+                      terminal ? "unavailable" : "pending"
+                    }`
+                  : terminal
+                    ? "Verification unavailable"
+                    : "Verification pending",
       },
     ],
   };

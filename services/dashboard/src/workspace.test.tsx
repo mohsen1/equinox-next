@@ -354,6 +354,74 @@ describe("Runs and Proofs workspaces", () => {
     },
   );
 
+  it("labels missing evidence as incomplete after an eligibility screen fails", async () => {
+    const failed = {
+      ...largerModelEligibilityExecution(false),
+      execution_id: "runpod-proof-larger-model-failed",
+      status: "FAILED",
+      progress: {
+        phase: "eligibility_branch_collection",
+        error:
+          "The completed eligibility screen did not expose its full terminal branch tree.",
+        larger_model_profile_id: "qwen2.5-coder-7b-runpod-h100@5",
+        policy_mutation_enabled: false,
+        branch_groups_completed: 7,
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response(failed)),
+    );
+    window.history.replaceState(
+      null,
+      "",
+      "/runs/research/runpod-proof-larger-model-failed",
+    );
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <BrowserRouter>
+          <Routes>
+            <Route
+              path="/runs/research/:executionId"
+              element={<ResearchRunPage />}
+            />
+          </Routes>
+        </BrowserRouter>,
+      );
+      await Promise.resolve();
+    });
+
+    const eligibilitySection = [...container.querySelectorAll(".section")].find(
+      (section) => section.querySelector("h2")?.textContent === "Eligibility",
+    );
+    const identitySection = [...container.querySelectorAll(".section")].find(
+      (section) => section.querySelector("h2")?.textContent === "Identity",
+    );
+
+    expect(eligibilitySection?.querySelector(".status")?.textContent).toBe(
+      "Incomplete",
+    );
+    expect(eligibilitySection?.textContent).toContain("RevisionUnavailable");
+    expect(eligibilitySection?.textContent).toContain(
+      "Checkpoint admissionIncomplete",
+    );
+    expect(eligibilitySection?.textContent).toContain(
+      "Informative branchingIncomplete",
+    );
+    expect(eligibilitySection?.textContent).toContain(
+      "Peak GPU memoryUnavailable",
+    );
+    expect(eligibilitySection?.textContent).toContain(
+      "Policy mutationDisabled · verification unavailable",
+    );
+    expect(identitySection?.textContent).toContain("ProofNot produced");
+    expect(container.textContent).not.toContain("Awaiting model load");
+    expect(container.textContent).not.toContain("Awaiting samples");
+    expect(container.textContent).not.toContain("ProofPending");
+  });
+
   it("links each proof row to focused proof evidence", async () => {
     vi.stubGlobal(
       "fetch",
