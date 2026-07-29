@@ -1,13 +1,22 @@
 import { useState, type PropsWithChildren, type ReactNode } from "react";
+import {
+  Boxes,
+  FlaskConical,
+  LayoutDashboard,
+  Orbit,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
 import { artifactUrl } from "./api";
 import { Link, NavLink, useLocation } from "./router";
 import type { ArtifactRef } from "./types";
 
 const NAV_ITEMS = [
-  { to: "/runs", label: "Runs", glyph: "⌁" },
-  { to: "/environments", label: "Environments", glyph: "◇" },
-  { to: "/proofs", label: "Proofs", glyph: "⌗" },
-];
+  { to: "/", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/runs", label: "Runs", icon: FlaskConical },
+  { to: "/environments", label: "Environments", icon: Boxes },
+  { to: "/proofs", label: "Proofs", icon: ShieldCheck },
+] satisfies Array<{ to: string; label: string; icon: LucideIcon }>;
 
 export function AppShell({ children }: PropsWithChildren) {
   const location = useLocation();
@@ -17,9 +26,9 @@ export function AppShell({ children }: PropsWithChildren) {
         Skip to content
       </a>
       <aside className="rail" aria-label="Primary navigation">
-        <NavLink className="brand" to="/runs" aria-label="Equinox Next runs">
+        <NavLink className="brand" to="/" aria-label="Equinox Next dashboard">
           <span className="brand-mark" aria-hidden="true">
-            E
+            <Orbit />
           </span>
           <span>
             Equinox <strong>Next</strong>
@@ -28,13 +37,16 @@ export function AppShell({ children }: PropsWithChildren) {
         <nav>
           {NAV_ITEMS.map((item) => {
             const isActive =
-              item.to === "/runs"
-                ? location.pathname === "/runs" ||
-                  location.pathname.startsWith("/studies/") ||
-                  (location.pathname.startsWith("/runs/") &&
-                    location.pathname !== "/runs/new")
-                : location.pathname === item.to ||
-                  location.pathname.startsWith(`${item.to}/`);
+              item.to === "/"
+                ? location.pathname === "/" ||
+                  location.pathname === "/dashboard"
+                : item.to === "/runs"
+                  ? location.pathname === "/runs" ||
+                    location.pathname.startsWith("/studies/") ||
+                    (location.pathname.startsWith("/runs/") &&
+                      location.pathname !== "/runs/new")
+                  : location.pathname === item.to ||
+                    location.pathname.startsWith(`${item.to}/`);
             return (
               <Link
                 key={item.to}
@@ -42,7 +54,9 @@ export function AppShell({ children }: PropsWithChildren) {
                 aria-current={isActive ? "page" : undefined}
                 className={isActive ? "nav-item active" : "nav-item"}
               >
-                <span aria-hidden="true">{item.glyph}</span>
+                <span aria-hidden="true">
+                  <item.icon />
+                </span>
                 {item.label}
               </Link>
             );
@@ -100,13 +114,18 @@ function statusTone(status: string): string {
       "MATCHED",
       "USED_IN_TRAINING",
       "MATERIALIZED",
+      "PASS",
     ].includes(status)
   )
     return "positive";
   if (
-    ["FAILED", "INTEGRITY_VIOLATION", "EXCLUDED", "CANDIDATE_FAILED"].includes(
-      status,
-    )
+    [
+      "FAILED",
+      "FAIL",
+      "INTEGRITY_VIOLATION",
+      "EXCLUDED",
+      "CANDIDATE_FAILED",
+    ].includes(status)
   )
     return "negative";
   if (

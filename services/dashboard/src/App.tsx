@@ -5,6 +5,7 @@
  * FIRST VIEWPORT: Compact rail, decision-led route header, and a dense evidence workspace.
  * FORM: Operate surface; shared-prefix/four-lane composition selected from study B, with A's inspector.
  */
+import { lazy, Suspense } from "react";
 import { AppShell } from "./components";
 import {
   IterationPage,
@@ -20,11 +21,33 @@ import { EnvironmentsPage } from "./pages/environments";
 import { ProofDetailPage, ProofsPage } from "./pages/proofs";
 import { Navigate, Route, Routes } from "./router";
 
+const DashboardPage = lazy(() => import("./pages/dashboard"));
+
 export function App() {
   return (
     <AppShell>
       <Routes>
-        <Route path="/" element={<Navigate to="/runs" replace />} />
+        <Route
+          path="/"
+          element={
+            <Suspense
+              fallback={
+                <div
+                  className="dashboard-route-loading"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="loading-line" />
+                  <span className="loading-line short" />
+                  <span>Loading research dashboard…</span>
+                </div>
+              }
+            >
+              <DashboardPage />
+            </Suspense>
+          }
+        />
+        <Route path="/dashboard" element={<Navigate to="/" replace />} />
         <Route path="/runs" element={<RunsPage />} />
         <Route path="/runs/new" element={<NewRunPage />} />
         <Route path="/runs/:runId" element={<RunDetailPage />} />
@@ -42,7 +65,7 @@ export function App() {
         <Route path="/environments" element={<EnvironmentsPage />} />
         <Route path="/proofs" element={<ProofsPage />} />
         <Route path="/proofs/:proofBundleId" element={<ProofDetailPage />} />
-        <Route path="*" element={<Navigate to="/runs" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>
   );
