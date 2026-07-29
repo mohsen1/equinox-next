@@ -134,6 +134,7 @@ describe("Dashboard", () => {
                 progress: {},
                 proof_id: null,
                 receipt_digest: null,
+                failure_receipt_digest: null,
                 started_at: updatedAt,
                 updated_at: updatedAt,
                 completed_at: null,

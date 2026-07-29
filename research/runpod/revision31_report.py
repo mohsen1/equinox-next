@@ -101,7 +101,7 @@ def external_adapters_by_condition(
 def receipt_by_execution(receipt_directory: Path) -> dict[str, dict[str, Any]]:
     receipts = {}
     for path in sorted(receipt_directory.glob("runpod-proof-*.json")):
-        if path.name.endswith(".result.json"):
+        if path.name.endswith((".result.json", ".failure.json")):
             continue
         receipts[path.stem] = read_json(path)
     return receipts

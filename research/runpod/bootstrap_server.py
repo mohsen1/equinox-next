@@ -20,6 +20,20 @@ from pathlib import Path
 MAXIMUM_BUNDLE_BYTES = 2 * 1024 * 1024
 BUNDLE_VOLUME_ROOT = Path("/workspace/equinox-state/workload-bundles")
 COMMON_BUNDLE_FILES = frozenset({"remote_runner.sh", "result_server.py"})
+LARGER_MODEL_BUNDLE_SUPPORT_FILES = frozenset(
+    {
+        "larger-model-eligibility.json",
+        "larger_model_gate.py",
+        "repository_repair_env.py",
+        "repository_repair_env_v31.py",
+        "repository_repair_env_v32.py",
+        "repository_repair_env_v33.py",
+        "repository_repair_large_model_eligibility.py",
+        "repository_repair_large_model_pilot.py",
+        "repository_repair_large_model_study.py",
+        "repository_repair_large_model_trainer.py",
+    }
+)
 WORKLOAD_SUPPORT_FILES = {
     "branching_sequence_ladder.py": frozenset(),
     "repository_repair_rl.py": frozenset({"repository_repair_env.py"}),
@@ -41,32 +55,8 @@ WORKLOAD_SUPPORT_FILES = {
             "repository_repair_study.py",
         }
     ),
-    "repository_repair_large_model_eligibility.py": frozenset(
-        {
-            "larger-model-eligibility.json",
-            "larger_model_gate.py",
-            "repository_repair_env.py",
-            "repository_repair_env_v31.py",
-            "repository_repair_env_v32.py",
-            "repository_repair_env_v33.py",
-            "repository_repair_large_model_pilot.py",
-            "repository_repair_rl.py",
-            "repository_repair_study.py",
-        }
-    ),
-    "repository_repair_large_model_pilot.py": frozenset(
-        {
-            "larger-model-eligibility.json",
-            "larger_model_gate.py",
-            "repository_repair_env.py",
-            "repository_repair_env_v31.py",
-            "repository_repair_env_v32.py",
-            "repository_repair_env_v33.py",
-            "repository_repair_large_model_eligibility.py",
-            "repository_repair_rl.py",
-            "repository_repair_study.py",
-        }
-    ),
+    "repository_repair_large_model_eligibility.py": LARGER_MODEL_BUNDLE_SUPPORT_FILES,
+    "repository_repair_large_model_pilot.py": LARGER_MODEL_BUNDLE_SUPPORT_FILES,
     "research/runpod/revision30_external_eval.py": frozenset(
         {
             "external_eval_remote_runner.sh",

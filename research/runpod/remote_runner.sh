@@ -157,6 +157,11 @@ payload = {
     "attempt": int(attempt),
     "error": error_code or None,
 }
+if error_code:
+    payload["remote_error"] = {
+        "code": error_code,
+        "message": message,
+    }
 bundle_digest = os.environ.get("EQUINOX_BUNDLE_SHA256", "")
 if bundle_digest:
     try:
@@ -187,15 +192,11 @@ if preserve_context == "true" and os.path.isfile(live_path):
     except (OSError, ValueError):
         previous = {}
     if isinstance(previous, dict):
-        for key in (
-            "update",
-            "current_level",
-            "maximum_level",
-            "maximum_updates",
-            "elapsed_seconds",
-        ):
-            if key in previous:
-                payload[key] = previous[key]
+        payload = {**previous, **payload}
+if phase != "failed":
+    payload.pop("error", None)
+    payload.pop("remote_error", None)
+    payload.pop("operator_error", None)
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
     handle.write("\n")
@@ -211,6 +212,83 @@ PY
     printf '%s\n' "Structured progress publication failed." >>"$error_path"
     printf '%s\n' 70 >"$exit_code_path"
     serve_transport_failure_and_exit 70
+  fi
+}
+
+structure_remote_failure() {
+  local failure_exit_code="$1"
+  if ! "${EQUINOX_DURABILITY_PYTHON:-python3}" - \
+    "$progress_path" \
+    "$failure_exit_code" <<'PY'
+import json
+import os
+import re
+import sys
+
+path, exit_code = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    payload = json.load(handle)
+if not isinstance(payload, dict) or payload.get("phase") != "failed":
+    raise SystemExit(0)
+remote_error = payload.get("remote_error")
+valid_remote_error = (
+    isinstance(remote_error, dict)
+    and isinstance(remote_error.get("code"), str)
+    and re.fullmatch(r"[A-Z][A-Z0-9_]*", remote_error["code"])
+    and isinstance(remote_error.get("message"), str)
+    and bool(remote_error["message"])
+)
+if not valid_remote_error:
+    malformed_remote_message = (
+        remote_error.get("message")
+        if isinstance(remote_error, dict)
+        and isinstance(remote_error.get("message"), str)
+        and remote_error["message"]
+        else None
+    )
+    raw_error = payload.get("error")
+    payload_message = payload.get("message")
+    if not isinstance(payload_message, str) or not payload_message:
+        payload_message = "The remote workload failed."
+    stable_code = (
+        raw_error
+        if isinstance(raw_error, str)
+        and re.fullmatch(r"[A-Z][A-Z0-9_]*", raw_error)
+        else "REMOTE_WORKLOAD_FAILURE"
+    )
+    if stable_code == raw_error:
+        exact_message = payload_message
+    else:
+        exact_message = (
+            raw_error
+            if isinstance(raw_error, str) and raw_error
+            else malformed_remote_message
+            or payload_message
+        )
+    remote_error = {
+        "code": stable_code,
+        "message": exact_message,
+    }
+else:
+    remote_error = dict(remote_error)
+remote_error["exit_code"] = int(exit_code)
+payload["remote_error"] = remote_error
+pending_path = f"{path}.pending"
+with open(pending_path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+    handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+os.replace(pending_path, path)
+directory_fd = os.open(os.path.dirname(path), os.O_RDONLY)
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
+  then
+    printf '%s\n' "Structured remote failure enrichment failed." >>"$error_path"
+    return 1
   fi
 }
 
@@ -443,7 +521,9 @@ write_recovered_result_progress() {
     "$progress_schema_version" \
     "$phase" \
     "$recovery_message" \
-    "$recovery_attempt"
+    "$recovery_attempt" \
+    "" \
+    "true"
 }
 
 pending_result_completed=false
@@ -510,7 +590,9 @@ if [[ ! -f "$result_path" && "$pending_result_completed" != "true" ]]; then
       "$progress_schema_version" \
       "$progress_phase" \
       "$progress_message" \
-      "$next_attempt"
+      "$next_attempt" \
+      "" \
+      "true"
   else
     failed_attempt="$recorded_attempts"
     if ((failed_attempt < 1)); then
@@ -581,7 +663,8 @@ PY
       "failed" \
       "$terminal_message" \
       "$workload_attempt" \
-      "$terminal_error"
+      "$terminal_error" \
+      "true"
     break
   fi
   recorded_attempts="$workload_attempt"
@@ -654,7 +737,9 @@ PY
     "$progress_schema_version" \
     "resuming" \
     "Retrying from the latest checkpoint after a workload failure." \
-    "$((workload_attempt + 1))"
+    "$((workload_attempt + 1))" \
+    "" \
+    "true"
   terminal_error=""
   terminal_message=""
 done
@@ -679,7 +764,8 @@ if [[ "$workload_exit_code" != "0" && ! -f "$result_path" ]] &&
     "failed" \
     "$terminal_message" \
     "$recorded_attempts" \
-    "$terminal_error"
+    "$terminal_error" \
+    "true"
 fi
 
 if [[ "$workload_exit_code" == "0" ]] &&
@@ -702,7 +788,8 @@ if [[ "$workload_exit_code" == "0" ]] &&
         "failed" \
         "$terminal_message" \
         "$recorded_attempts" \
-        "$terminal_error"
+        "$terminal_error" \
+        "true"
     fi
   fi
   if [[ "$workload_exit_code" == "0" && ! -f "$result_path" ]]; then
@@ -715,7 +802,8 @@ if [[ "$workload_exit_code" == "0" ]] &&
         "failed" \
         "$terminal_message" \
         "$recorded_attempts" \
-        "$terminal_error"
+        "$terminal_error" \
+        "true"
     fi
   fi
   if [[ "$workload_exit_code" == "0" && -d "$adapter_path/checkpoints" ]]; then
@@ -726,6 +814,9 @@ if [[ "$workload_exit_code" == "0" ]] &&
       "complete" \
       "Recovered result and artifacts published."
   fi
+fi
+if [[ "$workload_exit_code" != "0" && -f "$progress_path" ]]; then
+  structure_remote_failure "$workload_exit_code" || true
 fi
 printf '%s\n' "$workload_exit_code" >"$exit_code_path"
 

@@ -103,7 +103,16 @@ def test_screen_and_pilot_share_one_normalized_deterministic_bundle(
     ]
     with tarfile.open(fileobj=io.BytesIO(first), mode="r:xz") as archive:
         members = archive.getmembers()
-    assert [member.name for member in members] == list(canonical_bundle_files())
+    member_names = [member.name for member in members]
+    assert member_names == list(canonical_bundle_files())
+    assert {
+        "repository_repair_large_model_study.py",
+        "repository_repair_large_model_trainer.py",
+    } <= set(member_names)
+    assert {
+        "repository_repair_rl.py",
+        "repository_repair_study.py",
+    }.isdisjoint(member_names)
     assert all(member.uid == 0 and member.gid == 0 and member.mtime == 0 for member in members)
     assert all(member.mode in {0o644, 0o755} for member in members)
 

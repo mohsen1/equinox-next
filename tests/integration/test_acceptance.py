@@ -801,7 +801,7 @@ def test_migrations_are_recorded_in_both_authority_schemas() -> None:
             FROM schema_migrations ORDER BY version
             """
         ).fetchall()
-        assert [row[0] for row in science] == list(range(1, 12))
+        assert [row[0] for row in science] == list(range(1, 13))
         assert all(row[1] and row[2].startswith("sha256:") and not row[3] for row in science)
     with psycopg.connect(OPS_DSN) as conn:
         operations = conn.execute(

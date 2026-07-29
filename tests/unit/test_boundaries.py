@@ -2,10 +2,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 import services.orchestrator.app.main as orchestrator_main
 from services.orchestrator.app.main import (
+    RECOVERABLE_PROOF_INGESTION_ERROR,
     ResearchComputeExecutionRequest,
     ResearchComputeProofRequest,
     estimated_compute_cost,
@@ -87,6 +89,148 @@ def test_research_execution_keeps_static_k_and_adaptive_complexity() -> None:
         )
 
 
+def test_operational_receipt_digest_is_valid_only_for_a_failed_execution() -> None:
+    request = ResearchComputeExecutionRequest(
+        name="Failed model repair observer",
+        workload_id="model-repair-group-policy-optimization",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="FAILED",
+        provider_handle="runpod://pods/failed-pod",
+        progress={"phase": "failed"},
+        failure_receipt_digest="sha256:" + "a" * 64,
+        started_at="2026-07-29T16:00:00Z",
+        completed_at="2026-07-29T16:20:00Z",
+        teardown_confirmed=True,
+    )
+
+    assert request.failure_receipt_digest == "sha256:" + "a" * 64
+    with pytest.raises(ValidationError):
+        ResearchComputeExecutionRequest(
+            **{
+                **request.model_dump(),
+                "status": "SUCCEEDED",
+            }
+        )
+
+
+def test_failed_execution_attaches_one_operational_receipt_idempotently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    request = ResearchComputeExecutionRequest(
+        name="Failed model repair observer",
+        workload_id="model-repair-group-policy-optimization",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="FAILED",
+        provider_handle="runpod://pods/failed-pod",
+        resource_profile={"gpu_id": "NVIDIA H100 80GB HBM3"},
+        progress={
+            "phase": "failed",
+            "remote_error": {
+                "code": "REMOTE_WORKLOAD_FAILURE",
+                "message": "RuntimeError: retained policy update missing",
+            },
+            "operator_error": {
+                "code": "RUNPOD_OPERATOR_FAILURE",
+                "message": "The remote workload failed with exit code 1.",
+            },
+        },
+        failure_receipt_digest=digest,
+        started_at="2026-07-29T16:00:00Z",
+        completed_at="2026-07-29T16:20:00Z",
+        teardown_confirmed=True,
+    )
+    existing = {
+        **request.model_dump(),
+        "execution_id": "runpod-proof-failed",
+        "proof_id": None,
+        "failure_receipt_digest": None,
+    }
+    queries: list[str] = []
+    parameters: list[tuple[object, ...]] = []
+    selected_rows: list[dict[str, object]] = [existing]
+    stored_digest = [digest]
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            query: str,
+            params: tuple[object, ...] = (),
+        ) -> Result:
+            queries.append(query)
+            parameters.append(params)
+            if "SELECT *" in query:
+                return Result(selected_rows)
+            return Result([{**existing, "failure_receipt_digest": stored_digest[0]}])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    attached = orchestrator_main.update_research_compute_execution(
+        "runpod-proof-failed",
+        request,
+    )
+
+    assert attached["proof_id"] is None
+    assert attached["failure_receipt_digest"] == digest
+    assert "FOR UPDATE" in queries[0]
+    assert "COALESCE" in queries[-1]
+    assert parameters[-1][-1] == digest
+    assert all("research_compute_proofs" not in query for query in queries)
+
+    existing["failure_receipt_digest"] = digest
+    queries.clear()
+    replayed = orchestrator_main.update_research_compute_execution(
+        "runpod-proof-failed",
+        request,
+    )
+    assert replayed is existing
+    assert len(queries) == 1
+
+    for replay_digest in (None, "sha256:" + "b" * 64):
+        conflicting = ResearchComputeExecutionRequest(
+            **{
+                **request.model_dump(),
+                "failure_receipt_digest": replay_digest,
+            }
+        )
+        with pytest.raises(HTTPException) as error:
+            orchestrator_main.update_research_compute_execution(
+                "runpod-proof-failed",
+                conflicting,
+            )
+        assert error.value.status_code == 409
+        assert error.value.detail == {"code": "RESEARCH_EXECUTION_RECEIPT_CONFLICT"}
+
+    existing["failure_receipt_digest"] = None
+    stored_digest[0] = "sha256:" + "b" * 64
+    with pytest.raises(HTTPException) as losing_writer:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-failed",
+            request,
+        )
+    assert losing_writer.value.detail == {"code": "RESEARCH_EXECUTION_RECEIPT_CONFLICT"}
+
+    selected_rows.clear()
+    with pytest.raises(HTTPException) as unregistered:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-failed",
+            request,
+        )
+    assert unregistered.value.detail == {"code": "RESEARCH_EXECUTION_RECEIPT_REQUIRES_REGISTRATION"}
+
+
 def test_proof_receipt_recovers_only_the_exact_post_contract_failure() -> None:
     request = ResearchComputeProofRequest(
         provider_name="RunPod",
@@ -122,6 +266,23 @@ def test_proof_receipt_recovers_only_the_exact_post_contract_failure() -> None:
         research_proof_can_recover_execution(
             {
                 **execution,
+                "progress": {
+                    "operator_error": {
+                        "code": "RUNPOD_OPERATOR_FAILURE",
+                        "message": (
+                            "The remote result did not satisfy the declared proof contract."
+                        ),
+                    }
+                },
+            },
+            request,
+        )
+        is True
+    )
+    assert (
+        research_proof_can_recover_execution(
+            {
+                **execution,
                 "progress": {"error": "A verified local proof receipt is pending ingestion."},
             },
             request,
@@ -145,6 +306,96 @@ def test_proof_receipt_recovers_only_the_exact_post_contract_failure() -> None:
         )
         is False
     )
+
+
+def test_scientific_recovery_locks_execution_and_preserves_failure_receipt_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure_digest = "sha256:" + "f" * 64
+    request = ResearchComputeProofRequest(
+        provider_name="RunPod",
+        provider_handle="runpod://pods/recovered-lineage",
+        provider_cli_version="2.7.2",
+        resource_profile={"gpu_id": "NVIDIA H100 80GB HBM3"},
+        workload={
+            "id": "repository-repair-restored-continuation-post-training",
+            "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        },
+        result={
+            "workload": "repository-repair-restored-continuation-post-training",
+            "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+            "reward_gain": 0.125,
+        },
+        started_at="2026-07-29T16:00:00Z",
+        completed_at="2026-07-29T16:20:00Z",
+        teardown_confirmed=True,
+    )
+    execution = {
+        "execution_id": "runpod-proof-recovered-lineage",
+        "status": "FAILED",
+        "provider_handle": request.provider_handle,
+        "workload_id": request.workload["id"],
+        "model_id": request.workload["model_id"],
+        "started_at": request.started_at,
+        "teardown_confirmed": True,
+        "proof_id": None,
+        "receipt_digest": None,
+        "failure_receipt_digest": failure_digest,
+        "progress": {
+            "operator_error": {
+                "code": "RUNPOD_OPERATOR_FAILURE",
+                "message": RECOVERABLE_PROOF_INGESTION_ERROR,
+            }
+        },
+    }
+    queries: list[str] = []
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            queries.append(query)
+            if "SELECT *" in query and "provider_handle" in query:
+                return Result([execution])
+            if "SELECT proof_id" in query:
+                return Result([])
+            return Result([])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    result = orchestrator_main.ingest_research_compute_proof(request)
+
+    assert result["proof_id"].startswith("research_proof_")
+    execution_select = next(
+        query for query in queries if "SELECT *" in query and "provider_handle" in query
+    )
+    assert "FOR UPDATE" in execution_select
+    execution_update = next(
+        query for query in queries if "UPDATE research_compute_executions SET" in query
+    )
+    assert "receipt_digest = %s" in execution_update
+    assert "failure_receipt_digest" not in execution_update
+
+
+def test_operational_failure_receipt_migration_preserves_scientific_lineage() -> None:
+    migration = Path(
+        "services/orchestrator/migrations/012_operational_failure_receipts.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "ADD COLUMN IF NOT EXISTS failure_receipt_digest" in migration
+    assert "SET failure_receipt_digest = receipt_digest" in migration
+    assert "status = 'FAILED'" in migration
+    assert "proof_id IS NULL" in migration
 
 
 def test_estimated_compute_cost_uses_recorded_rate_and_elapsed_runtime() -> None:
@@ -227,6 +478,7 @@ def test_proof_list_and_detail_contracts_keep_summary_focused() -> None:
             "maximum_complexity_level": 3,
         },
         "receipt_digest": "sha256:receipt",
+        "failure_receipt_digest": "sha256:" + "f" * 64,
         "started_at": "2026-07-26T21:00:00Z",
         "completed_at": "2026-07-26T21:15:00Z",
         "teardown_confirmed": True,
@@ -245,6 +497,7 @@ def test_proof_list_and_detail_contracts_keep_summary_focused() -> None:
     assert detail["workload"]["model_id"].endswith("1.5B-Instruct")
     assert detail["curriculum"]["reached_level"] == 2
     assert detail["evidence"]["receipt_digest"] == "sha256:receipt"
+    assert detail["evidence"]["failure_receipt_digest"] == "sha256:" + "f" * 64
 
 
 def test_partial_proof_suppresses_headline_learning_metrics() -> None:
@@ -291,6 +544,7 @@ def test_proof_api_list_and_detail_use_dedicated_contracts(
         "workload": {"id": "repository-repair"},
         "result": {"elapsed_seconds": 900, "reward_gain": 1.0},
         "receipt_digest": "sha256:api",
+        "failure_receipt_digest": "sha256:" + "f" * 64,
         "started_at": "2026-07-26T21:00:00Z",
         "completed_at": "2026-07-26T21:15:00Z",
         "teardown_confirmed": True,
@@ -300,12 +554,15 @@ def test_proof_api_list_and_detail_use_dedicated_contracts(
         def fetchone(self) -> dict[str, object] | None:
             return self[0] if self else None
 
+    proof_queries: list[str] = []
+
     class FakeConnection:
         def execute(
             self,
-            _query: str,
+            query: str,
             _params: tuple[object, ...] = (),
         ) -> Result:
+            proof_queries.append(query)
             return Result([item])
 
     @contextmanager
@@ -321,6 +578,9 @@ def test_proof_api_list_and_detail_use_dedicated_contracts(
     assert "provider" not in proof_list["items"][0]
     assert proof_detail["provider"]["handle"] == "runpod://pods/api"
     assert proof_detail["evidence"]["receipt_digest"] == "sha256:api"
+    assert proof_detail["evidence"]["failure_receipt_digest"] == ("sha256:" + "f" * 64)
+    assert "failure_receipt_digest" not in proof_queries[0]
+    assert "e.failure_receipt_digest" in proof_queries[1]
 
 
 def test_research_result_progress_separates_execution_from_hypothesis() -> None:
@@ -338,6 +598,12 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
             "post_training_completed": True,
             "informative_group_rate": 0.2,
             "policy_update_count": 10,
+            "attempted_policy_update_count": 10,
+            "effective_policy_update_count": 8,
+            "retained_policy_update_count": 7,
+            "retained_checkpoint_update": 40,
+            "retention_rollback_count": 2,
+            "retention_transaction_revision": "adapter-optimizer-policy-lineage@1",
             "history": [
                 {
                     "update": 5,
@@ -345,6 +611,12 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
                     "examples": 8,
                     "exact_successes": 5,
                     "exact_rate": 0.625,
+                    "checkpoint_candidate_retained": False,
+                    "retention_transaction_disposition": "rollback",
+                    "attempted_policy_update_count": 10,
+                    "effective_policy_update_count": 8,
+                    "retained_policy_update_count": 7,
+                    "retention_rollback_count": 2,
                     "task_outcomes": [{"task_id": "hidden"}],
                 }
             ],
@@ -415,6 +687,12 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
     assert progress["adapter_persisted"] is True
     assert progress["post_training_completed"] is True
     assert progress["informative_group_rate"] == 0.2
+    assert progress["attempted_policy_update_count"] == 10
+    assert progress["effective_policy_update_count"] == 8
+    assert progress["retained_policy_update_count"] == 7
+    assert progress["retained_checkpoint_update"] == 40
+    assert progress["retention_rollback_count"] == 2
+    assert progress["retention_transaction_revision"] == "adapter-optimizer-policy-lineage@1"
     assert progress["claim_strength"] == "INCOMPLETE_FINAL_EVALUATION"
     assert progress["seed_count"] == 1
     assert progress["exact_rate_95ci"] == [0.1377, 0.6094]
@@ -450,6 +728,12 @@ def test_research_result_progress_separates_execution_from_hypothesis() -> None:
             "examples": 8,
             "exact_successes": 5,
             "exact_rate": 0.625,
+            "checkpoint_candidate_retained": False,
+            "retention_transaction_disposition": "rollback",
+            "attempted_policy_update_count": 10,
+            "effective_policy_update_count": 8,
+            "retained_policy_update_count": 7,
+            "retention_rollback_count": 2,
         }
     ]
     assert "partial evidence" in progress["message"]
@@ -602,9 +886,19 @@ def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
                 },
                 "invalid",
             ],
+            "latest_branch_snapshot": {
+                "snapshot_id": "update-40-must-not-replace-full-history",
+                "siblings": [{"index": index} for index in range(4)],
+            },
             "initial_by_level": {"0": {"exact_rate": 0.4}},
             "final_by_level": {"0": {"exact_rate": 0.9}},
             "policy_update_count": 7,
+            "attempted_policy_update_count": 7,
+            "effective_policy_update_count": 5,
+            "retained_policy_update_count": 4,
+            "retained_checkpoint_update": 40,
+            "retention_rollback_count": 2,
+            "retention_transaction_revision": "adapter-optimizer-policy-lineage@1",
         }
     )
 
@@ -621,6 +915,12 @@ def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
         }
     ]
     assert trajectory["policy_update_count"] == 7
+    assert trajectory["attempted_policy_update_count"] == 7
+    assert trajectory["effective_policy_update_count"] == 5
+    assert trajectory["retained_policy_update_count"] == 4
+    assert trajectory["retained_checkpoint_update"] == 40
+    assert trajectory["retention_rollback_count"] == 2
+    assert trajectory["retention_transaction_revision"] == "adapter-optimizer-policy-lineage@1"
 
 
 def test_research_trajectory_projects_live_multi_step_branch_lineage() -> None:

@@ -124,10 +124,25 @@ def test_large_model_bundle_requires_the_gate_and_versioned_environment(
         "repository_repair_env_v33.py",
         "repository_repair_large_model_eligibility.py",
         "repository_repair_large_model_pilot.py",
-        "repository_repair_rl.py",
-        "repository_repair_study.py",
+        "repository_repair_large_model_study.py",
+        "repository_repair_large_model_trainer.py",
         "result_server.py",
     }
+
+
+def test_large_model_screen_and_pilot_share_the_transactional_support_set() -> None:
+    screen_files = expected_bundle_files("repository_repair_large_model_eligibility.py")
+    pilot_files = expected_bundle_files("repository_repair_large_model_pilot.py")
+
+    assert screen_files == pilot_files
+    assert {
+        "repository_repair_large_model_study.py",
+        "repository_repair_large_model_trainer.py",
+    } <= screen_files
+    assert {
+        "repository_repair_rl.py",
+        "repository_repair_study.py",
+    }.isdisjoint(screen_files)
 
 
 def test_external_evaluation_bundle_preserves_the_frozen_package_layout(

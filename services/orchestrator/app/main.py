@@ -144,9 +144,19 @@ class ResearchComputeExecutionRequest(StrictModel):
     )
     resource_profile: dict[str, Any] = Field(default_factory=dict)
     progress: dict[str, Any] = Field(default_factory=dict)
+    failure_receipt_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
     started_at: datetime
     completed_at: datetime | None = None
     teardown_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def validate_operational_failure_receipt(self) -> ResearchComputeExecutionRequest:
+        if self.failure_receipt_digest is not None and self.status != "FAILED":
+            raise ValueError("Operational failure receipts may attach only to failed executions")
+        return self
 
 
 RECOVERABLE_PROOF_CONTRACT_ERROR = "The remote result did not satisfy the declared proof contract."
@@ -158,6 +168,14 @@ def research_proof_can_recover_execution(
     request: ResearchComputeProofRequest,
 ) -> bool:
     progress = execution.get("progress")
+    operator_error = progress.get("operator_error") if isinstance(progress, dict) else None
+    failure_message = (
+        operator_error.get("message")
+        if isinstance(operator_error, dict)
+        else progress.get("error")
+        if isinstance(progress, dict)
+        else None
+    )
     workload_id = request.workload.get("id")
     result_workload_id = request.result.get("workload")
     receipt_model_id = request.workload.get("model_id") or request.result.get("model_id")
@@ -165,7 +183,7 @@ def research_proof_can_recover_execution(
         execution.get("status") == "FAILED"
         and execution.get("teardown_confirmed") is True
         and isinstance(progress, dict)
-        and progress.get("error")
+        and failure_message
         in {
             RECOVERABLE_PROOF_CONTRACT_ERROR,
             RECOVERABLE_PROOF_INGESTION_ERROR,
@@ -206,6 +224,12 @@ def lightweight_research_validation_history(value: Any) -> list[dict[str, Any]] 
         "fixed_guard_levels",
         "fixed_guard_paired_change",
         "retention_guard_passed",
+        "checkpoint_candidate_retained",
+        "retention_transaction_disposition",
+        "attempted_policy_update_count",
+        "effective_policy_update_count",
+        "retained_policy_update_count",
+        "retention_rollback_count",
         "elapsed_seconds",
         "validation_elapsed_seconds",
         "final_evaluation_reserve_seconds",
@@ -334,6 +358,12 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "post_training_completed": result.get("post_training_completed"),
         "informative_group_rate": result.get("informative_group_rate"),
         "policy_update_count": result.get("policy_update_count"),
+        "attempted_policy_update_count": result.get("attempted_policy_update_count"),
+        "effective_policy_update_count": result.get("effective_policy_update_count"),
+        "retained_policy_update_count": result.get("retained_policy_update_count"),
+        "retained_checkpoint_update": result.get("retained_checkpoint_update"),
+        "retention_rollback_count": result.get("retention_rollback_count"),
+        "retention_transaction_revision": result.get("retention_transaction_revision"),
         "optimizer_update_count": result.get("optimizer_update_count"),
         "pending_informative_group_count": result.get("pending_informative_group_count"),
         "pending_informative_group_ids": result.get("pending_informative_group_ids"),
@@ -466,6 +496,12 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "initial_by_level": initial_by_level if isinstance(initial_by_level, dict) else {},
         "final_by_level": final_by_level if isinstance(final_by_level, dict) else {},
         "policy_update_count": result.get("policy_update_count"),
+        "attempted_policy_update_count": result.get("attempted_policy_update_count"),
+        "effective_policy_update_count": result.get("effective_policy_update_count"),
+        "retained_policy_update_count": result.get("retained_policy_update_count"),
+        "retained_checkpoint_update": result.get("retained_checkpoint_update"),
+        "retention_rollback_count": result.get("retention_rollback_count"),
+        "retention_transaction_revision": result.get("retention_transaction_revision"),
         "optimizer_update_count": result.get("optimizer_update_count"),
         "frontier_probe_task_groups": result.get("frontier_probe_task_groups"),
         "pending_informative_group_count": result.get("pending_informative_group_count"),
@@ -626,6 +662,7 @@ def research_proof_response(
             },
             "evidence": {
                 "receipt_digest": item["receipt_digest"],
+                "failure_receipt_digest": item.get("failure_receipt_digest"),
                 "teardown_confirmed": item["teardown_confirmed"],
             },
         }
@@ -2336,9 +2373,15 @@ def update_research_compute_execution(
             SELECT *
             FROM research_compute_executions
             WHERE execution_id = %s
+            FOR UPDATE
             """,
             (execution_id,),
         ).fetchone()
+        if existing is None and request.failure_receipt_digest is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RESEARCH_EXECUTION_RECEIPT_REQUIRES_REGISTRATION"},
+            )
         if existing:
             immutable_conflict = (
                 existing["name"] != request.name
@@ -2359,6 +2402,25 @@ def update_research_compute_execution(
                     status_code=409,
                     detail={"code": "RESEARCH_EXECUTION_TERMINAL"},
                 )
+            if existing["failure_receipt_digest"] is not None:
+                if request.failure_receipt_digest != existing["failure_receipt_digest"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "RESEARCH_EXECUTION_RECEIPT_CONFLICT"},
+                    )
+                return existing
+            if request.failure_receipt_digest is not None and existing[
+                "failure_receipt_digest"
+            ] not in {None, request.failure_receipt_digest}:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_RECEIPT_CONFLICT"},
+                )
+            if request.failure_receipt_digest is not None and existing["proof_id"] is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_ALREADY_PROVEN"},
+                )
             if status_order[request.status] < status_order[existing["status"]]:
                 raise HTTPException(
                     status_code=409,
@@ -2371,9 +2433,9 @@ def update_research_compute_execution(
               execution_id, name, workload_id, model_id, branch_width,
               complexity_strategy, status, provider_name, provider_handle,
               resource_profile, progress, started_at, completed_at,
-              teardown_confirmed
+              teardown_confirmed, failure_receipt_digest
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (execution_id) DO UPDATE SET
               status = EXCLUDED.status,
@@ -2391,6 +2453,10 @@ def update_research_compute_execution(
               ),
               completed_at = EXCLUDED.completed_at,
               teardown_confirmed = EXCLUDED.teardown_confirmed,
+              failure_receipt_digest = COALESCE(
+                research_compute_executions.failure_receipt_digest,
+                EXCLUDED.failure_receipt_digest
+              ),
               updated_at = now()
             RETURNING *
             """,
@@ -2409,8 +2475,17 @@ def update_research_compute_execution(
                 request.started_at,
                 request.completed_at,
                 request.teardown_confirmed,
+                request.failure_receipt_digest,
             ),
         ).fetchone()
+        if (
+            request.failure_receipt_digest is not None
+            and row["failure_receipt_digest"] != request.failure_receipt_digest
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RESEARCH_EXECUTION_RECEIPT_CONFLICT"},
+            )
     return row
 
 
@@ -2484,7 +2559,11 @@ def get_research_compute_proof(proof_id: str) -> dict[str, Any]:
     with connection() as conn:
         item = conn.execute(
             """
-            SELECT p.*, e.execution_id, e.name AS execution_name
+            SELECT
+              p.*,
+              e.execution_id,
+              e.name AS execution_name,
+              e.failure_receipt_digest
             FROM research_compute_proofs p
             LEFT JOIN research_compute_executions e ON e.proof_id = p.proof_id
             WHERE p.proof_id = %s
@@ -2512,6 +2591,7 @@ def ingest_research_compute_proof(
             SELECT *
             FROM research_compute_executions
             WHERE provider_handle = %s
+            FOR UPDATE
             """,
             (request.provider_handle,),
         ).fetchone()
@@ -2538,7 +2618,12 @@ def ingest_research_compute_proof(
                 """
                 UPDATE research_compute_executions SET
                   status = 'SUCCEEDED',
-                  progress = (progress - 'error') || %s,
+                  progress = (
+                    progress
+                    - 'error'
+                    - 'remote_error'
+                    - 'operator_error'
+                  ) || %s,
                   proof_id = %s,
                   receipt_digest = %s,
                   completed_at = %s,
@@ -2589,7 +2674,12 @@ def ingest_research_compute_proof(
             """
             UPDATE research_compute_executions SET
               status = 'SUCCEEDED',
-              progress = (progress - 'error') || %s,
+              progress = (
+                progress
+                - 'error'
+                - 'remote_error'
+                - 'operator_error'
+              ) || %s,
               proof_id = %s,
               receipt_digest = %s,
               completed_at = %s,

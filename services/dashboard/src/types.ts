@@ -94,6 +94,12 @@ export interface ResearchComputeExecution {
     post_training_completed?: boolean;
     informative_group_rate?: number;
     policy_update_count?: number;
+    attempted_policy_update_count?: number;
+    effective_policy_update_count?: number;
+    retained_policy_update_count?: number;
+    retained_checkpoint_update?: number;
+    retention_rollback_count?: number;
+    retention_transaction_revision?: string;
     optimizer_update_count?: number;
     pending_informative_group_count?: number;
     pending_informative_group_ids?: string[];
@@ -146,6 +152,7 @@ export interface ResearchComputeExecution {
   };
   proof_id: string | null;
   receipt_digest: string | null;
+  failure_receipt_digest: string | null;
   started_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -290,6 +297,7 @@ export interface ResearchProofDetail extends ResearchProofSummary {
   };
   evidence: {
     receipt_digest: string;
+    failure_receipt_digest: string | null;
     teardown_confirmed: boolean;
   };
 }
@@ -356,6 +364,12 @@ export interface ResearchValidationSummary {
     mcnemar_exact_p_value: number;
   };
   retention_guard_passed?: boolean;
+  checkpoint_candidate_retained?: boolean;
+  retention_transaction_disposition?: "retain" | "provisional" | "rollback";
+  attempted_policy_update_count?: number;
+  effective_policy_update_count?: number;
+  retained_policy_update_count?: number;
+  retention_rollback_count?: number;
   elapsed_seconds?: number;
 }
 
@@ -367,6 +381,11 @@ export interface ResearchTrajectoryCheckpoint extends ResearchLevelObservation {
   gradient_norm?: number;
   informative_group_rate?: number;
   policy_update_count?: number;
+  attempted_policy_update_count?: number;
+  effective_policy_update_count?: number;
+  retained_policy_update_count?: number;
+  retention_rollback_count?: number;
+  retention_transaction_disposition?: "retain" | "provisional" | "rollback";
   mastery_streak?: number;
   regression_streak?: number;
   best_checkpoint?: number;
@@ -490,6 +509,15 @@ export interface ResearchBranchSnapshot {
     reference_anchor_applied?: boolean;
     objective_id?: string;
     adapter_revision?: string;
+    retention_transaction_revision?: string | null;
+    retention_lineage_status?: "pending" | "retained" | "rolled_back" | null;
+    retention_transaction_disposition?:
+      | "retain"
+      | "provisional"
+      | "rollback"
+      | null;
+    retention_resolution_update?: number;
+    retention_resolution_reason?: string;
     learning_rate?: number;
     policy_loss?: number;
     reinforce_loss?: number;
@@ -545,6 +573,12 @@ export interface ResearchTrajectory {
   initial_by_level: Record<string, ResearchLevelObservation>;
   final_by_level: Record<string, ResearchLevelObservation>;
   policy_update_count?: number;
+  attempted_policy_update_count?: number;
+  effective_policy_update_count?: number;
+  retained_policy_update_count?: number;
+  retained_checkpoint_update?: number;
+  retention_rollback_count?: number;
+  retention_transaction_revision?: string;
   optimizer_update_count?: number;
   pending_informative_group_count?: number;
   pending_informative_group_ids?: string[];

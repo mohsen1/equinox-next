@@ -25,14 +25,14 @@ try:
     import larger_model_gate as gate
     import repository_repair_env as frozen_environment
     import repository_repair_env_v33 as revision33
-    import repository_repair_rl as frozen
-    import repository_repair_study as study
+    import repository_repair_large_model_study as study
+    import repository_repair_large_model_trainer as frozen
 except ModuleNotFoundError:
     from . import larger_model_gate as gate
     from . import repository_repair_env as frozen_environment
     from . import repository_repair_env_v33 as revision33
-    from . import repository_repair_rl as frozen
-    from . import repository_repair_study as study
+    from . import repository_repair_large_model_study as study
+    from . import repository_repair_large_model_trainer as frozen
 
 
 SCREEN_SCHEMA_VERSION = 1
@@ -1520,7 +1520,7 @@ def main() -> None:
     if "--self-test" in sys.argv:
         self_test(manifest)
         return
-    study.verify_frozen_sources()
+    study.verify_transactional_sources()
     evidence = ScreenEvidence()
     runtime = prepare_runtime(evidence, manifest)
     if "--validate-configuration" in sys.argv:

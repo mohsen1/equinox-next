@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -86,12 +87,19 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash() -> None:
 
 def test_v33_pilot_constants_do_not_modify_frozen_sources() -> None:
     assert pilot.MODEL_REVISION == gate.MODEL_REVISION
-    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@4"
-    assert pilot.OBJECTIVE_ID == "verified-repair-chain-root-branch-retention-policy-gradient@17"
+    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@5"
+    assert pilot.OBJECTIVE_ID == "verified-repair-chain-transactional-retention-policy-gradient@18"
     assert pilot.REWARD_CONTRACT_REVISION == "correctness-gated-efficiency@1"
+    assert pilot.RETENTION_TRANSACTION_REVISION == "adapter-optimizer-policy-lineage@1"
+    assert pilot.LEARNING_RATE == 1e-5
+    assert pilot.REFERENCE_KL_COEFFICIENT == 1.0
     assert pilot.SHARED_PREFIX_CHECKPOINT_STRATEGY == "repository_root_observed@1"
     assert Path(pilot.__file__).name == "repository_repair_large_model_pilot.py"
-    assert os.path.basename(pilot.frozen.__file__) == "repository_repair_rl.py"
+    assert os.path.basename(pilot.frozen.__file__) == ("repository_repair_large_model_trainer.py")
+    frozen_path = Path(__file__).parents[2] / "research/runpod/repository_repair_rl.py"
+    assert hashlib.sha256(frozen_path.read_bytes()).hexdigest() == (
+        "449da958b75d41f5a641782980e0f0f8301122a68e011629faa4b7cc90bf7997"
+    )
 
 
 def test_shared_prefix_prompt_requests_only_the_root_listing() -> None:
@@ -360,6 +368,10 @@ def test_pilot_result_records_seed_and_source_contract(
         {
             "seed": optimization_seed,
             "policy_update_count": 1,
+            "attempted_policy_update_count": 1,
+            "effective_policy_update_count": 1,
+            "retained_policy_update_count": 1,
+            "retention_transaction_revision": pilot.RETENTION_TRANSACTION_REVISION,
             "best_validation": {"update": 3},
             "reward_contract": {"revision": "correctness-gated-efficiency@1"},
             "training_configuration": {
@@ -386,6 +398,41 @@ def test_pilot_result_records_seed_and_source_contract(
     assert result["training_configuration"]["minimum_shared_prefix_actions"] == 1
     assert result["training_configuration"]["policy_credit_scope"] == pilot.POLICY_CREDIT_SCOPE
     assert result["training_configuration"]["learning_signal"] == pilot.LEARNING_SIGNAL
+    assert result["training_configuration"]["learning_rate"] == 1e-5
+    assert result["training_configuration"]["reference_kl_coefficient"] == 1.0
+    assert result["retention_transaction_revision"] == pilot.RETENTION_TRANSACTION_REVISION
+    assert result["retained_policy_update_count"] == 1
+
+
+def test_pilot_installs_the_transaction_and_conservative_trust_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = gate.load_manifest()
+    for name in (
+        "emit_progress",
+        "training_stop_decision",
+        "make_tasks",
+        "WORKLOAD_REVISION",
+        "OBJECTIVE_ID",
+        "ACTIVE_RETENTION_TRANSACTION_REVISION",
+        "LEARNING_RATE",
+        "REFERENCE_KL_COEFFICIENT",
+    ):
+        monkeypatch.setattr(pilot.frozen, name, getattr(pilot.frozen, name))
+    monkeypatch.setattr(pilot, "install_bootstrap_checkpoint_contract", lambda _width: None)
+    monkeypatch.setattr(pilot, "install_memory_profile", lambda _manifest: None)
+
+    pilot.install_v33_contract(manifest, "sha256:" + "a" * 64)
+
+    assert (
+        pilot.frozen.ACTIVE_RETENTION_TRANSACTION_REVISION == pilot.RETENTION_TRANSACTION_REVISION
+    )
+    assert pilot.frozen.LEARNING_RATE == manifest["pilot"]["learning_rate"] == 1e-5
+    assert (
+        pilot.frozen.REFERENCE_KL_COEFFICIENT
+        == manifest["pilot"]["reference_kl_coefficient"]
+        == 1.0
+    )
 
 
 def test_paid_dependency_setup_fails_closed_instead_of_running_pip(
@@ -420,15 +467,28 @@ def test_final_evaluation_requires_a_policy_update_in_the_retained_checkpoint(
 
     pilot.observe_retained_update_evidence(
         "training",
-        {"update": 2, "policy_update_count": 0},
+        {
+            "update": 2,
+            "policy_update_count": 0,
+            "effective_policy_update_count": 0,
+            "retained_policy_update_count": 0,
+        },
     )
     pilot.observe_retained_update_evidence(
         "training",
-        {"update": 3, "policy_update_count": 1},
+        {
+            "update": 3,
+            "policy_update_count": 1,
+            "effective_policy_update_count": 1,
+            "retained_policy_update_count": 0,
+        },
     )
     pilot.observe_retained_update_evidence(
         "finalizing",
-        {"best_validation": {"update": 2}},
+        {
+            "best_validation": {"update": 2},
+            "retained_policy_update_count": 0,
+        },
     )
 
     with pytest.raises(RuntimeError, match="NO_RETAINED_POLICY_UPDATE"):
@@ -436,6 +496,9 @@ def test_final_evaluation_requires_a_policy_update_in_the_retained_checkpoint(
 
     pilot.observe_retained_update_evidence(
         "finalizing",
-        {"best_validation": {"update": 3}},
+        {
+            "best_validation": {"update": 3},
+            "retained_policy_update_count": 1,
+        },
     )
     assert pilot.require_retained_policy_update(manifest) == (3, 1)

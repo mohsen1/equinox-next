@@ -118,6 +118,8 @@ elif arguments == ["gpu", "list", "--include-unavailable"]:
     }])))
 elif arguments == ["user"]:
     print(json.dumps({"currentSpendPerHr": scenario.get("spend", 0)}))
+elif arguments == ["version"]:
+    print("runpodctl 2.7.2")
 elif arguments == ["pod", "list", "--all"]:
     print(json.dumps(scenario.get("pods", [])))
 elif arguments[:2] == ["pod", "create"]:
@@ -228,6 +230,11 @@ elif transport and url.endswith("/result.json"):
     response = sequenced_response("result_responses", "/result.json", None)
     if response is not None:
         print(json.dumps(response, separators=(",", ":")))
+elif url == "http://operator-test.invalid/v1/research-compute-executions":
+    print(json.dumps(
+        scenario.get("research_executions", {"items": []}),
+        separators=(",", ":"),
+    ))
 elif url.startswith("http://operator-test.invalid/internal/"):
     if arguments[arguments.index("--data-binary") + 1] == "@-":
         payload = sys.stdin.read()
@@ -354,6 +361,7 @@ def _preflight_environment(
             "EQUINOX_INTERNAL_TOKEN": "test-internal-token-" + "x" * 40,
             "EQUINOX_API_ROOT": "http://operator-test.invalid",
             "EQUINOX_DASHBOARD_ROOT": "http://dashboard-test.invalid",
+            "EQUINOX_RESEARCH_PROOF_DIR": str(tmp_path / "research-proofs"),
             "EQUINOX_LARGER_MODEL_MODE": "screen",
             "EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT": str(stage_receipt_path),
             "EQUINOX_LARGER_MODEL_VOLUME_RECEIPT": str(receipt),
@@ -1061,6 +1069,510 @@ def test_exit_visibility_cannot_drop_the_final_remote_progress(tmp_path: Path) -
     assert terminal_tree_payloads
     assert terminal_tree_payloads[0]["progress"]["branch_snapshots"] == branch_snapshots
     assert terminal_tree_payloads[0]["progress"]["latest_branch_snapshot"] == branch_snapshots[-1]
+
+
+def test_failed_remote_workload_persists_only_operational_failure_evidence(
+    tmp_path: Path,
+) -> None:
+    validation_history = [
+        {
+            "update": 5,
+            "level": 0,
+            "fixed_guard_paired_change": {"improved": 0, "regressed": 1},
+        }
+    ]
+    branch_snapshots = [
+        {
+            "snapshot_id": "update-5-snapshot-a",
+            "siblings": [
+                {
+                    "index": sibling,
+                    "steps": [{"step_id": f"sibling-{sibling}-1", "tool": "edit"}],
+                }
+                for sibling in range(4)
+            ],
+        }
+    ]
+    exact_remote_code = "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE"
+    exact_remote_message = "No policy-bearing checkpoint passed retention."
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "transport": "accept",
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+            ],
+            "progress_responses": [
+                {
+                    "phase": "training",
+                    "message": "Collecting K=4 continuations.",
+                    "validation_history": validation_history,
+                    "branch_snapshots": branch_snapshots,
+                    "latest_branch_snapshot": branch_snapshots[-1],
+                },
+                {
+                    "phase": "failed",
+                    "message": exact_remote_message,
+                    "error": exact_remote_code,
+                    "validation_history": validation_history,
+                    "branch_snapshots": branch_snapshots,
+                    "latest_branch_snapshot": branch_snapshots[-1],
+                },
+            ],
+            "exit_code_responses": ["1"],
+        },
+    )
+
+    assert result.returncode != 0
+    receipt_paths = list((tmp_path / "research-proofs").glob("*.failure.json"))
+    assert len(receipt_paths) == 1
+    receipt_path = receipt_paths[0]
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = json.loads(receipt_bytes)
+    digest = "sha256:" + hashlib.sha256(receipt_bytes).hexdigest()
+
+    assert receipt["receipt_kind"] == "operational_failure@1"
+    assert receipt["scientific_proof"] is False
+    assert receipt["proof_id"] is None
+    assert receipt["provider"]["handle"] == "runpod://pods/fake-paid-pod"
+    assert receipt["teardown_confirmed"] is True
+    assert receipt["remote_error"] == {
+        "code": exact_remote_code,
+        "message": exact_remote_message,
+    }
+    assert receipt["operator_error"]["message"] == ("The remote workload failed with exit code 1.")
+    assert receipt["last_observed_progress"]["validation_history"] == validation_history
+    assert receipt["last_observed_progress"]["branch_snapshots"] == branch_snapshots
+    assert receipt["handoff"]["workload_bundle_digest"].startswith("sha256:")
+    assert receipt["cost"]["estimated"] is True
+
+    payloads = [
+        json.loads(line)
+        for line in (tmp_path / "observer-payloads.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    failed_payload = next(
+        payload for payload in reversed(payloads) if payload["status"] == "FAILED"
+    )
+    assert failed_payload["failure_receipt_digest"] == digest
+    assert failed_payload["progress"]["error"] == exact_remote_code
+    assert failed_payload["progress"]["remote_error"]["code"] == exact_remote_code
+    assert failed_payload["progress"]["remote_error"]["message"] == exact_remote_message
+    assert failed_payload["progress"]["operator_error"]["message"] == (
+        "The remote workload failed with exit code 1."
+    )
+    assert failed_payload["progress"]["branch_snapshots"] == branch_snapshots
+    assert "proof_id" not in failed_payload
+    assert not [
+        command
+        for command in commands
+        if command[:1] == ["curl"]
+        and "-X" in command
+        and command[command.index("-X") + 1] == "POST"
+    ]
+
+
+def test_operational_failure_receipt_creation_is_exact_and_conflict_safe(
+    tmp_path: Path,
+) -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    helper = _shell_function(source, "persist_operational_failure_receipt")
+    execution_id = "runpod-proof-receipt-test"
+    receipt = {
+        "receipt_kind": "operational_failure@1",
+        "scientific_proof": False,
+        "proof_id": None,
+        "execution_id": execution_id,
+        "execution_name": "Atomic receipt test",
+        "provider": {
+            "name": "RunPod",
+            "handle": "runpod://pods/receipt-test",
+            "cli_version": "2.7.2",
+        },
+        "resource_profile": {"gpu_id": "NVIDIA H100 80GB HBM3"},
+        "handoff": {"revision": "mounted-volume-bundle@1"},
+        "workload": {
+            "id": "repository-repair",
+            "model_id": MODEL_ID,
+            "static_branch_width": 4,
+            "complexity_strategy": "adaptive",
+        },
+        "last_observed_progress": {
+            "phase": "failed",
+            "message": "é",
+            "branch_snapshots": [{"snapshot_id": "snapshot-a"}],
+        },
+        "remote_error": {
+            "code": "REMOTE_WORKLOAD_FAILURE",
+            "message": "RuntimeError: exact",
+        },
+        "operator_error": {
+            "code": "RUNPOD_OPERATOR_FAILURE",
+            "message": "Observed remote exit.",
+        },
+        "cost": {
+            "total_usd": 0.1,
+            "estimated": True,
+            "hourly_rate_usd": 2.99,
+            "provider_runtime_seconds": 120,
+        },
+        "started_at": "2026-07-29T15:00:00Z",
+        "completed_at": "2026-07-29T15:02:00Z",
+        "teardown_confirmed": False,
+    }
+    conflict = {
+        **receipt,
+        "operator_error": {
+            "code": "RUNPOD_OPERATOR_FAILURE",
+            "message": "Different bytes must conflict.",
+        },
+    }
+    harness = f"""set -euo pipefail
+repository_root='{REPOSITORY_ROOT}'
+receipt_directory='{tmp_path}'
+{helper}
+first="$(persist_operational_failure_receipt \
+  '{execution_id}' \
+  '{json.dumps(receipt, separators=(",", ":"))}')"
+second="$(persist_operational_failure_receipt \
+  '{execution_id}' \
+  '{json.dumps(receipt, separators=(",", ":"))}')"
+test "$first" = "$second"
+if persist_operational_failure_receipt \
+  '{execution_id}' \
+  '{json.dumps(conflict, separators=(",", ":"))}'; then
+  exit 91
+fi
+printf '%s\\n' "$first"
+"""
+
+    completed = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+        env={
+            **os.environ,
+            "PATH": f"{REPOSITORY_ROOT / '.venv/bin'}:{os.environ['PATH']}",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    receipt_path = tmp_path / f"{execution_id}.failure.json"
+    assert completed.stdout.strip() == (
+        "sha256:" + hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    )
+    assert json.loads(receipt_path.read_bytes()) == receipt
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert "tempfile.mkstemp" in helper
+    assert "os.link(" in helper
+
+    partial_id = "runpod-proof-partial-receipt"
+    partial_receipt = {**receipt, "execution_id": partial_id}
+    partial_path = tmp_path / f"{partial_id}.failure.json"
+    partial_bytes = b'{"receipt_kind":"operational_failure@1"'
+    partial_path.write_bytes(partial_bytes)
+    partial_harness = f"""set -euo pipefail
+repository_root='{REPOSITORY_ROOT}'
+receipt_directory='{tmp_path}'
+{helper}
+persist_operational_failure_receipt \
+  '{partial_id}' \
+  '{json.dumps(partial_receipt, separators=(",", ":"))}'
+"""
+    partial = subprocess.run(
+        ["bash", "-c", partial_harness],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+        env={
+            **os.environ,
+            "PATH": f"{REPOSITORY_ROOT / '.venv/bin'}:{os.environ['PATH']}",
+        },
+    )
+    assert partial.returncode != 0
+    assert partial_path.read_bytes() == partial_bytes
+
+    symlink_id = "runpod-proof-symlink-receipt"
+    symlink_receipt = {**receipt, "execution_id": symlink_id}
+    symlink_target = tmp_path / "outside-receipt.json"
+    symlink_target.write_bytes(canonical_json(symlink_receipt))
+    symlink_path = tmp_path / f"{symlink_id}.failure.json"
+    symlink_path.symlink_to(symlink_target)
+    symlink_harness = f"""set -euo pipefail
+repository_root='{REPOSITORY_ROOT}'
+receipt_directory='{tmp_path}'
+{helper}
+persist_operational_failure_receipt \
+  '{symlink_id}' \
+  '{json.dumps(symlink_receipt, separators=(",", ":"))}'
+"""
+    symlink = subprocess.run(
+        ["bash", "-c", symlink_harness],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+        env={
+            **os.environ,
+            "PATH": f"{REPOSITORY_ROOT / '.venv/bin'}:{os.environ['PATH']}",
+        },
+    )
+    assert symlink.returncode != 0
+    assert symlink_path.is_symlink()
+    assert symlink_target.read_bytes() == canonical_json(symlink_receipt)
+
+    fifo_id = "runpod-proof-fifo-receipt"
+    fifo_receipt = {**receipt, "execution_id": fifo_id}
+    fifo_path = tmp_path / f"{fifo_id}.failure.json"
+    os.mkfifo(fifo_path)
+    fifo_harness = f"""set -euo pipefail
+repository_root='{REPOSITORY_ROOT}'
+receipt_directory='{tmp_path}'
+{helper}
+persist_operational_failure_receipt \
+  '{fifo_id}' \
+  '{json.dumps(fifo_receipt, separators=(",", ":"))}'
+"""
+    fifo = subprocess.run(
+        ["bash", "-c", fifo_harness],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+        env={
+            **os.environ,
+            "PATH": f"{REPOSITORY_ROOT / '.venv/bin'}:{os.environ['PATH']}",
+        },
+    )
+    assert fifo.returncode != 0
+    assert fifo_path.is_fifo()
+
+
+def test_stale_execution_reconciliation_persists_the_same_failure_contract(
+    tmp_path: Path,
+) -> None:
+    stale_id = "runpod-proof-stale-observer"
+    exact_remote_code = "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE"
+    exact_remote_message = "No policy-bearing checkpoint passed retention."
+    stale_execution = {
+        "execution_id": stale_id,
+        "name": "Interrupted H100 pilot",
+        "workload_id": "repository-repair-restored-continuation-post-training",
+        "model_id": MODEL_ID,
+        "branch_width": 4,
+        "complexity_strategy": "adaptive",
+        "status": "RUNNING",
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/stale-pod",
+        "resource_profile": {
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "hourly_cost_usd": 2.99,
+            "maximum_lifetime_minutes": 43,
+            "network_volume_id": VOLUME_ID,
+        },
+        "progress": {
+            "phase": "failed",
+            "message": exact_remote_message,
+            "error": exact_remote_code,
+            "validation_history": [{"update": 5, "retention_guard_passed": False}],
+            "branch_snapshots": [{"snapshot_id": "update-5-snapshot-a"}],
+            "elapsed_seconds": 1200,
+        },
+        "proof_id": None,
+        "receipt_digest": None,
+        "failure_receipt_digest": None,
+        "started_at": "2026-07-29T15:00:00Z",
+        "updated_at": "2026-07-29T15:20:00Z",
+        "completed_at": None,
+        "teardown_confirmed": False,
+    }
+    result, _commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "research_executions": {"items": [stale_execution]},
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+            ],
+        },
+    )
+
+    assert result.returncode != 0
+    receipt_path = tmp_path / "research-proofs" / f"{stale_id}.failure.json"
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = json.loads(receipt_bytes)
+    digest = "sha256:" + hashlib.sha256(receipt_bytes).hexdigest()
+    assert receipt["receipt_kind"] == "operational_failure@1"
+    assert receipt["scientific_proof"] is False
+    assert receipt["proof_id"] is None
+    assert receipt["last_observed_progress"] == stale_execution["progress"]
+    assert receipt["remote_error"]["code"] == exact_remote_code
+    assert receipt["remote_error"]["message"] == exact_remote_message
+    assert receipt["operator_error"] == {
+        "code": "STALE_OPERATOR_RECONCILIATION",
+        "message": "No RunPod pod or active hourly spend remained.",
+        "teardown_error": None,
+    }
+    assert receipt["cost"]["provider_runtime_seconds"] == 1200
+    assert receipt["cost"]["total_usd"] == pytest.approx(2.99 / 3)
+    assert receipt["teardown_confirmed"] is True
+
+    payloads = [
+        json.loads(line)
+        for line in (tmp_path / "observer-payloads.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    stale_payload = next(
+        payload
+        for payload in payloads
+        if payload.get("name") == stale_execution["name"] and payload.get("status") == "FAILED"
+    )
+    assert stale_payload["failure_receipt_digest"] == digest
+    assert stale_payload["progress"]["error"] == exact_remote_code
+    assert stale_payload["progress"]["remote_error"]["code"] == exact_remote_code
+    assert stale_payload["progress"]["remote_error"]["message"] == exact_remote_message
+    assert stale_payload["progress"]["operator_error"]["code"] == ("STALE_OPERATOR_RECONCILIATION")
+    assert (
+        stale_payload["progress"]["branch_snapshots"]
+        == (stale_execution["progress"]["branch_snapshots"])
+    )
+
+
+def test_stale_reconciliation_reuses_an_orphan_failure_receipt_exactly(
+    tmp_path: Path,
+) -> None:
+    stale_id = "runpod-proof-orphaned-receipt"
+    progress = {
+        "phase": "failed",
+        "message": "Exact prior progress.",
+        "validation_history": [{"update": 11, "retention_guard_passed": False}],
+        "branch_snapshots": [{"snapshot_id": "update-11-snapshot-a"}],
+    }
+    orphan_receipt = {
+        "receipt_kind": "operational_failure@1",
+        "scientific_proof": False,
+        "proof_id": None,
+        "execution_id": stale_id,
+        "execution_name": "Orphaned failure evidence",
+        "provider": {
+            "name": "RunPod",
+            "handle": "runpod://pods/orphaned-pod",
+            "cli_version": "2.7.2",
+        },
+        "resource_profile": {
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "hourly_cost_usd": 2.99,
+        },
+        "handoff": {"revision": "mounted-volume-bundle@1"},
+        "workload": {
+            "id": "repository-repair-restored-continuation-post-training",
+            "model_id": MODEL_ID,
+            "static_branch_width": 4,
+            "complexity_strategy": "adaptive",
+        },
+        "last_observed_progress": progress,
+        "remote_error": {
+            "code": "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE",
+            "message": "No policy-bearing checkpoint passed retention.",
+        },
+        "operator_error": {
+            "code": "RUNPOD_OPERATOR_FAILURE",
+            "message": "The observer API did not accept the terminal update.",
+        },
+        "cost": {
+            "total_usd": 1.495,
+            "estimated": True,
+            "hourly_rate_usd": 2.99,
+            "provider_runtime_seconds": 1800,
+        },
+        "started_at": "2026-07-29T15:00:00Z",
+        "completed_at": "2026-07-29T15:30:00Z",
+        "teardown_confirmed": False,
+    }
+    receipt_directory = tmp_path / "research-proofs"
+    receipt_directory.mkdir()
+    receipt_path = receipt_directory / f"{stale_id}.failure.json"
+    orphan_bytes = canonical_json(orphan_receipt)
+    receipt_path.write_bytes(orphan_bytes)
+    stale_execution = {
+        "execution_id": stale_id,
+        "name": "Orphaned failure evidence",
+        "workload_id": "repository-repair-restored-continuation-post-training",
+        "model_id": MODEL_ID,
+        "branch_width": 4,
+        "complexity_strategy": "adaptive",
+        "status": "RUNNING",
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/orphaned-pod",
+        "resource_profile": {
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "hourly_cost_usd": 2.99,
+        },
+        "progress": {"phase": "running", "update": 12},
+        "proof_id": None,
+        "receipt_digest": None,
+        "failure_receipt_digest": None,
+        "started_at": "2026-07-29T15:00:00Z",
+        "updated_at": "2026-07-29T15:20:00Z",
+        "completed_at": None,
+        "teardown_confirmed": False,
+    }
+
+    result, _commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "research_executions": {"items": [stale_execution]},
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+            ],
+        },
+    )
+
+    assert result.returncode != 0
+    assert receipt_path.read_bytes() == orphan_bytes
+    digest = "sha256:" + hashlib.sha256(orphan_bytes).hexdigest()
+    payloads = [
+        json.loads(line)
+        for line in (tmp_path / "observer-payloads.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    stale_payload = next(
+        payload
+        for payload in payloads
+        if payload.get("name") == stale_execution["name"] and payload.get("status") == "FAILED"
+    )
+    assert stale_payload["failure_receipt_digest"] == digest
+    assert stale_payload["teardown_confirmed"] is False
+    assert stale_payload["progress"]["teardown_confirmed"] is False
+    assert stale_payload["progress"]["validation_history"] == (progress["validation_history"])
+    assert stale_payload["progress"]["operator_error"] == orphan_receipt["operator_error"]
+
+
+def test_success_publication_sets_the_cleanup_fence_immediately() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    assert (
+        'publish_execution "SUCCEEDED" "$last_progress" "$completed_at" "true"\n'
+        "  terminal_published=true"
+    ) in source
+    proof_acceptance = source.index(
+        'if proof_response="$(\n      curl --fail --silent --show-error --max-time 60'
+    )
+    proof_fence = source.index("terminal_published=true", proof_acceptance)
+    proof_output = source.index('jq . <<<"$proof_response"', proof_acceptance)
+    assert proof_acceptance < proof_fence < proof_output
 
 
 def test_successful_screen_exit_fetches_result_before_terminal_tree_decision(

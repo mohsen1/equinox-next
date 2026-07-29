@@ -753,13 +753,35 @@ function BranchInspector({
                     ? "skipped"
                     : snapshot.optimizer_update.policy_signal_applied === false
                       ? "anchor only"
-                      : "applied"}
+                      : snapshot.optimizer_update.retention_lineage_status ===
+                          "pending"
+                        ? "attempted · pending validation"
+                        : snapshot.optimizer_update.retention_lineage_status ===
+                            "retained"
+                          ? "retained"
+                          : snapshot.optimizer_update
+                                .retention_lineage_status === "rolled_back"
+                            ? "rolled back"
+                            : "applied"}
                 </summary>
                 <dl className="branch-evidence-facts">
                   <Fact
                     label="Adapter"
                     value={snapshot.optimizer_update.adapter_revision ?? "—"}
                   />
+                  {snapshot.optimizer_update.retention_lineage_status ? (
+                    <Fact
+                      label="Retention"
+                      value={`${friendlyStatus(
+                        snapshot.optimizer_update.retention_lineage_status,
+                      )}${
+                        snapshot.optimizer_update
+                          .retention_resolution_update !== undefined
+                          ? ` at update ${snapshot.optimizer_update.retention_resolution_update}`
+                          : ""
+                      }`}
+                    />
+                  ) : null}
                   <Fact
                     label="Learning rate"
                     value={

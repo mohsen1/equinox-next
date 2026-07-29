@@ -14,20 +14,23 @@ try:
     import repository_repair_env as frozen_environment
     import repository_repair_env_v33 as interface
     import repository_repair_large_model_eligibility as eligibility
-    import repository_repair_rl as frozen
-    import repository_repair_study as study
+    import repository_repair_large_model_study as study
+    import repository_repair_large_model_trainer as frozen
 except ModuleNotFoundError:
     from . import larger_model_gate as gate
     from . import repository_repair_env as frozen_environment
     from . import repository_repair_env_v33 as interface
     from . import repository_repair_large_model_eligibility as eligibility
-    from . import repository_repair_rl as frozen
-    from . import repository_repair_study as study
+    from . import repository_repair_large_model_study as study
+    from . import repository_repair_large_model_trainer as frozen
 
 
-WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@4"
-OBJECTIVE_ID = "verified-repair-chain-root-branch-retention-policy-gradient@17"
+WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@5"
+OBJECTIVE_ID = "verified-repair-chain-transactional-retention-policy-gradient@18"
 REWARD_CONTRACT_REVISION = "correctness-gated-efficiency@1"
+RETENTION_TRANSACTION_REVISION = "adapter-optimizer-policy-lineage@1"
+LEARNING_RATE = 1e-5
+REFERENCE_KL_COEFFICIENT = 1.0
 SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed@1"
 LOCALIZATION_TELEMETRY_STRATEGY = "all_fault_sources_observed"
 POLICY_CREDIT_SCOPE = (
@@ -205,7 +208,10 @@ def observe_retained_update_evidence(phase: str, values: dict[str, Any]) -> None
     global RETAINED_POLICY_UPDATE_COUNT
 
     observed_update = values.get("update")
-    observed_policy_updates = values.get("policy_update_count")
+    observed_policy_updates = values.get(
+        "effective_policy_update_count",
+        values.get("policy_update_count"),
+    )
     if (
         type(observed_update) is int
         and observed_update >= 1
@@ -218,6 +224,10 @@ def observe_retained_update_evidence(phase: str, values: dict[str, Any]) -> None
             observed_policy_updates,
         )
 
+    observed_retained_policy_updates = values.get("retained_policy_update_count")
+    if type(observed_retained_policy_updates) is int and observed_retained_policy_updates >= 0:
+        RETAINED_POLICY_UPDATE_COUNT = observed_retained_policy_updates
+
     if phase != "finalizing":
         return
     best_validation = values.get("best_validation")
@@ -225,10 +235,11 @@ def observe_retained_update_evidence(phase: str, values: dict[str, Any]) -> None
     if type(retained_update) is not int or retained_update < 0:
         raise RuntimeError("PILOT_RETAINED_CHECKPOINT_EVIDENCE_INVALID")
     RETAINED_CHECKPOINT_UPDATE = retained_update
-    RETAINED_POLICY_UPDATE_COUNT = POLICY_UPDATE_COUNTS_BY_TRAINING_UPDATE.get(
-        retained_update,
-        0,
-    )
+    if type(observed_retained_policy_updates) is not int:
+        RETAINED_POLICY_UPDATE_COUNT = POLICY_UPDATE_COUNTS_BY_TRAINING_UPDATE.get(
+            retained_update,
+            0,
+        )
 
 
 def require_retained_policy_update(manifest: dict[str, Any]) -> tuple[int, int]:
@@ -397,6 +408,9 @@ def install_v33_contract(manifest: dict[str, Any], authorization_digest: str) ->
         "localization_telemetry_strategy": LOCALIZATION_TELEMETRY_STRATEGY,
         "policy_credit_scope": POLICY_CREDIT_SCOPE,
         "reward_contract_revision": REWARD_CONTRACT_REVISION,
+        "retention_transaction_revision": RETENTION_TRANSACTION_REVISION,
+        "learning_rate": LEARNING_RATE,
+        "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
     }
     for name, expected in expected_identity.items():
         if pilot[name] != expected:
@@ -415,6 +429,9 @@ def install_v33_contract(manifest: dict[str, Any], authorization_digest: str) ->
         **values: Any,
     ) -> None:
         observe_retained_update_evidence(phase, values)
+        values.setdefault("retention_transaction_revision", RETENTION_TRANSACTION_REVISION)
+        values.setdefault("learning_rate", LEARNING_RATE)
+        values.setdefault("reference_kl_coefficient", REFERENCE_KL_COEFFICIENT)
         if phase == "model_loading":
             import torch
 
@@ -439,8 +456,13 @@ def install_v33_contract(manifest: dict[str, Any], authorization_digest: str) ->
 
     frozen.emit_progress = pilot_progress
     frozen.SUPPORTED_MODELS[gate.MODEL_ID] = gate.MODEL_REVISION
+    if frozen.TRANSACTIONAL_RETENTION_REVISION != RETENTION_TRANSACTION_REVISION:
+        raise RuntimeError("the trainer retention transaction contract drifted")
     frozen.WORKLOAD_REVISION = WORKLOAD_REVISION
     frozen.OBJECTIVE_ID = OBJECTIVE_ID
+    frozen.ACTIVE_RETENTION_TRANSACTION_REVISION = RETENTION_TRANSACTION_REVISION
+    frozen.LEARNING_RATE = LEARNING_RATE
+    frozen.REFERENCE_KL_COEFFICIENT = REFERENCE_KL_COEFFICIENT
     frozen.SYSTEM_PROMPT = interface.SYSTEM_PROMPT
     frozen.ACTION_PROTOCOL_REVISION = interface.ACTION_PROTOCOL_REVISION
     frozen.ENVIRONMENT_REVISION = interface.ENVIRONMENT_REVISION
@@ -492,6 +514,9 @@ def augment_result(
         best_validation.get("update") if isinstance(best_validation, dict) else None
     )
     total_policy_updates = result.get("policy_update_count")
+    attempted_policy_updates = result.get("attempted_policy_update_count")
+    effective_policy_updates = result.get("effective_policy_update_count")
+    result_retained_policy_updates = result.get("retained_policy_update_count")
     optimization_seed = manifest["pilot_limits"]["optimization_seed"]
     reward_contract = result.get("reward_contract")
     if (
@@ -505,6 +530,10 @@ def augment_result(
         result_retained_update != retained_update
         or type(total_policy_updates) is not int
         or total_policy_updates < retained_policy_updates
+        or attempted_policy_updates != total_policy_updates
+        or effective_policy_updates != retained_policy_updates
+        or result_retained_policy_updates != retained_policy_updates
+        or result.get("retention_transaction_revision") != RETENTION_TRANSACTION_REVISION
     ):
         raise RuntimeError("the larger-model pilot retained-update evidence is inconsistent")
     training_configuration = result.get("training_configuration")
@@ -517,6 +546,9 @@ def augment_result(
                 "minimum_shared_prefix_actions": 1,
                 "policy_credit_scope": POLICY_CREDIT_SCOPE,
                 "learning_signal": LEARNING_SIGNAL,
+                "retention_transaction_revision": RETENTION_TRANSACTION_REVISION,
+                "learning_rate": LEARNING_RATE,
+                "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
             },
         }
     return {
@@ -548,6 +580,10 @@ def augment_result(
         "gradient_checkpointing_use_reentrant": False,
         "retained_checkpoint_update": retained_update,
         "effective_policy_update_count": retained_policy_updates,
+        "retained_policy_update_count": retained_policy_updates,
+        "retention_transaction_revision": RETENTION_TRANSACTION_REVISION,
+        "learning_rate": LEARNING_RATE,
+        "reference_kl_coefficient": REFERENCE_KL_COEFFICIENT,
         "policy_credit_scope": POLICY_CREDIT_SCOPE,
     }
 
@@ -558,7 +594,7 @@ def main() -> None:
     if os.environ.get("EQUINOX_RL_MODEL_ID") != gate.MODEL_ID:
         raise ValueError("the larger-model pilot requires the manifest-pinned model")
     authorization_digest = require_authorization_digest()
-    study.verify_frozen_sources()
+    study.verify_transactional_sources()
     install_v33_contract(manifest, authorization_digest)
     runtime = frozen.configure_from_environment()
     validate_runtime_configuration(runtime, manifest)
@@ -577,7 +613,7 @@ def main() -> None:
         )
         return
     snapshot, _snapshot_digest, _hardware = require_pre_model_readiness(manifest)
-    result = study.run_frozen_and_capture_result()
+    result = study.run_trainer_and_capture_result()
     print(
         json.dumps(
             augment_result(

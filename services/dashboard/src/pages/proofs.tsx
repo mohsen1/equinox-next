@@ -310,10 +310,23 @@ function ProofEvidence({ proof }: { proof: ResearchProofDetail }) {
                 span: true,
               },
               {
-                label: "Receipt digest",
+                label: "Proof receipt",
                 value: <MachineId value={proof.evidence.receipt_digest} />,
                 span: true,
               },
+              ...(proof.evidence.failure_receipt_digest
+                ? [
+                    {
+                      label: "Prior failure receipt",
+                      value: (
+                        <MachineId
+                          value={proof.evidence.failure_receipt_digest}
+                        />
+                      ),
+                      span: true,
+                    },
+                  ]
+                : []),
               {
                 label: "Provider handle",
                 value: <MachineId value={proof.provider.handle} />,

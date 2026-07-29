@@ -64,8 +64,8 @@ case "$experiment" in
         "repository_repair_env_v31.py"
         "repository_repair_env_v32.py"
         "$environment_file"
-        "repository_repair_rl.py"
-        "repository_repair_study.py"
+        "repository_repair_large_model_study.py"
+        "repository_repair_large_model_trainer.py"
       )
       case "$larger_model_mode" in
         screen)
@@ -243,7 +243,11 @@ bootstrap_server_path="$repository_root/research/runpod/bootstrap_server.py"
 workload_bundle_tool_path="$repository_root/research/runpod/workload_bundle.py"
 remote_runner_path="$repository_root/research/runpod/remote_runner.sh"
 result_server_path="$repository_root/research/runpod/result_server.py"
-receipt_directory="$repository_root/var/research-proofs"
+receipt_directory="${EQUINOX_RESEARCH_PROOF_DIR:-$repository_root/var/research-proofs}"
+if [[ "$receipt_directory" != /* || "$receipt_directory" == *$'\n'* ]]; then
+  echo "EQUINOX_RESEARCH_PROOF_DIR must be an absolute single-line path." >&2
+  exit 1
+fi
 api_root="${EQUINOX_API_ROOT:-http://127.0.0.1:8180}"
 dashboard_root="${EQUINOX_DASHBOARD_ROOT:-http://127.0.0.1:3100}"
 gpu_id="${EQUINOX_RUNPOD_GPU:-$default_gpu_id}"
@@ -267,8 +271,8 @@ if [[ "$larger_model_mode" == "screen" ]]; then
   default_persistent_volume_in_gb="50"
   default_stale_progress_timeout_seconds="600"
 elif [[ "$larger_model_mode" == "pilot" ]]; then
-  default_maximum_hourly_cost="4.00"
-  default_maximum_total_cost="16.00"
+  default_maximum_hourly_cost="3.25"
+  default_maximum_total_cost="13.00"
   default_minimum_gpu_memory_gb="80"
   default_maximum_workload_attempts="1"
   default_container_disk_in_gb="50"
@@ -509,6 +513,160 @@ except BaseException:
 ' "$1"
 }
 
+persist_operational_failure_receipt() {
+  local execution_id="$1"
+  local receipt="$2"
+  if [[ ! "$execution_id" =~ ^runpod-proof-[a-zA-Z0-9_-]+$ ]]; then
+    echo "Operational failure receipt execution id is invalid." >&2
+    return 1
+  fi
+  if ! python3 - \
+      "$repository_root" \
+      "$receipt_directory" \
+      "$execution_id" 3<<<"$receipt" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+repository_root, receipt_directory, execution_id = sys.argv[1:]
+sys.path.insert(0, str(pathlib.Path(repository_root) / "packages"))
+from equinox_core import canonical_bytes
+
+with os.fdopen(3, encoding="utf-8") as receipt_stream:
+    receipt = json.load(receipt_stream)
+operator_error = receipt.get("operator_error") if isinstance(receipt, dict) else None
+remote_error = receipt.get("remote_error") if isinstance(receipt, dict) else None
+provider = receipt.get("provider") if isinstance(receipt, dict) else None
+workload = receipt.get("workload") if isinstance(receipt, dict) else None
+cost = receipt.get("cost") if isinstance(receipt, dict) else None
+if (
+    not isinstance(receipt, dict)
+    or receipt.get("receipt_kind") != "operational_failure@1"
+    or receipt.get("scientific_proof") is not False
+    or receipt.get("proof_id") is not None
+    or receipt.get("execution_id") != execution_id
+    or not isinstance(receipt.get("execution_name"), str)
+    or not isinstance(provider, dict)
+    or provider.get("name") != "RunPod"
+    or (
+        provider.get("handle") is not None
+        and not isinstance(provider.get("handle"), str)
+    )
+    or not isinstance(provider.get("cli_version"), str)
+    or not isinstance(receipt.get("resource_profile"), dict)
+    or not isinstance(receipt.get("handoff"), dict)
+    or not isinstance(workload, dict)
+    or not isinstance(workload.get("id"), str)
+    or workload.get("static_branch_width") not in {1, 4}
+    or workload.get("complexity_strategy") != "adaptive"
+    or not isinstance(receipt.get("last_observed_progress"), dict)
+    or not isinstance(operator_error, dict)
+    or not isinstance(operator_error.get("code"), str)
+    or not isinstance(operator_error.get("message"), str)
+    or (
+        remote_error is not None
+        and (
+            not isinstance(remote_error, dict)
+            or not isinstance(remote_error.get("code"), str)
+            or not isinstance(remote_error.get("message"), str)
+        )
+    )
+    or not isinstance(cost, dict)
+    or not isinstance(cost.get("estimated"), bool)
+    or not isinstance(receipt.get("started_at"), str)
+    or not isinstance(receipt.get("completed_at"), str)
+    or not isinstance(receipt.get("teardown_confirmed"), bool)
+):
+    raise SystemExit("operational failure receipt did not satisfy its local contract")
+payload = canonical_bytes(receipt)
+path = pathlib.Path(receipt_directory) / f"{execution_id}.failure.json"
+path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def read_existing_payload():
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+    except FileNotFoundError:
+        if os.path.lexists(path):
+            raise SystemExit("operational failure receipt path is not a regular file")
+        return None
+    except OSError as error:
+        if os.path.lexists(path):
+            raise SystemExit(
+                "operational failure receipt path is not a regular file"
+            ) from error
+        raise
+    with os.fdopen(descriptor, "rb") as handle:
+        existing_stat = os.fstat(handle.fileno())
+        if not stat.S_ISREG(existing_stat.st_mode):
+            raise SystemExit("operational failure receipt path is not a regular file")
+        return handle.read()
+
+
+existing_payload = read_existing_payload()
+if existing_payload is not None:
+    if existing_payload != payload:
+        raise SystemExit("operational failure receipt conflicts with existing evidence")
+else:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{execution_id}.failure.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = pathlib.Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary_path, path, follow_symlinks=False)
+        except FileExistsError:
+            existing_payload = read_existing_payload()
+            if existing_payload is None:
+                raise SystemExit("operational failure receipt path is not a regular file")
+            if existing_payload != payload:
+                raise SystemExit(
+                    "operational failure receipt conflicts with existing evidence"
+                )
+        directory_fd = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        directory_fd = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+print(f"sha256:{hashlib.sha256(payload).hexdigest()}")
+PY
+  then
+    echo "Operational failure evidence could not be created atomically." >&2
+    return 1
+  fi
+}
+
 release_operator_lock() {
   if [[ "$operator_lock_acquired" != true ]]; then
     return
@@ -612,6 +770,8 @@ expected_action_protocol_revision=""
 expected_terminal_submission_contract=""
 expected_shared_prefix_checkpoint=""
 expected_learning_signal=""
+expected_learning_rate="0.00002"
+expected_reference_kl_coefficient="0.2"
 if [[ "$experiment" == "repository-repair" ]]; then
   expected_workload_revision="$(
     read_python_string_constant "$contract_workload_path" WORKLOAD_REVISION
@@ -645,9 +805,9 @@ if [[ -z "$image" ]]; then
 fi
 if [[ -n "$larger_model_mode" ]]; then
   PYTHONPATH="$repository_root" python3 - <<'PY'
-from research.runpod.repository_repair_study import verify_frozen_sources
+from research.runpod.repository_repair_large_model_study import verify_transactional_sources
 
-verify_frozen_sources()
+verify_transactional_sources()
 PY
   verified_source_contract="$(
     python3 "$repository_root/research/runpod/larger_model_gate.py" verify-sources
@@ -664,6 +824,10 @@ PY
   )"
   larger_model_profile_id="$(jq -r '.profile_id' <<<"$larger_model_manifest")"
   larger_model_model_revision="$(jq -r '.model.revision' <<<"$larger_model_manifest")"
+  expected_learning_rate="$(jq -r '.pilot.learning_rate' <<<"$larger_model_manifest")"
+  expected_reference_kl_coefficient="$(
+    jq -r '.pilot.reference_kl_coefficient' <<<"$larger_model_manifest"
+  )"
   expected_terminal_submission_contract="$(
     jq -r '.interface.terminal_submission_contract' <<<"$larger_model_manifest"
   )"
@@ -1666,6 +1830,7 @@ publish_execution() {
   local completed_at="${3:-}"
   local teardown_confirmed="${4:-false}"
   local deadline_epoch="${5:-}"
+  local failure_receipt_digest="${6:-}"
   local payload
   local attempt
   local request_timeout
@@ -1680,6 +1845,7 @@ publish_execution() {
       --argjson resource_profile "$resource_profile" \
       --arg started_at "$started_at" \
       --arg completed_at "$completed_at" \
+      --arg failure_receipt_digest "$failure_receipt_digest" \
       --argjson branch_width "$expected_branch_width" \
       --argjson teardown_confirmed "$teardown_confirmed" \
       '{
@@ -1695,6 +1861,12 @@ publish_execution() {
         ),
         resource_profile: $resource_profile,
         progress: .,
+        failure_receipt_digest: (
+          if $failure_receipt_digest == ""
+          then null
+          else $failure_receipt_digest
+          end
+        ),
         started_at: $started_at,
         completed_at: (if $completed_at == "" then null else $completed_at end),
         teardown_confirmed: $teardown_confirmed
@@ -1950,7 +2122,15 @@ cleanup() {
   local exit_code="$?"
   local teardown_confirmed="$provider_teardown_confirmed"
   local completed_at
+  local completed_epoch
+  local observed_progress
   local failed_progress
+  local operator_error
+  local remote_error
+  local provider_cli_version
+  local provider_runtime_seconds
+  local failure_receipt
+  local failure_receipt_digest=""
   trap - EXIT
   trap '' INT TERM HUP
   set +e
@@ -1974,18 +2154,184 @@ cleanup() {
 
   if [[ "$execution_registered" == true && "$terminal_published" != true ]]; then
     completed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    completed_epoch="$(date +%s)"
+    provider_runtime_seconds="$((completed_epoch - started_epoch))"
+    observed_progress="$last_progress"
+    operator_error="$(
+      jq -cn \
+        --arg message "$failure_message" \
+        --argjson teardown_confirmed "$teardown_confirmed" \
+        '{
+          code: "RUNPOD_OPERATOR_FAILURE",
+          message: $message,
+          teardown_error: (
+            if $teardown_confirmed
+            then null
+            else {
+              code: "PROVIDER_TEARDOWN_UNCONFIRMED",
+              message: "RunPod teardown could not be confirmed after reconciliation."
+            }
+            end
+          )
+        }'
+    )"
     failed_progress="$(
       jq -c \
-        --arg message "Run stopped before proof ingestion." \
-        --arg error "$failure_message" \
-        '. + {message: $message, error: $error}' \
+        --argjson operator_error "$operator_error" \
+        --argjson teardown_confirmed "$teardown_confirmed" \
+        '
+          (
+            .remote_error
+            // (
+              if (.error | type) == "string" and (.error | length) > 0
+              then {
+                code: (
+                  if (.error | test("^[A-Z][A-Z0-9_]*$"))
+                  then .error
+                  else "REMOTE_WORKLOAD_FAILURE"
+                  end
+                ),
+                message: (
+                  if (
+                    (.error | test("^[A-Z][A-Z0-9_]*$"))
+                    and (.message | type) == "string"
+                    and (.message | length) > 0
+                  )
+                  then .message
+                  else .error
+                  end
+                )
+              }
+              else null
+              end
+            )
+          ) as $remote_error
+          | . + {
+              phase: "failed",
+              message: (
+                if $remote_error == null
+                then $operator_error.message
+                else (.message // $remote_error.message)
+                end
+              ),
+              remote_error: $remote_error,
+              operator_error: $operator_error,
+              teardown_confirmed: $teardown_confirmed
+            }
+          | if $remote_error == null then del(.error) else . end
+        ' \
         <<<"$last_progress"
     )"
+    remote_error="$(jq -c '.remote_error' <<<"$failed_progress")"
+    provider_cli_version="$(
+      run_provider_command 15 runpodctl version 2>/dev/null |
+        awk 'NR == 1 { print $2 }'
+    )"
+    provider_cli_version="${provider_cli_version:-unknown}"
+    failure_receipt="$(
+      jq -cnS \
+        --arg execution_id "$proof_id" \
+        --arg provider_handle "$provider_handle" \
+        --arg provider_cli_version "$provider_cli_version" \
+        --arg execution_name "$execution_name" \
+        --arg workload_id "$workload_id" \
+        --arg model_id "$model_id" \
+        --arg started_at "$started_at" \
+        --arg completed_at "$completed_at" \
+        --argjson branch_width "$expected_branch_width" \
+        --argjson resource_profile "$resource_profile" \
+        --argjson last_observed_progress "$observed_progress" \
+        --argjson remote_error "$remote_error" \
+        --argjson operator_error "$operator_error" \
+        --argjson provider_runtime_seconds "$provider_runtime_seconds" \
+        --argjson teardown_confirmed "$teardown_confirmed" \
+        '{
+          receipt_kind: "operational_failure@1",
+          scientific_proof: false,
+          proof_id: null,
+          execution_id: $execution_id,
+          execution_name: $execution_name,
+          provider: {
+            name: "RunPod",
+            handle: (
+              if $provider_handle == "" then null else $provider_handle end
+            ),
+            cli_version: $provider_cli_version
+          },
+          resource_profile: $resource_profile,
+          handoff: {
+            revision: ($resource_profile.bundle_handoff_revision // null),
+            workload_bundle_digest: (
+              $resource_profile.workload_bundle_digest // null
+            ),
+            workload_bundle_size_bytes: (
+              $resource_profile.workload_bundle_size_bytes // null
+            ),
+            workload_bundle_path: (
+              $resource_profile.workload_bundle_path // null
+            ),
+            bundle_stage_receipt_digest: (
+              $resource_profile.bundle_stage_receipt_digest // null
+            ),
+            bootstrap_source_digest: (
+              $resource_profile.bootstrap_source_digest // null
+            ),
+            network_volume_id: (
+              $resource_profile.network_volume_id // null
+            )
+          },
+          workload: {
+            id: $workload_id,
+            model_id: (if $model_id == "" then null else $model_id end),
+            static_branch_width: $branch_width,
+            complexity_strategy: "adaptive"
+          },
+          last_observed_progress: $last_observed_progress,
+          remote_error: $remote_error,
+          operator_error: $operator_error,
+          cost: {
+            total_usd: (
+              if (
+                ($resource_profile.hourly_cost_usd | type) == "number"
+                and $provider_runtime_seconds >= 0
+              )
+              then (
+                $resource_profile.hourly_cost_usd
+                * $provider_runtime_seconds
+                / 3600
+              )
+              else null
+              end
+            ),
+            estimated: (
+              ($resource_profile.hourly_cost_usd | type) == "number"
+              and $provider_runtime_seconds >= 0
+            ),
+            hourly_rate_usd: (
+              $resource_profile.hourly_cost_usd // null
+            ),
+            provider_runtime_seconds: $provider_runtime_seconds
+          },
+          started_at: $started_at,
+          completed_at: $completed_at,
+          teardown_confirmed: $teardown_confirmed
+        }'
+    )"
+    if failure_receipt_digest="$(
+      persist_operational_failure_receipt "$proof_id" "$failure_receipt"
+    )"; then
+      :
+    else
+      failure_receipt_digest=""
+      echo "Operational failure evidence could not be persisted." >&2
+    fi
     publish_execution \
       "FAILED" \
       "$failed_progress" \
       "$completed_at" \
-      "$teardown_confirmed" || true
+      "$teardown_confirmed" \
+      "" \
+      "$failure_receipt_digest" || true
   fi
   if [[ "$teardown_confirmed" == true ]]; then
     release_operator_lock
@@ -2020,36 +2366,227 @@ research_executions="$(
   curl --fail --silent --show-error --max-time 10 \
     "$api_root/v1/research-compute-executions"
 )"
+stale_provider_cli_version="$(
+  run_provider_command 15 runpodctl version 2>/dev/null |
+    awk 'NR == 1 { print $2 }' || true
+)"
+stale_provider_cli_version="${stale_provider_cli_version:-unknown}"
 while IFS= read -r stale_execution; do
   stale_id="$(jq -r '.execution_id' <<<"$stale_execution")"
   reconciled_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  jq -c \
-    --arg completed_at "$reconciled_at" \
-    '{
-      name,
-      workload_id,
-      model_id,
-      branch_width,
-      complexity_strategy,
-      status: "FAILED",
-      provider_name,
-      provider_handle,
-      resource_profile,
-      progress: (
-        .progress + {
-          message: "Reconciled after the operator process stopped.",
-          error: "No RunPod pod or active hourly spend remained."
-        }
-      ),
-      started_at,
-      completed_at: $completed_at,
-      teardown_confirmed: true
-    }' <<<"$stale_execution" |
-    curl --fail --silent --show-error --max-time 15 \
-      -X PUT "$api_root/internal/research-compute-executions/$stale_id" \
-      -H "Authorization: Bearer $internal_token" \
-      -H 'Content-Type: application/json' \
-      --data-binary @- >/dev/null
+  stale_receipt_path="$receipt_directory/$stale_id.failure.json"
+  if [[ -f "$stale_receipt_path" ]]; then
+    stale_failure_receipt="$(<"$stale_receipt_path")"
+    stale_failure_receipt_digest="$(
+      persist_operational_failure_receipt \
+        "$stale_id" \
+        "$stale_failure_receipt"
+    )"
+    stale_observed_progress="$(
+      jq -ce '.last_observed_progress' <<<"$stale_failure_receipt"
+    )"
+    stale_remote_error="$(jq -c '.remote_error' <<<"$stale_failure_receipt")"
+    stale_operator_error="$(jq -ce '.operator_error' <<<"$stale_failure_receipt")"
+    stale_teardown_confirmed="$(
+      jq -r '.teardown_confirmed' <<<"$stale_failure_receipt"
+    )"
+    orphan_completed_at="$(jq -r '.completed_at // empty' <<<"$stale_failure_receipt")"
+    if [[ "$orphan_completed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+      reconciled_at="$orphan_completed_at"
+    fi
+  else
+    stale_observed_progress="$(jq -c '.progress' <<<"$stale_execution")"
+    stale_operator_error="$(
+      jq -cn \
+        '{
+          code: "STALE_OPERATOR_RECONCILIATION",
+          message: "No RunPod pod or active hourly spend remained.",
+          teardown_error: null
+        }'
+    )"
+    stale_teardown_confirmed=true
+    stale_remote_error="$(
+      jq -c \
+        '
+          .remote_error
+          // (
+            if (.error | type) == "string" and (.error | length) > 0
+            then {
+              code: (
+                if (.error | test("^[A-Z][A-Z0-9_]*$"))
+                then .error
+                else "REMOTE_WORKLOAD_FAILURE"
+                end
+              ),
+              message: (
+                if (
+                  (.error | test("^[A-Z][A-Z0-9_]*$"))
+                  and (.message | type) == "string"
+                  and (.message | length) > 0
+                )
+                then .message
+                else .error
+                end
+              )
+            }
+            else null
+            end
+          )
+        ' <<<"$stale_observed_progress"
+    )"
+    stale_provider_runtime_seconds="$(
+      jq -r \
+        '
+          .progress.elapsed_seconds as $elapsed
+          | .resource_profile.maximum_lifetime_minutes as $maximum_minutes
+          | if (
+              ($elapsed | type) == "number"
+              and $elapsed >= 0
+              and ($maximum_minutes | type) == "number"
+              and $maximum_minutes > 0
+              and $elapsed <= ($maximum_minutes * 60)
+            )
+            then $elapsed
+            else null
+            end
+        ' <<<"$stale_execution"
+    )"
+    stale_failure_receipt="$(
+      jq -cnS \
+        --argjson execution "$stale_execution" \
+        --argjson last_observed_progress "$stale_observed_progress" \
+        --argjson remote_error "$stale_remote_error" \
+        --argjson operator_error "$stale_operator_error" \
+        --arg provider_cli_version "$stale_provider_cli_version" \
+        --arg completed_at "$reconciled_at" \
+        --argjson provider_runtime_seconds "$stale_provider_runtime_seconds" \
+        '{
+          receipt_kind: "operational_failure@1",
+          scientific_proof: false,
+          proof_id: null,
+          execution_id: $execution.execution_id,
+          execution_name: $execution.name,
+          provider: {
+            name: "RunPod",
+            handle: $execution.provider_handle,
+            cli_version: $provider_cli_version
+          },
+          resource_profile: $execution.resource_profile,
+          handoff: {
+            revision: (
+              $execution.resource_profile.bundle_handoff_revision // null
+            ),
+            workload_bundle_digest: (
+              $execution.resource_profile.workload_bundle_digest // null
+            ),
+            workload_bundle_size_bytes: (
+              $execution.resource_profile.workload_bundle_size_bytes // null
+            ),
+            workload_bundle_path: (
+              $execution.resource_profile.workload_bundle_path // null
+            ),
+            bundle_stage_receipt_digest: (
+              $execution.resource_profile.bundle_stage_receipt_digest // null
+            ),
+            bootstrap_source_digest: (
+              $execution.resource_profile.bootstrap_source_digest // null
+            ),
+            network_volume_id: (
+              $execution.resource_profile.network_volume_id // null
+            )
+          },
+          workload: {
+            id: $execution.workload_id,
+            model_id: $execution.model_id,
+            static_branch_width: $execution.branch_width,
+            complexity_strategy: $execution.complexity_strategy
+          },
+          last_observed_progress: $last_observed_progress,
+          remote_error: $remote_error,
+          operator_error: $operator_error,
+          cost: {
+            total_usd: (
+              if (
+                ($execution.resource_profile.hourly_cost_usd | type) == "number"
+                and ($provider_runtime_seconds | type) == "number"
+              )
+              then (
+                $execution.resource_profile.hourly_cost_usd
+                * $provider_runtime_seconds
+                / 3600
+              )
+              else null
+              end
+            ),
+            estimated: (
+              ($execution.resource_profile.hourly_cost_usd | type) == "number"
+              and ($provider_runtime_seconds | type) == "number"
+            ),
+            hourly_rate_usd: (
+              $execution.resource_profile.hourly_cost_usd // null
+            ),
+            provider_runtime_seconds: $provider_runtime_seconds
+          },
+          started_at: $execution.started_at,
+          completed_at: $completed_at,
+          teardown_confirmed: true
+        }'
+    )"
+    stale_failure_receipt_digest="$(
+      persist_operational_failure_receipt \
+        "$stale_id" \
+        "$stale_failure_receipt"
+    )"
+  fi
+  stale_failed_progress="$(
+    jq -c \
+      --argjson operator_error "$stale_operator_error" \
+      --argjson remote_error "$stale_remote_error" \
+      --argjson teardown_confirmed "$stale_teardown_confirmed" \
+      '
+        . + {
+            phase: "failed",
+            message: (
+              if $remote_error == null
+              then "Reconciled after the operator process stopped."
+              else (.message // $remote_error.message)
+              end
+            ),
+            remote_error: $remote_error,
+            operator_error: $operator_error,
+            teardown_confirmed: $teardown_confirmed
+          }
+        | if $remote_error == null then del(.error) else . end
+      ' <<<"$stale_observed_progress"
+  )"
+  stale_payload="$(
+    jq -c \
+      --argjson progress "$stale_failed_progress" \
+      --arg completed_at "$reconciled_at" \
+      --arg failure_receipt_digest "$stale_failure_receipt_digest" \
+      --argjson teardown_confirmed "$stale_teardown_confirmed" \
+      '{
+        name,
+        workload_id,
+        model_id,
+        branch_width,
+        complexity_strategy,
+        status: "FAILED",
+        provider_name,
+        provider_handle,
+        resource_profile,
+        progress: $progress,
+        failure_receipt_digest: $failure_receipt_digest,
+        started_at,
+        completed_at: $completed_at,
+        teardown_confirmed: $teardown_confirmed
+      }' <<<"$stale_execution"
+  )"
+  curl --fail --silent --show-error --max-time 15 \
+    -X PUT "$api_root/internal/research-compute-executions/$stale_id" \
+    -H "Authorization: Bearer $internal_token" \
+    -H 'Content-Type: application/json' \
+    --data-binary @- <<<"$stale_payload" >/dev/null
   echo "Reconciled stale observer record $stale_id; no RunPod worker remained." >&2
 done < <(
   jq -c \
@@ -2690,8 +3227,8 @@ else
     and .reward_contract.revision == "correctness-gated-efficiency@1"
     and .reward_contract.incorrect_terminal_reward == 0
     and .reward_contract.efficiency_adjustment_bounds == [-0.05, 0]
-    and .optimizer_contract.learning_rate == 0.00002
-    and .optimizer_contract.reference_kl_coefficient == 0.2
+    and .optimizer_contract.learning_rate == $expected_learning_rate
+    and .optimizer_contract.reference_kl_coefficient == $expected_reference_kl_coefficient
     and .optimizer_contract.reference_kl_estimator == "k3_log_ratio_penalty"
     and .optimizer_contract.reference_policy == "disabled_adapter_base"
     and .optimizer_contract.reference_anchor_scope == "all_accepted_actions_including_greedy_prefix"
@@ -2747,8 +3284,8 @@ else
     and .training_configuration.maximum_final_evaluation_reserve_seconds == $expected_final_evaluation_reserve
     and .training_configuration.final_evaluation_reserve_source == "retained_checkpoint"
     and .training_configuration.maximum_consecutive_malformed_windows == 2
-    and .training_configuration.learning_rate == 0.00002
-    and .training_configuration.reference_kl_coefficient == 0.2
+    and .training_configuration.learning_rate == $expected_learning_rate
+    and .training_configuration.reference_kl_coefficient == $expected_reference_kl_coefficient
     and .training_configuration.reference_kl_estimator == "k3_log_ratio_penalty"
     and .training_configuration.reference_policy == "disabled_adapter_base"
     and .training_configuration.reference_anchor_scope == "all_accepted_actions_including_greedy_prefix"
@@ -3101,6 +3638,8 @@ if ! jq -e \
   --argjson expected_replay_tasks_per_level "$replay_tasks_per_level" \
   --argjson expected_maximum_updates "$maximum_updates" \
   --argjson expected_final_evaluation_reserve "$maximum_final_evaluation_reserve_seconds" \
+  --argjson expected_learning_rate "$expected_learning_rate" \
+  --argjson expected_reference_kl_coefficient "$expected_reference_kl_coefficient" \
   "$proof_assertion" >/dev/null <<<"$metrics"; then
   failure_message="The remote result did not satisfy the declared proof contract."
   echo "The remote workload completed but did not meet the proof assertions." >&2
@@ -3334,25 +3873,31 @@ jq -n \
 if [[ "$larger_model_mode" == "screen" ]]; then
   last_progress="$(
     jq -c \
-      '. + {
-        phase: "complete",
-        message: "Eligibility recorded and teardown confirmed.",
-        error: null
-      }' <<<"$last_progress"
+      '
+        del(.error, .remote_error, .operator_error)
+        | . + {
+            phase: "complete",
+            message: "Eligibility recorded and teardown confirmed."
+          }
+      ' <<<"$last_progress"
   )"
   failure_message="The completed larger-model eligibility screen could not be published."
   publish_execution "SUCCEEDED" "$last_progress" "$completed_at" "true"
+  terminal_published=true
 elif [[ "$study_eligibility_only" == "1" ]]; then
   last_progress="$(
     jq -c \
-      '. + {
-        phase: "complete",
-        message: "Protocol eligibility recorded and provider teardown confirmed.",
-        error: null
-      }' <<<"$last_progress"
+      '
+        del(.error, .remote_error, .operator_error)
+        | . + {
+            phase: "complete",
+            message: "Protocol eligibility recorded and provider teardown confirmed."
+          }
+      ' <<<"$last_progress"
   )"
   failure_message="The completed eligibility screen could not be published."
   publish_execution "SUCCEEDED" "$last_progress" "$completed_at" "true"
+  terminal_published=true
 else
   failure_message="A verified local proof receipt is pending ingestion."
   proof_ingested=false
@@ -3377,6 +3922,7 @@ else
         -H 'Content-Type: application/json' \
         --data-binary @- <<<"$proof_payload"
     )"; then
+      terminal_published=true
       jq . <<<"$proof_response"
       proof_ingested=true
       break

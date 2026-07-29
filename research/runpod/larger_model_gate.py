@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@6"
+PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@7"
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 MODEL_REVISION = "c03e6d358207e414f1eca0bb1891e29f1db0e242"
 MODEL_PARAMETER_COUNT = 7_615_616_512
@@ -86,17 +86,20 @@ SOURCE_CONTRACT_SHA256 = {
         "02b57b074c72e81ae3c72ab82121d226656378ab47c8aa51215091a913c41285"
     ),
     "repository_repair_large_model_eligibility.py": (
-        "1634db11cdc1212271aec39257a2c3eb442bcb0a23906acab2626d0fb44e83bf"
+        "309eac07fcd578827f1952963c5c2bd45fd3e5266b3f76239e8d0f9e570699c2"
     ),
     "repository_repair_large_model_pilot.py": (
-        "e4606be45cd6c4b090fd48ef2db75d02fd7a3dc8f784528f6150a3b830f4c1ad"
+        "a910c515b7497283ec497ce4c9f33871c41be6555bce8aaf244e72b9d4c38b4d"
     ),
-    "repository_repair_study.py": (
-        "7799ff8969d67ad620db0f8c6bc9ee66bd0ef0300866cd0160696ff80fae7a0c"
+    "repository_repair_large_model_study.py": (
+        "e38d4c979d53bde71a98a7edb2da9f7c6b9110a8b755c1c129e7a72e5c1b0cd4"
+    ),
+    "repository_repair_large_model_trainer.py": (
+        "27ecb447306dae587089aab3eb6e0d9506b5f79468c4bf9d79bde1f942744689"
     ),
 }
 SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
-SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@6"
+SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@7"
 CAPPED_GENERATION_TOKENS = 192
 CLEANUP_COST_RESERVE_SECONDS = 120
 BUNDLE_HANDOFF_REVISION = "runpod-volume-bundle-handoff@1"
@@ -188,8 +191,8 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "optimization_seed": 137,
     },
     "pilot_limits": {
-        "maximum_hourly_cost_usd": 4.0,
-        "maximum_total_cost_usd": 16.0,
+        "maximum_hourly_cost_usd": 3.25,
+        "maximum_total_cost_usd": 13.0,
         "maximum_lifetime_seconds": 14_280,
         "boot_timeout_seconds": 360,
         "model_load_timeout_seconds": 1_200,
@@ -233,8 +236,8 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         },
     },
     "pilot": {
-        "workload_revision": "runpod-repository-repair-large-model-pilot@4",
-        "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@17",
+        "workload_revision": "runpod-repository-repair-large-model-pilot@5",
+        "objective_id": "verified-repair-chain-transactional-retention-policy-gradient@18",
         "reward_contract_revision": "correctness-gated-efficiency@1",
         "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
         "localization_telemetry_strategy": "all_fault_sources_observed",
@@ -252,6 +255,9 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "maximum_final_evaluation_reserve_seconds": 1_800,
         "training_microbatch_size": 1,
         "maximum_input_tokens": 2_048,
+        "retention_transaction_revision": "adapter-optimizer-policy-lineage@1",
+        "learning_rate": 1e-5,
+        "reference_kl_coefficient": 1.0,
         "minimum_effective_policy_updates": 1,
         "final_evaluation_safety_factor": 1.5,
     },

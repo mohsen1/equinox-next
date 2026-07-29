@@ -260,15 +260,33 @@ def test_larger_model_direct_launch_caps_are_manifest_pinned() -> None:
         f"EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS={manifest['pilot_limits']['stale_progress_timeout_seconds']}"
         in pilot
     )
+    assert (
+        f"EQUINOX_RUNPOD_MAX_HOURLY_COST={manifest['pilot_limits']['maximum_hourly_cost_usd']:.2f}"
+    ) in pilot
+    assert (
+        f"EQUINOX_RUNPOD_MAX_TOTAL_COST={manifest['pilot_limits']['maximum_total_cost_usd']:.2f}"
+    ) in pilot
     assert "EQUINOX_RL_SEED=137" in screen
     assert "EQUINOX_RL_SEED=137" in pilot
     assert "verify-sources" in screen
     assert "verify-sources" in pilot
     assert "verify-sources" in launcher
     assert ".source_contract_digest == $expected_source_contract_digest" in launcher
+    assert "jq -r '.pilot.learning_rate'" in launcher
+    assert "jq -r '.pilot.reference_kl_coefficient'" in launcher
+    assert ".optimizer_contract.learning_rate == $expected_learning_rate" in launcher
+    assert (
+        ".optimizer_contract.reference_kl_coefficient == $expected_reference_kl_coefficient"
+    ) in launcher
+    assert ".training_configuration.learning_rate == $expected_learning_rate" in launcher
+    assert (
+        ".training_configuration.reference_kl_coefficient == $expected_reference_kl_coefficient"
+    ) in launcher
+    assert ".optimizer_contract.learning_rate == 0.00002" not in launcher
+    assert ".optimizer_contract.reference_kl_coefficient == 0.2" not in launcher
 
 
-def test_larger_model_launcher_binds_profile_six_interface_and_transport_chain() -> None:
+def test_larger_model_launcher_binds_profile_seven_interface_and_transport_chain() -> None:
     manifest = load_manifest()
     launcher = LAUNCHER.read_text(encoding="utf-8")
     larger_model_case = launcher[
@@ -277,12 +295,12 @@ def test_larger_model_launcher_binds_profile_six_interface_and_transport_chain()
         )
     ]
 
-    assert manifest["profile_id"] == "qwen2.5-coder-7b-runpod-h100@6"
-    assert manifest["screen"]["workload_revision"] == "larger-model-eligibility-screen@6"
-    assert manifest["pilot"]["workload_revision"] == "runpod-repository-repair-large-model-pilot@4"
+    assert manifest["profile_id"] == "qwen2.5-coder-7b-runpod-h100@7"
+    assert manifest["screen"]["workload_revision"] == "larger-model-eligibility-screen@7"
+    assert manifest["pilot"]["workload_revision"] == "runpod-repository-repair-large-model-pilot@5"
     assert (
         manifest["pilot"]["objective_id"]
-        == "verified-repair-chain-root-branch-retention-policy-gradient@17"
+        == "verified-repair-chain-transactional-retention-policy-gradient@18"
     )
     assert (
         manifest["pilot"]["policy_credit_scope"]

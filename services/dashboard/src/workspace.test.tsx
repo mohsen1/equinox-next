@@ -51,6 +51,7 @@ function largerModelEligibilityExecution(eligible: boolean) {
     },
     proof_id: null,
     receipt_digest: "sha256:eligibility",
+    failure_receipt_digest: null,
     started_at: timestamp,
     updated_at: timestamp,
     completed_at: timestamp,
@@ -107,6 +108,7 @@ describe("Runs and Proofs workspaces", () => {
               },
               proof_id: null,
               receipt_digest: null,
+              failure_receipt_digest: null,
               started_at: updatedAt,
               updated_at: updatedAt,
               completed_at: null,
@@ -167,6 +169,10 @@ describe("Runs and Proofs workspaces", () => {
             update: 6,
             maximum_updates: 120,
             policy_update_count: 4,
+            attempted_policy_update_count: 4,
+            effective_policy_update_count: 3,
+            retained_policy_update_count: 2,
+            retention_rollback_count: 1,
             current_level: 0,
             maximum_level: 3,
             curriculum_decision: {
@@ -208,6 +214,15 @@ describe("Runs and Proofs workspaces", () => {
             },
             validation_history: [
               {
+                update: 4,
+                level: 0,
+                examples: 8,
+                exact_successes: 5,
+                exact_rate: 0.625,
+                exact_rate_95ci: [0.305738, 0.863158],
+                retention_transaction_disposition: "provisional",
+              },
+              {
                 update: 5,
                 level: 0,
                 examples: 8,
@@ -215,6 +230,7 @@ describe("Runs and Proofs workspaces", () => {
                 exact_rate: 0.75,
                 exact_rate_95ci: [0.40927, 0.928522],
                 mastery_streak: 0,
+                retention_transaction_disposition: "retain",
                 fixed_guard_levels: [0, 1],
                 fixed_guard_paired_change: {
                   examples: 16,
@@ -226,17 +242,28 @@ describe("Runs and Proofs workspaces", () => {
                 },
                 curriculum_paired_change: {
                   examples: 8,
-                  improved: 0,
-                  regressed: 1,
+                  improved: 1,
+                  regressed: 0,
                   unchanged: 7,
-                  net_improved: -1,
+                  net_improved: 1,
                   mcnemar_exact_p_value: 1,
                 },
+              },
+              {
+                update: 6,
+                level: 0,
+                examples: 8,
+                exact_successes: 5,
+                exact_rate: 0.625,
+                exact_rate_95ci: [0.305738, 0.863158],
+                retention_transaction_disposition: "rollback",
+                checkpoint_candidate_retained: false,
               },
             ],
           },
           proof_id: null,
           receipt_digest: null,
+          failure_receipt_digest: null,
           started_at: timestamp,
           updated_at: timestamp,
           completed_at: null,
@@ -265,7 +292,9 @@ describe("Runs and Proofs workspaces", () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain("6 / 120 · 4 policy");
+    expect(container.textContent).toContain(
+      "6 / 120 · 4 attempted · 3 effective · 2 retained · 1 rolled back",
+    );
     expect(container.textContent).toContain("Level 1 → 2 · 4/4 solved");
     expect(container.textContent).toContain("+12.5 pts vs baseline");
     expect(container.textContent).toContain("99.0% valid");
@@ -273,9 +302,11 @@ describe("Runs and Proofs workspaces", () => {
     expect(container.textContent).toContain("12m 30s training");
     expect(container.textContent).toContain("45m 0s evaluation");
     expect(container.textContent).toContain(
-      "Fixed 0, 1 · +1 / −0 · rotating +0 / −1",
+      "Fixed 0, 1 · +1 / −0 · rotating +1 / −0",
     );
     expect(container.textContent).toContain("Best retained");
+    expect(container.textContent).toContain("Provisional");
+    expect(container.textContent).toContain("Rolled back");
   });
 
   it.each([
@@ -359,10 +390,21 @@ describe("Runs and Proofs workspaces", () => {
       ...largerModelEligibilityExecution(false),
       execution_id: "runpod-proof-larger-model-failed",
       status: "FAILED",
+      failure_receipt_digest: `sha256:${"f".repeat(64)}`,
       progress: {
         phase: "eligibility_branch_collection",
         error:
           "The completed eligibility screen did not expose its full terminal branch tree.",
+        remote_error: {
+          code: "REMOTE_WORKLOAD_FAILURE",
+          message:
+            "The completed eligibility screen did not expose its full terminal branch tree.",
+          exit_code: 1,
+        },
+        operator_error: {
+          code: "RUNPOD_OPERATOR_FAILURE",
+          message: "The remote workload failed with exit code 1.",
+        },
         larger_model_profile_id: "qwen2.5-coder-7b-runpod-h100@5",
         policy_mutation_enabled: false,
         branch_groups_completed: 7,
@@ -417,9 +459,63 @@ describe("Runs and Proofs workspaces", () => {
       "Policy mutationDisabled · verification unavailable",
     );
     expect(identitySection?.textContent).toContain("ProofNot produced");
+    const failureNotice = container.querySelector(".notice.negative");
+    expect(failureNotice?.textContent).toContain(
+      "RemoteREMOTE_WORKLOAD_FAILURE",
+    );
+    expect(failureNotice?.textContent).toContain("full terminal branch tree");
+    expect(failureNotice?.textContent).toContain(
+      "OperatorRUNPOD_OPERATOR_FAILURE",
+    );
+    expect(failureNotice?.textContent).toContain("Process exit 1");
+    expect(failureNotice?.textContent).toContain("sha256:fffff");
+    expect(failureNotice?.textContent).toContain("TeardownConfirmed");
     expect(container.textContent).not.toContain("Awaiting model load");
     expect(container.textContent).not.toContain("Awaiting samples");
     expect(container.textContent).not.toContain("ProofPending");
+  });
+
+  it("keeps the operational receipt visible after scientific recovery", async () => {
+    const failureDigest = `sha256:${"f".repeat(64)}`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        response({
+          ...largerModelEligibilityExecution(true),
+          proof_id: "research_proof_recovered",
+          receipt_digest: `sha256:${"a".repeat(64)}`,
+          failure_receipt_digest: failureDigest,
+        }),
+      ),
+    );
+    window.history.replaceState(
+      null,
+      "",
+      "/runs/research/runpod-proof-larger-model-eligible",
+    );
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <BrowserRouter>
+          <Routes>
+            <Route
+              path="/runs/research/:executionId"
+              element={<ResearchRunPage />}
+            />
+          </Routes>
+        </BrowserRouter>,
+      );
+      await Promise.resolve();
+    });
+
+    const identitySection = [...container.querySelectorAll(".section")].find(
+      (section) => section.querySelector("h2")?.textContent === "Identity",
+    );
+    expect(identitySection?.textContent).toContain("Prior failure receipt");
+    expect(
+      identitySection?.querySelector(`[title="${failureDigest}"]`),
+    ).not.toBeNull();
   });
 
   it("links each proof row to focused proof evidence", async () => {
@@ -476,6 +572,7 @@ describe("Runs and Proofs workspaces", () => {
   });
 
   it("links proof evidence back to the run and trajectory", async () => {
+    const priorFailureDigest = `sha256:${"f".repeat(64)}`;
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -526,6 +623,7 @@ describe("Runs and Proofs workspaces", () => {
           },
           evidence: {
             receipt_digest: "sha256:receipt",
+            failure_receipt_digest: priorFailureDigest,
             teardown_confirmed: true,
           },
           teardown_confirmed: true,
@@ -555,6 +653,10 @@ describe("Runs and Proofs workspaces", () => {
       ),
     ).not.toBeNull();
     expect(container.textContent).toContain("sha256:receipt");
+    expect(container.textContent).toContain("Prior failure receipt");
+    expect(
+      container.querySelector(`[title="${priorFailureDigest}"]`),
+    ).not.toBeNull();
     expect(container.textContent).toContain("$0.11 est.");
     expect(container.textContent).toContain("Confirmed");
   });

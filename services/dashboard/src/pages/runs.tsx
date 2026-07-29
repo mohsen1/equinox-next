@@ -151,7 +151,6 @@ export function ResearchRunPage() {
   );
   const run = execution.data;
   const phase = stringValue(run?.progress.phase);
-  const error = stringValue(run?.progress.error);
   const claimStrength = stringValue(run?.progress.claim_strength);
   const attempt = numberValue(run?.progress.attempt);
   const isEligibilityScreen =
@@ -200,9 +199,9 @@ export function ResearchRunPage() {
         >
           {run ? (
             <div className="research-observer">
-              {error ? (
+              {run.status === "FAILED" ? (
                 <Notice tone="negative" title="Run failed">
-                  {error}
+                  <KeyValue items={failureItems(run)} />
                 </Notice>
               ) : run.status === "SUCCEEDED" &&
                 (!isEligibilityScreen || !run.teardown_confirmed) ? (
@@ -311,6 +310,16 @@ export function ResearchRunPage() {
                         "Pending"
                       ),
                     },
+                    ...(run.status === "SUCCEEDED" && run.failure_receipt_digest
+                      ? [
+                          {
+                            label: "Prior failure receipt",
+                            value: (
+                              <MachineId value={run.failure_receipt_digest} />
+                            ),
+                          },
+                        ]
+                      : []),
                     { label: "Updated", value: formatDate(run.updated_at) },
                   ]}
                 />
@@ -320,6 +329,79 @@ export function ResearchRunPage() {
         </AsyncState>
       </div>
     </>
+  );
+}
+
+function failureItems(run: ResearchComputeExecution) {
+  const legacyRemoteMessage = stringValue(run.progress.error);
+  const remoteError = executionError(
+    run.progress.remote_error,
+    legacyRemoteMessage,
+  );
+  const operatorError = executionError(run.progress.operator_error);
+  return [
+    ...(remoteError
+      ? [
+          {
+            label: "Remote",
+            value: <FailureError error={remoteError} />,
+            span: true,
+          },
+        ]
+      : []),
+    ...(operatorError
+      ? [
+          {
+            label: "Operator",
+            value: <FailureError error={operatorError} />,
+            span: true,
+          },
+        ]
+      : []),
+    {
+      label: "Failure receipt",
+      value: run.failure_receipt_digest ? (
+        <MachineId value={run.failure_receipt_digest} />
+      ) : (
+        "Not persisted"
+      ),
+    },
+    {
+      label: "Teardown",
+      value: run.teardown_confirmed ? "Confirmed" : "Unconfirmed",
+    },
+  ];
+}
+
+interface ExecutionError {
+  code: string | null;
+  message: string;
+  exitCode: number | null;
+}
+
+function executionError(
+  value: unknown,
+  fallbackMessage: string | null = null,
+): ExecutionError | null {
+  const error = recordValue(value);
+  const message = stringValue(error?.message) ?? fallbackMessage;
+  if (!message) return null;
+  return {
+    code: stringValue(error?.code),
+    message,
+    exitCode: numberValue(error?.exit_code),
+  };
+}
+
+function FailureError({ error }: { error: ExecutionError }) {
+  return (
+    <span className="failure-error">
+      {error.code ? <code>{error.code}</code> : null}
+      <span>{error.message}</span>
+      {error.exitCode !== null ? (
+        <small>Process exit {error.exitCode}</small>
+      ) : null}
+    </span>
   );
 }
 
@@ -512,6 +594,28 @@ function progressItems(run: ResearchComputeExecution) {
   const elapsed = numberValue(progress.elapsed_seconds);
   const informativeGroupRate = numberValue(progress.informative_group_rate);
   const policyUpdates = numberValue(progress.policy_update_count);
+  const attemptedPolicyUpdates = numberValue(
+    progress.attempted_policy_update_count,
+  );
+  const effectivePolicyUpdates = numberValue(
+    progress.effective_policy_update_count,
+  );
+  const retainedPolicyUpdates = numberValue(
+    progress.retained_policy_update_count,
+  );
+  const retentionRollbacks = numberValue(progress.retention_rollback_count);
+  const policyLineage =
+    attemptedPolicyUpdates === null
+      ? policyUpdates === null
+        ? null
+        : `${policyUpdates} policy`
+      : `${attemptedPolicyUpdates} attempted · ${
+          effectivePolicyUpdates ?? "—"
+        } effective · ${retainedPolicyUpdates ?? "—"} retained${
+          retentionRollbacks !== null && retentionRollbacks > 0
+            ? ` · ${retentionRollbacks} rolled back`
+            : ""
+        }`;
   const pendingSignalGroups = numberValue(
     progress.pending_informative_group_count,
   );
@@ -556,7 +660,7 @@ function progressItems(run: ResearchComputeExecution) {
         : update === null
           ? "Not started"
           : `${update}${maximumUpdates !== null ? ` / ${maximumUpdates}` : ""}${
-              policyUpdates !== null ? ` · ${policyUpdates} policy` : ""
+              policyLineage !== null ? ` · ${policyLineage}` : ""
             }${
               pendingSignalGroups !== null && pendingSignalGroups > 0
                 ? ` · ${pendingSignalGroups} pending`
@@ -744,17 +848,26 @@ function ValidationHistory({
                 <td>{formatInterval(row.exact_rate_95ci)}</td>
                 <td>
                   <span>
-                    {isBest
-                      ? "Best retained"
-                      : row.retention_guard_passed === false
-                        ? "Guard rejected"
-                        : row.mastered
-                          ? `Mastery ${row.mastery_streak ?? 1}`
-                          : row.regression_streak
-                            ? `Regression ${row.regression_streak}`
-                            : isBaseline
-                              ? "Reference"
-                              : "Continue"}
+                    {row.retention_transaction_disposition === "retain"
+                      ? isBest
+                        ? "Best retained"
+                        : "Retained"
+                      : row.retention_transaction_disposition === "rollback"
+                        ? "Rolled back"
+                        : row.retention_transaction_disposition ===
+                            "provisional"
+                          ? "Provisional"
+                          : isBest
+                            ? "Best retained"
+                            : row.retention_guard_passed === false
+                              ? "Guard rejected"
+                              : row.mastered
+                                ? `Mastery ${row.mastery_streak ?? 1}`
+                                : row.regression_streak
+                                  ? `Regression ${row.regression_streak}`
+                                  : isBaseline
+                                    ? "Reference"
+                                    : "Continue"}
                   </span>
                   {row.fixed_guard_paired_change &&
                   row.fixed_guard_levels?.length ? (

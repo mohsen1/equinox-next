@@ -458,12 +458,38 @@ def test_remote_runner_preserves_specific_failed_progress_after_budget_exhaustio
     run_remote_runner(tmp_path, "always-fail")
 
     observed = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
-    assert observed == specific_progress
+    assert observed == {
+        **specific_progress,
+        "remote_error": {
+            "code": "REMOTE_WORKLOAD_FAILURE",
+            "message": "RuntimeError: CUDA out of memory",
+            "exit_code": 1,
+        },
+    }
 
 
 def test_remote_runner_preserves_last_known_progress_when_budget_is_exhausted(
     tmp_path: Path,
 ) -> None:
+    validation_history = [
+        {
+            "update": 5,
+            "level": 0,
+            "fixed_guard_paired_change": {"improved": 0, "regressed": 1},
+        }
+    ]
+    branch_snapshots = [
+        {
+            "snapshot_id": "update-5-snapshot-a",
+            "siblings": [
+                {
+                    "index": index,
+                    "steps": [{"step_id": f"sibling-{index}-1", "tool": "edit"}],
+                }
+                for index in range(4)
+            ],
+        }
+    ]
     (tmp_path / "workload-attempt-count").write_text("2\n", encoding="utf-8")
     (tmp_path / "progress.json").write_text(
         json.dumps(
@@ -475,6 +501,9 @@ def test_remote_runner_preserves_last_known_progress_when_budget_is_exhausted(
                 "update": 19,
                 "current_level": 2,
                 "elapsed_seconds": 3100.5,
+                "validation_history": validation_history,
+                "branch_snapshots": branch_snapshots,
+                "latest_branch_snapshot": branch_snapshots[-1],
             }
         ),
         encoding="utf-8",
@@ -488,6 +517,14 @@ def test_remote_runner_preserves_last_known_progress_when_budget_is_exhausted(
     assert progress["update"] == 19
     assert progress["current_level"] == 2
     assert progress["elapsed_seconds"] == 3100.5
+    assert progress["validation_history"] == validation_history
+    assert progress["branch_snapshots"] == branch_snapshots
+    assert progress["latest_branch_snapshot"] == branch_snapshots[-1]
+    assert progress["remote_error"] == {
+        "code": "WORKLOAD_ATTEMPT_BUDGET_EXHAUSTED",
+        "message": "The bounded workload attempt budget is exhausted.",
+        "exit_code": 1,
+    }
 
 
 def test_remote_runner_uses_the_sequence_workload_progress_schema(tmp_path: Path) -> None:
@@ -559,10 +596,121 @@ def test_remote_runner_clears_stale_exit_code_before_resumed_work(
     )
     (tmp_path / "workload-attempt-count").write_text("1\n", encoding="utf-8")
     (tmp_path / "exit_code").write_text("74\n", encoding="utf-8")
+    (tmp_path / "progress.json").write_text(
+        json.dumps(
+            {
+                "phase": "failed",
+                "error": "PREVIOUS_REMOTE_FAILURE",
+                "remote_error": {
+                    "code": "PREVIOUS_REMOTE_FAILURE",
+                    "message": "Previous attempt failed.",
+                },
+                "operator_error": {
+                    "code": "PREVIOUS_OPERATOR_FAILURE",
+                    "message": "Previous operator failed.",
+                },
+                "validation_history": [{"update": 3}],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     run_remote_runner(tmp_path, "assert-exit-cleared")
 
     assert (tmp_path / "exit_code").read_text(encoding="utf-8").strip() == "0"
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["phase"] == "resuming"
+    assert progress["validation_history"] == [{"update": 3}]
+    assert "error" not in progress
+    assert "remote_error" not in progress
+    assert "operator_error" not in progress
+
+
+def test_remote_runner_uses_progress_message_for_a_stable_legacy_error_code(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workload-attempt-count").write_text("2\n", encoding="utf-8")
+    (tmp_path / "progress.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "phase": "failed",
+                "message": "No policy-bearing checkpoint passed retention.",
+                "error": "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_remote_runner(tmp_path, "always-fail")
+
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["remote_error"] == {
+        "code": "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE",
+        "message": "No policy-bearing checkpoint passed retention.",
+        "exit_code": 1,
+    }
+
+
+def test_remote_runner_uses_default_for_a_non_string_legacy_progress_message(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workload-attempt-count").write_text("2\n", encoding="utf-8")
+    (tmp_path / "progress.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "phase": "failed",
+                "message": {"unexpected": "object"},
+                "error": "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_remote_runner(tmp_path, "always-fail")
+
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["remote_error"] == {
+        "code": "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE",
+        "message": "The remote workload failed.",
+        "exit_code": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "malformed_remote_error",
+    [
+        {"code": 17, "message": "Malformed remote code."},
+        {"code": "REMOTE_WORKLOAD_FAILURE", "message": None},
+    ],
+)
+def test_remote_runner_reconstructs_malformed_structured_remote_errors(
+    tmp_path: Path,
+    malformed_remote_error: dict[str, object],
+) -> None:
+    (tmp_path / "workload-attempt-count").write_text("2\n", encoding="utf-8")
+    (tmp_path / "progress.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "phase": "failed",
+                "message": "No policy-bearing checkpoint passed retention.",
+                "error": "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE",
+                "remote_error": malformed_remote_error,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_remote_runner(tmp_path, "always-fail")
+
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["remote_error"] == {
+        "code": "PILOT_PRODUCED_NO_RETAINED_POLICY_UPDATE",
+        "message": "No policy-bearing checkpoint passed retention.",
+        "exit_code": 1,
+    }
 
 
 def test_remote_runner_recovers_a_completed_pending_result_after_restart(

@@ -590,6 +590,34 @@ valid objective-v15 result after artifact download. The launcher now derives the
 objective revision from the bundled workload, and the proof-ingestion recovery path is
 restricted to a matching post-contract failure with already-confirmed teardown.
 
+The first H100 profile-`@6` pilot used `Qwen2.5-Coder-7B-Instruct` with the same static
+`K=4` branch contract and adaptive curriculum. At update 10 its candidate improved 11
+and regressed one of 32 fixed paired validation tasks, while its rotating guard improved
+one and regressed none. The fixed net gain was significant, but the regression correctly
+blocked retention. Because update 0 remained the best checkpoint, the pilot refused to
+construct the sealed test split. The execution is evidence of validation learning and
+gate behavior, not a held-out learning result.
+
+Profile `qwen2.5-coder-7b-runpod-h100@7` adopts transactional retention revision
+`adapter-optimizer-policy-lineage@1` under pilot
+`runpod-repository-repair-large-model-pilot@5` and objective
+`verified-repair-chain-transactional-retention-policy-gradient@18`. Every policy-bearing
+step now runs the unchanged fixed-plus-rotating paired guard. A regression restores the
+retained adapter and optimizer immediately, rolls effective policy lineage back to the
+retained count, and clears pending on-policy examples. A safe tie remains provisional
+and cannot advance mastery. A strict zero-regression improvement commits adapter,
+optimizer, and lineage atomically. Checkpoints distinguish attempted, effective,
+retained, and rolled-back policy updates. The pilot uses learning rate `1e-5` and
+reference-KL coefficient `1.0`; static branch width, curriculum controller, credit
+scope, verifier, and final-test isolation do not change.
+
+Failed provider executions produce a separate immutable `operational_failure@1`
+receipt after cleanup. It preserves the last structured progress, separates remote
+workload failure from operator or teardown failure, and binds the provider and staged
+handoff identity. Its `scientific_proof` field is false and its `proof_id` is null, so
+the failure remains visible on the run and trajectory surfaces without entering the
+Proofs evidence set.
+
 ## Non-goals
 
 - Dynamic branch width.

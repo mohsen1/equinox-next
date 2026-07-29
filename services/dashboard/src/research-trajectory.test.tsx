@@ -478,4 +478,59 @@ describe("research trajectory", () => {
     expect(html).toContain("Optimizer · anchor only");
     expect(html).toContain("0 / 24");
   });
+
+  it.each([
+    {
+      status: "pending" as const,
+      expected: "Optimizer · attempted · pending validation",
+      resolutionUpdate: undefined,
+    },
+    {
+      status: "retained" as const,
+      expected: "Optimizer · retained",
+      resolutionUpdate: 5,
+    },
+    {
+      status: "rolled_back" as const,
+      expected: "Optimizer · rolled back",
+      resolutionUpdate: 6,
+    },
+  ])(
+    "shows $status transactional optimizer lineage",
+    ({ status, expected, resolutionUpdate }) => {
+      const html = renderToStaticMarkup(
+        <ResearchBranchWorkspace
+          snapshot={{
+            ...multiStepSnapshot,
+            optimizer_update: {
+              ...multiStepSnapshot.optimizer_update!,
+              retention_lineage_status: status,
+              retention_resolution_update: resolutionUpdate,
+              retention_resolution_reason:
+                status === "rolled_back"
+                  ? "retention_guard_regression"
+                  : "retention_guard_improvement",
+            },
+          }}
+          selectedSibling={multiStepSnapshot.siblings[0]}
+          selectedActionId="sibling-0-3"
+          view="outline"
+          selectSibling={() => undefined}
+          selectAction={() => undefined}
+        />,
+      );
+
+      expect(html).toContain(expected);
+      expect(html).toContain(
+        status === "rolled_back" ? "Rolled Back" : friendlyLineage(status),
+      );
+      if (resolutionUpdate !== undefined) {
+        expect(html).toContain(`at update ${resolutionUpdate}`);
+      }
+    },
+  );
 });
+
+function friendlyLineage(status: "pending" | "retained"): string {
+  return status === "pending" ? "Pending" : "Retained";
+}

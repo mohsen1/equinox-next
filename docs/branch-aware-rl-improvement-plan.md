@@ -1,7 +1,7 @@
 # Branch-aware RL improvement plan
 
 Status: working plan
-Date: 2026-07-27
+Date: 2026-07-29
 
 ## Recommendation
 
@@ -409,6 +409,35 @@ result because its proof assertion still named objective v14. The assertion now 
 `OBJECTIVE_ID` from the bundled workload, and proof ingestion can recover only this
 exact post-contract failure when provider identity, workload, model, start time, and
 confirmed teardown all match.
+
+The first H100 profile-`@6` pilot
+`runpod-proof-20260729T160227Z-df4c4ce1` tested the same branch-aware method with
+`Qwen2.5-Coder-7B-Instruct`. The candidate at update 10 learned strongly on the fixed
+validation guard: `+11/−1` over 32 paired tasks, net `+10`, exact McNemar
+`p=0.00634765625`. Its rotating guard added `+1/−0`. The single fixed-guard regression
+correctly prevented retention. The best checkpoint therefore remained update 0 and the
+pilot refused to create any sealed test task. This is validation learning, not held-out
+post-training evidence.
+
+The failure exposed a transaction boundary rather than a weak learning signal. The
+trainer previously validated every five updates and did not restore the retained adapter
+after the first rejected window, so later optimization continued from an unsafe policy.
+Profile `qwen2.5-coder-7b-runpod-h100@7` introduces
+`adapter-optimizer-policy-lineage@1`: every policy-bearing step is guarded; regression
+restores adapter and optimizer immediately and discards pending examples collected under
+the rejected policy; a safe tie remains provisional; and a strict zero-regression
+improvement retains adapter, optimizer, and effective lineage together. Attempted,
+effective, retained, and rollback counts survive checkpoint resume. The exact paired
+acceptance rule, static `K=4`, dynamic complexity, teacher-free optimization, and isolated
+one-time test remain unchanged. The profile also lowers the learning rate to `1e-5` and
+raises reference KL to `1.0`.
+
+Operational failures now retain the complete last observed branch, validation, and
+curriculum progress. A failed execution writes an immutable
+`operational_failure@1` receipt after cleanup, records remote and operator errors
+separately, binds provider and staged-bundle identity, and reports whether teardown was
+confirmed. It is explicitly not a scientific proof and cannot enter the Proofs
+workspace.
 
 ## What we learned
 

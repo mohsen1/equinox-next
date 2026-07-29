@@ -1,7 +1,11 @@
+import json
+from pathlib import Path
+
 from research.runpod.revision31_report import (
     branching_gate,
     external_transfer_gate,
     internal_learning_gate,
+    receipt_by_execution,
 )
 
 SEEDS = (137, 269, 443, 617, 887)
@@ -65,3 +69,23 @@ def test_gates_remain_incomplete_when_evidence_is_missing() -> None:
     assert internal_learning_gate({})["status"] == "INCOMPLETE"
     assert external_transfer_gate({})["status"] == "INCOMPLETE"
     assert branching_gate({})["status"] == "INCOMPLETE"
+
+
+def test_scientific_report_excludes_operational_failure_receipts(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "runpod-proof-success.json").write_text(
+        json.dumps({"teardown_confirmed": True}),
+        encoding="utf-8",
+    )
+    (tmp_path / "runpod-proof-failed.failure.json").write_text(
+        json.dumps(
+            {
+                "receipt_kind": "operational_failure@1",
+                "scientific_proof": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert receipt_by_execution(tmp_path) == {"runpod-proof-success": {"teardown_confirmed": True}}

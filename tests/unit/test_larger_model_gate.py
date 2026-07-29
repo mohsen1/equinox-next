@@ -316,8 +316,8 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     }
     assert manifest["screen"]["thresholds"]["maximum_predicted_final_evaluation_seconds"] == 1_440
     assert manifest["pilot"] == {
-        "workload_revision": "runpod-repository-repair-large-model-pilot@4",
-        "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@17",
+        "workload_revision": "runpod-repository-repair-large-model-pilot@5",
+        "objective_id": ("verified-repair-chain-transactional-retention-policy-gradient@18"),
         "reward_contract_revision": "correctness-gated-efficiency@1",
         "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
         "localization_telemetry_strategy": "all_fault_sources_observed",
@@ -335,6 +335,9 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
         "maximum_final_evaluation_reserve_seconds": 1_800,
         "training_microbatch_size": 1,
         "maximum_input_tokens": 2_048,
+        "retention_transaction_revision": "adapter-optimizer-policy-lineage@1",
+        "learning_rate": 1e-5,
+        "reference_kl_coefficient": 1.0,
         "minimum_effective_policy_updates": 1,
         "final_evaluation_safety_factor": 1.5,
     }
@@ -354,7 +357,7 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     assert lifetime_cost_bound(
         manifest["pilot_limits"]["maximum_hourly_cost_usd"],
         manifest["pilot_limits"]["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS,
-    ) == Decimal("16.0")
+    ) == Decimal("13.0")
 
 
 def test_registry_image_index_resolves_one_exact_linux_amd64_manifest() -> None:

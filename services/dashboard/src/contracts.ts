@@ -48,6 +48,7 @@ export function decodeResearchComputeExecution(
   requiredString(item.updated_at, "updated_at");
   record(item.resource_profile, "resource_profile");
   record(item.progress, "progress");
+  nullableDigest(item.failure_receipt_digest, "failure_receipt_digest");
   if (item.branch_width !== 1 && item.branch_width !== 4) {
     throw new Error("Invalid API response: branch_width must be 1 or 4.");
   }
@@ -170,7 +171,11 @@ export function decodeProofDetail(value: unknown): ResearchProofDetail {
   record(item.provider, "provider");
   record(item.workload, "workload");
   record(item.curriculum, "curriculum");
-  record(item.evidence, "evidence");
+  const evidence = record(item.evidence, "evidence");
+  nullableDigest(
+    evidence.failure_receipt_digest,
+    "evidence.failure_receipt_digest",
+  );
   return { ...item, ...proof } as unknown as ResearchProofDetail;
 }
 
@@ -257,6 +262,15 @@ function requiredString(value: unknown, label: string): string {
     throw new Error(`Invalid API response: expected ${label}.`);
   }
   return value;
+}
+
+function nullableDigest(value: unknown, label: string): void {
+  if (
+    value !== null &&
+    (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value))
+  ) {
+    throw new Error(`Invalid API response: expected ${label}.`);
+  }
 }
 
 function studyStatus(value: unknown, label: string): "PASS" | "FAIL" {

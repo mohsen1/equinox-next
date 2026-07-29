@@ -29,6 +29,7 @@ function execution(
     progress,
     proof_id: null,
     receipt_digest: null,
+    failure_receipt_digest: null,
     started_at: "2026-07-27T12:00:00Z",
     updated_at: "2026-07-27T12:10:00Z",
     completed_at: null,

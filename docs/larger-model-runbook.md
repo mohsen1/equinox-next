@@ -5,7 +5,7 @@ stage below require an explicit operator command.
 
 The guarded larger-model flow targets the manifest-pinned
 `Qwen/Qwen2.5-Coder-7B-Instruct` revision under profile
-`qwen2.5-coder-7b-runpod-h100@6`. It has two paid stages:
+`qwen2.5-coder-7b-runpod-h100@7`. It has two paid stages:
 
 1. a bounded eligibility screen that does not update the policy; and
 2. a branch-aware training pilot authorized by the screen receipt.
@@ -13,13 +13,23 @@ The guarded larger-model flow targets the manifest-pinned
 A completed screen is not evidence of learning. It only decides whether the exact model,
 revision, profile, and hardware combination may enter the pilot.
 
-Profile `@6` binds simulator `repository-repair-simulator@9`, action protocol
+Profile `@7` binds simulator `repository-repair-simulator@9`, action protocol
 `repository-repair-json-tools@8`, and terminal submission contract
 `accepted-passing-test-or-finish@1`. An accepted passing test now completes a repair
 without a redundant finish action; an accepted finish remains terminal. The pilot is
-`runpod-repository-repair-large-model-pilot@4`, its objective is
-`verified-repair-chain-root-branch-retention-policy-gradient@17`, and its reward contract
-remains `correctness-gated-efficiency@1`.
+`runpod-repository-repair-large-model-pilot@5`, its objective is
+`verified-repair-chain-transactional-retention-policy-gradient@18`, and its reward
+contract remains `correctness-gated-efficiency@1`.
+
+The pilot uses transactional retention revision
+`adapter-optimizer-policy-lineage@1`. Every policy-bearing optimizer step is followed by
+the existing fixed and rotating paired guard. A regressing candidate immediately
+restores the retained adapter and optimizer, resets effective policy lineage, and clears
+pending on-policy examples. A zero-regression tie may remain provisional but cannot
+advance mastery or authorize final testing. A strict zero-regression improvement commits
+adapter, optimizer, and policy lineage together. The pilot separately reports attempted,
+effective, retained, and rolled-back policy updates. It uses a `1e-5` learning rate and
+reference-KL coefficient `1.0`.
 
 The versioned
 [larger-model eligibility profile](../research/studies/larger-model-eligibility.json) is
@@ -29,8 +39,8 @@ larger-model scientific wrapper and interface source used by the screen and pilo
 | Guard                  |                   Screen |                    Pilot |
 | ---------------------- | -----------------------: | -----------------------: |
 | GPU                    | H100 SXM, at least 80 GB | H100 SXM, at least 80 GB |
-| Maximum hourly cost    |                    $4.00 |                    $4.00 |
-| Maximum total cost     |                    $3.00 |                   $16.00 |
+| Maximum hourly cost    |                    $4.00 |                    $3.25 |
+| Maximum total cost     |                    $3.00 |                   $13.00 |
 | Model-load timeout     |               20 minutes |               20 minutes |
 | No-progress watchdog   |               10 minutes |               15 minutes |
 | Paid launcher lifetime |               43 minutes |              238 minutes |
@@ -39,9 +49,17 @@ larger-model scientific wrapper and interface source used by the screen and pilo
 | Storage-only idle cap  |               $0.01/hour |               $0.01/hour |
 
 The paid cost envelope is therefore at most 45 minutes for the screen and 240 minutes for
-the pilot. The two paid GPU stages have a combined `$19.00` ceiling, leaving `$6.00` of
-the authorized `$25.00` for CPU prewarm, network-volume storage, and contingency. The
-120-second reserve is not training time.
+the pilot. The two paid GPU stages have a combined `$16.00` ceiling. Including the
+`$5.41` already spent, this leaves `$3.59` of the authorized `$25.00` for CPU prewarm,
+network-volume storage, and contingency. The 120-second reserve is not training time.
+
+This campaign permits exactly one ten-minute CPU staging allocation, one profile-`@7`
+screen, and at most one screen-authorized pilot. Record a fresh `runpodctl user` balance
+before each allocation; an ambiguous create or a changed spend envelope is a stop
+condition, not permission to retry. At the current settled spend, the worst-case
+pre-storage total is `$21.451606`. Delete the network volume within 30 hours of the
+pre-stage balance snapshot; even at the manifest's `$0.01/hour` storage ceiling, that
+keeps the campaign below `$21.76` and leaves more than `$3.24` of authorization buffer.
 
 ## Prepare the network volume and workload on CPU
 
@@ -53,8 +71,7 @@ the configured volume has:
 - a 24-hour workload-stage receipt for the exact content-addressed bundle.
 
 Readiness receipts, stage receipts, and screen authorizations from the former L40 profile
-or the H100 `@1`, `@2`, `@3`, `@4`, or `@5` profiles do not match this profile and cannot
-be reused.
+or the H100 `@1` through `@6` profiles do not match this profile and cannot be reused.
 
 Create a 50 GB volume in a data center that offers an `NVIDIA H100 80GB HBM3`:
 
@@ -68,18 +85,33 @@ export EQUINOX_RUNPOD_NETWORK_VOLUME_ID=VOLUME_ID_FROM_RESPONSE
 export EQUINOX_RUNPOD_DATA_CENTER_IDS=DATA_CENTER_ID
 ```
 
-Attach it to a short-lived CPU pod. Set `--terminate-after` to a UTC timestamp soon enough
-to bound CPU spend and long enough to complete the transfer.
+Attach it to one short-lived secure CPU pod. Before creation, record `runpodctl user`,
+require `runpodctl pod list --all` to contain no active pod, and choose a unique pod name.
+Set `--terminate-after` to no more than ten minutes in the future. This staging allocation
+has a `$0.25/hour` ceiling and is not retried when creation is ambiguous.
 
 ```bash
+export PREWARM_POD_NAME="equinox-7b-prewarm-UNIQUE_SUFFIX"
+export PREWARM_DEADLINE_UTC="TEN_MINUTES_FROM_NOW_UTC"
+
 runpodctl pod create \
-  --name equinox-7b-prewarm \
+  --name "$PREWARM_POD_NAME" \
   --compute-type cpu \
+  --cloud-type SECURE \
   --image runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404@sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851 \
   --network-volume-id "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" \
   --data-center-ids "$EQUINOX_RUNPOD_DATA_CENTER_IDS" \
-  --terminate-after PREWARM_DEADLINE_UTC
+  --terminate-after "$PREWARM_DEADLINE_UTC"
 ```
+
+If creation returns without one unambiguous pod ID, reconcile only
+`$PREWARM_POD_NAME` for five minutes. Do not issue a second create. After creation,
+inspect that exact pod with `runpodctl pod get --include-network-volume`; delete it
+immediately unless it is secure CPU compute, attaches exactly the configured volume in
+the configured data center, uses the pinned image, has the requested termination
+deadline, and reports `adjustedCostPerHr`, `costPerHr`, or `costPerHour` at or below
+`$0.25`. CPU capacity being unavailable is a stop condition, not authorization to stage
+on an H100.
 
 Use the connection shown by `runpodctl ssh info PREWARM_POD_ID`. On that CPU pod:
 
@@ -208,6 +240,11 @@ Copy the stage receipt back to:
 var/research-proofs/larger-model-bundle-stage-VOLUME_ID.json
 ```
 
+Delete the staging pod as soon as both refreshed receipts are copied back. Confirm its
+exact ID is absent in three successful provider queries before accepting either local
+receipt. The account's ongoing spend should then return to the recorded storage-only
+baseline, currently bounded by the manifest at `$0.01/hour`.
+
 Then verify the receipt against the current provider volume and the locally built bundle:
 
 ```bash
@@ -335,7 +372,7 @@ silently discard the oldest prompt content. Before the screen, the reversible H1
 capacity smoke exercises 2,240 tokens: the larger screen/pilot input envelope plus the
 192-token generation cap.
 
-Both stages run the same `@6` terminal contract. A schema-valid, accepted test action
+Both stages run the same `@7` terminal contract. A schema-valid, accepted test action
 that passes hidden verification ends the trajectory as solved immediately. A failing
 test remains nonterminal unless it consumes the repair horizon, and the existing finish
 action retains its prior solved or finished-with-failures behavior.
@@ -462,7 +499,8 @@ runpodctl user
 ```
 
 If the named pod exists, delete that exact pod ID. Confirm three successful provider
-queries report it absent and `currentSpendPerHr` is zero. Only then remove
+queries report it absent and `currentSpendPerHr` has returned to the verified
+storage-only baseline. Only then remove
 `~/.local/state/equinox/runpod/operator.lock/lease.json` and its now-empty lock directory.
 The next preflight reconciles a stale Runs record. This is cleanup recovery, not workload
 resume.
@@ -470,7 +508,8 @@ resume.
 When pod creation returns without an ID, the launcher treats provider state as ambiguous.
 It watches the unique pod name for five minutes and allows up to 330 seconds for
 reconciliation. A failed or malformed provider query is `unknown`, not proof of absence.
-If reconciliation cannot prove both pod absence and zero hourly spend, the lease remains.
+If reconciliation cannot prove both pod absence and the verified storage-only hourly
+spend, the lease remains.
 
 ```bash
 rm -- ~/.local/state/equinox/runpod/operator.lock/lease.json
@@ -487,12 +526,13 @@ After either paid command:
 
 1. confirm the execution is terminal in Runs;
 2. confirm teardown is recorded;
-3. confirm RunPod reports no active pod and zero ongoing hourly spend; and
+3. confirm RunPod reports no active pod and only the verified storage-only hourly spend;
+   and
 4. compare recorded runtime and total cost with the configured caps.
 
 If teardown is not confirmed, treat the run as an active-spend incident. Remove the pod
-through RunPod, verify zero ongoing spend, and reconcile the execution before launching
-anything else.
+through RunPod, verify the storage-only baseline, and reconcile the execution before
+launching anything else.
 
 After the pilot is complete—or explicitly abandoned—copy and verify every result,
 adapter, and receipt you intend to keep, then delete the network volume:

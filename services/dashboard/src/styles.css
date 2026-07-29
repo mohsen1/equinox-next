@@ -560,6 +560,27 @@ h3 {
   margin-bottom: 0;
 }
 
+.notice .key-value {
+  padding: 0;
+}
+
+.failure-error {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.failure-error code {
+  width: fit-content;
+  color: var(--danger);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.failure-error small {
+  color: color-mix(in srgb, var(--danger) 72%, var(--ink));
+}
+
 .state-panel {
   min-height: 180px;
   border: 1px solid var(--rule);
