@@ -1,9 +1,9 @@
 """Bounded, non-mutating eligibility screen for the pinned 7B repair policy.
 
 The frozen revision-30 trainer remains byte-identical. This wrapper replaces its
-policy-facing environment with revision 32, measures a balanced all-level
-validation baseline, restores every optimizer and adapter mutation, and stops
-immediately after one eight-group K=4 collection.
+policy-facing environment with revision 32, measures the starting L0 curriculum,
+branches after the repository root is observed, restores every optimizer and
+adapter mutation, and stops immediately after one eight-group K=4 collection.
 """
 
 from __future__ import annotations
@@ -36,7 +36,14 @@ except ModuleNotFoundError:
 
 
 SCREEN_SCHEMA_VERSION = 1
-SCREEN_LEVELS = ("0", "1", "2", "3")
+SCREEN_LEVELS = ("0",)
+SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed@1"
+ROOT_CHECKPOINT_PHASE_INSTRUCTION = (
+    "Observe the repository root before branching. If no repository path has been "
+    'exposed, return exactly {"tool":"list","path":""}. The checkpoint is captured '
+    "after that root listing is accepted; localization and repair happen independently "
+    "inside each sibling."
+)
 
 
 class EligibilityScreenComplete(BaseException):
@@ -52,6 +59,7 @@ class BaselineOutcome:
     level: int
     solved: bool
     checkpoint_reached: bool
+    all_fault_sources_observed: bool = False
 
 
 @dataclass
@@ -61,6 +69,7 @@ class ScreenEvidence:
     started_at: float = field(default_factory=time.monotonic)
     baseline_outcomes: list[BaselineOutcome] = field(default_factory=list)
     branch_collections: list[Any] = field(default_factory=list)
+    all_fault_source_task_ids: set[str] = field(default_factory=set)
     total_actions: int = 0
     accepted_actions: int = 0
     schema_valid_actions: int = 0
@@ -106,6 +115,42 @@ def _minimum_successes(rate: float, total: int) -> int:
 
 def _maximum_successes(rate: float, total: int) -> int:
     return math.floor(rate * total)
+
+
+def repository_root_observed(prefix: Any) -> bool:
+    """Return whether an accepted action exposed the repository root."""
+
+    return any(
+        step.accepted
+        and step.tool == "list"
+        and step.action is not None
+        and step.action.get("path") == ""
+        for step in prefix.steps
+    )
+
+
+def all_fault_sources_observed(task: Any, trajectory: Any) -> bool:
+    """Keep localization evidence separate from root-checkpoint admission."""
+
+    fault_paths = {fault.path for fault in task.faults}
+    observed_paths = {
+        str(step.action["path"])
+        for step in trajectory.steps
+        if step.accepted
+        and step.tool == "read"
+        and step.action is not None
+        and step.action.get("path") in fault_paths
+    }
+    return observed_paths == fault_paths
+
+
+def _localized_sibling_count(collection: Any) -> int:
+    if collection.snapshot is None or collection.exclusion_reason is not None:
+        return 0
+    return sum(
+        all_fault_sources_observed(collection.task, sibling)
+        for sibling in collection.siblings
+    )
 
 
 def _snapshot_candidates(manifest: dict[str, Any]) -> tuple[Path, ...]:
@@ -335,12 +380,25 @@ def run_capacity_smoke(
 
 
 def _baseline_counts(evidence: ScreenEvidence) -> dict[str, dict[str, int]]:
-    counts = {level: {"examples": 0, "checkpoints": 0, "solved": 0} for level in SCREEN_LEVELS}
+    counts = {
+        level: {
+            "examples": 0,
+            "checkpoints": 0,
+            "solved": 0,
+            "all_fault_sources_observed": 0,
+        }
+        for level in SCREEN_LEVELS
+    }
     for outcome in evidence.baseline_outcomes:
         level = str(outcome.level)
+        if level not in counts:
+            raise ValueError(f"eligibility baseline included out-of-scope level {level}")
         counts[level]["examples"] += 1
         counts[level]["checkpoints"] += int(outcome.checkpoint_reached)
         counts[level]["solved"] += int(outcome.solved)
+        counts[level]["all_fault_sources_observed"] += int(
+            outcome.all_fault_sources_observed
+        )
     return counts
 
 
@@ -348,11 +406,13 @@ def baseline_impossible(evidence: ScreenEvidence, manifest: dict[str, Any]) -> s
     """Return a fail-fast reason only after the preregistered minimum sample."""
 
     screen = manifest["screen"]
-    completed = len(evidence.baseline_outcomes)
-    if completed < screen["minimum_completed_baseline_examples"]:
-        return None
     expected_per_level = screen["baseline_examples_per_level"]
     expected_total = expected_per_level * len(SCREEN_LEVELS)
+    completed = len(evidence.baseline_outcomes)
+    if completed < expected_total:
+        return None
+    if completed > expected_total:
+        raise ValueError("baseline evidence exceeds the level-0 screen budget")
     thresholds = screen["thresholds"]
     counts = _baseline_counts(evidence)
     required_per_level = _minimum_successes(
@@ -446,7 +506,7 @@ def branch_collection_impossible(
     )
     maximum_future_actions = remaining_groups * maximum_actions_per_group
     best_possible_action_validity = _safe_rate(
-        evidence.accepted_actions + maximum_future_actions,
+        evidence.schema_valid_actions + maximum_future_actions,
         evidence.total_actions + maximum_future_actions,
     )
     if (
@@ -511,9 +571,24 @@ def build_screen_result(
         level: _safe_rate(values["checkpoints"], values["examples"])
         for level, values in baseline_counts.items()
     }
+    per_level_localization_rates = {
+        level: _safe_rate(
+            values["all_fault_sources_observed"],
+            values["examples"],
+        )
+        for level, values in baseline_counts.items()
+    }
     baseline_checkpoint_rate = _safe_rate(baseline_checkpoints, completed_baseline)
     baseline_exact_rate = _safe_rate(baseline_solved, completed_baseline)
-    action_protocol_validity = _safe_rate(
+    baseline_localized = sum(
+        outcome.all_fault_sources_observed for outcome in evidence.baseline_outcomes
+    )
+    baseline_localization_rate = _safe_rate(baseline_localized, completed_baseline)
+    schema_valid_action_rate = _safe_rate(
+        evidence.schema_valid_actions,
+        evidence.total_actions,
+    )
+    semantic_acceptance_rate = _safe_rate(
         evidence.accepted_actions,
         evidence.total_actions,
     )
@@ -531,9 +606,16 @@ def build_screen_result(
     solved_siblings = sum(collection.solved_siblings for collection in checkpointed_groups)
     completed_siblings = sum(len(collection.siblings) for collection in checkpointed_groups)
     failed_siblings = completed_siblings - solved_siblings
+    localized_sibling_counts = [
+        _localized_sibling_count(collection) for collection in checkpointed_groups
+    ]
+    localized_siblings = sum(localized_sibling_counts)
+    localized_branch_groups = sum(count > 0 for count in localized_sibling_counts)
     branch_checkpoint_rate = _safe_rate(len(checkpointed_groups), expected_groups)
     informative_group_rate = _safe_rate(informative_groups, expected_groups)
     solved_sibling_rate = _safe_rate(solved_siblings, completed_siblings)
+    sibling_localization_rate = _safe_rate(localized_siblings, completed_siblings)
+    branch_localization_rate = _safe_rate(localized_branch_groups, expected_groups)
     peak_fraction = _safe_rate(
         evidence.peak_reserved_vram_bytes,
         evidence.gpu_total_memory_bytes,
@@ -566,7 +648,7 @@ def build_screen_result(
     )
     action_gate = (
         evidence.total_actions > 0
-        and action_protocol_validity >= thresholds["minimum_action_protocol_validity"]
+        and schema_valid_action_rate >= thresholds["minimum_action_protocol_validity"]
         and evidence.repeated_rejected_loop_count == 0
     )
     branch_gate = (
@@ -657,21 +739,29 @@ def build_screen_result(
         "gradient_checkpointing_enabled": evidence.gradient_checkpointing_enabled,
         "test_split_accessed": evidence.test_split_accessed,
         "branch_width": screen["branch_width"],
+        "screen_levels": [int(level) for level in SCREEN_LEVELS],
+        "shared_prefix_checkpoint_strategy": SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY,
         "branch_groups": len(branch_groups),
         "completed_baseline_examples": completed_baseline,
         "expected_baseline_examples": expected_baseline,
+        "minimum_completed_baseline_examples": expected_baseline,
         "per_level_checkpoint_rates": per_level_rates,
+        "per_level_all_fault_sources_observed_rates": per_level_localization_rates,
         "baseline_checkpoint_rate": baseline_checkpoint_rate,
         "baseline_exact_rate": baseline_exact_rate,
-        "action_protocol_validity": action_protocol_validity,
-        "accepted_action_rate": action_protocol_validity,
-        "schema_valid_action_rate": _safe_rate(
-            evidence.schema_valid_actions,
-            evidence.total_actions,
-        ),
+        "baseline_all_fault_sources_observed_examples": baseline_localized,
+        "baseline_all_fault_sources_observed_rate": baseline_localization_rate,
+        "action_protocol_validity": schema_valid_action_rate,
+        "schema_valid_action_rate": schema_valid_action_rate,
+        "semantic_acceptance_rate": semantic_acceptance_rate,
+        "accepted_action_rate": semantic_acceptance_rate,
         "repeated_rejected_loop_count": evidence.repeated_rejected_loop_count,
         "checkpoint_admission_rate": branch_checkpoint_rate,
         "branch_checkpoint_rate": branch_checkpoint_rate,
+        "all_fault_sources_observed_branch_groups": localized_branch_groups,
+        "branch_all_fault_sources_observed_rate": branch_localization_rate,
+        "all_fault_sources_observed_siblings": localized_siblings,
+        "sibling_all_fault_sources_observed_rate": sibling_localization_rate,
         "informative_groups": informative_groups,
         "informative_group_rate": informative_group_rate,
         "solved_siblings": solved_siblings,
@@ -754,7 +844,7 @@ def install_environment_hooks(
     evidence: ScreenEvidence,
     manifest: dict[str, Any],
 ) -> None:
-    """Install revision-32 semantics, balanced baseline, K4, and isolation guards."""
+    """Install revision-32 semantics, the L0 screen, K4, and isolation guards."""
 
     screen = manifest["screen"]
     if screen["branch_width"] != 4:
@@ -769,8 +859,31 @@ def install_environment_hooks(
     frozen_environment.BRANCH_WIDTH = screen["branch_width"]
     frozen.TRAINING_MICROBATCH_SIZE = screen["training_microbatch_size"]
     frozen.MAX_INPUT_TOKENS = screen["maximum_input_tokens"]
+    frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY = SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY
+
+    def root_checkpoint_diagnostic_actions(_task: Any) -> int:
+        return 1
+
+    frozen.branch_checkpoint_diagnostic_actions = root_checkpoint_diagnostic_actions
 
     class AuditedEnvironment(revision32.RepositoryRepairEnvironment):
+        def policy_prompt(self, phase: Any) -> str:
+            prompt = super().policy_prompt(phase)
+            if phase != "shared_prefix":
+                return prompt
+            previous_instruction = (
+                f"Collect diagnostic evidence for all {len(self.task.faults)} known failing "
+                "tests. Read each relevant implementation file before the checkpoint. "
+                "Use only list, read, search, or test; do not edit or finish before the checkpoint."
+            )
+            if prompt.count(previous_instruction) != 1:
+                raise RuntimeError("revision-32 shared-prefix prompt shape drifted")
+            return prompt.replace(
+                previous_instruction,
+                ROOT_CHECKPOINT_PHASE_INSTRUCTION,
+                1,
+            )
+
         def step(
             self,
             response: str,
@@ -789,13 +902,15 @@ def install_environment_hooks(
                     and previous.action == result.action
                 ):
                     evidence.repeated_rejected_loop_count += 1
+            if all_fault_sources_observed(self.task, self):
+                evidence.all_fault_source_task_ids.add(str(self.task.task_id))
             return result
 
     frozen.RepositoryRepairEnvironment = AuditedEnvironment
-    original_checkpoint = frozen.branch_checkpoint_reached
 
     def nonterminal_checkpoint(task: Any, prefix: Any) -> bool:
-        return not prefix.terminal and original_checkpoint(task, prefix)
+        del task
+        return not prefix.terminal and repository_root_observed(prefix)
 
     frozen.branch_checkpoint_reached = nonterminal_checkpoint
     original_make_tasks = frozen.make_tasks
@@ -829,21 +944,13 @@ def install_environment_hooks(
             return expected_baseline
         return original_fixed_guard_count(level, validation_examples)
 
-    def all_level_baseline(level: int, count: int, seed: int) -> list[Any]:
+    def active_level_baseline(level: int, count: int, seed: int) -> list[Any]:
         if level != 0 or count != expected_baseline:
             raise RuntimeError("frozen baseline shape drifted from the eligibility profile")
-        return [
-            task
-            for baseline_level in range(len(SCREEN_LEVELS))
-            for task in original_family_balanced(
-                baseline_level,
-                screen["baseline_examples_per_level"],
-                seed + baseline_level * 1_000_003,
-            )
-        ]
+        return original_family_balanced(level, expected_baseline, seed)
 
     frozen.fixed_retention_guard_example_count = screen_baseline_count
-    frozen.family_balanced_validation_tasks = all_level_baseline
+    frozen.family_balanced_validation_tasks = active_level_baseline
     original_greedy = frozen.collect_greedy_trajectory
 
     def observed_greedy(task: Any, *args: Any, **kwargs: Any) -> Any:
@@ -854,6 +961,9 @@ def install_environment_hooks(
                     level=int(task.level),
                     solved=bool(outcome["solved"]),
                     checkpoint_reached=bool(outcome["checkpoint_reached"]),
+                    all_fault_sources_observed=(
+                        str(task.task_id) in evidence.all_fault_source_task_ids
+                    ),
                 )
             )
             reason = baseline_impossible(evidence, manifest)

@@ -19,19 +19,18 @@ def profile() -> dict[str, object]:
 
 def baseline(
     *,
-    checkpoints_by_level: tuple[int, int, int, int] = (7, 7, 7, 7),
+    checkpoint_count: int = 7,
+    localized_count: int = 4,
 ) -> list[eligibility.BaselineOutcome]:
-    outcomes: list[eligibility.BaselineOutcome] = []
-    for level, checkpoint_count in enumerate(checkpoints_by_level):
-        for index in range(8):
-            outcomes.append(
-                eligibility.BaselineOutcome(
-                    level=level,
-                    checkpoint_reached=index < checkpoint_count,
-                    solved=index == 0,
-                )
-            )
-    return outcomes
+    return [
+        eligibility.BaselineOutcome(
+            level=0,
+            checkpoint_reached=index < checkpoint_count,
+            solved=index == 0,
+            all_fault_sources_observed=index < localized_count,
+        )
+        for index in range(8)
+    ]
 
 
 def collection(
@@ -39,14 +38,31 @@ def collection(
     checkpointed: bool = True,
     informative: bool = False,
     solved: int = 1,
+    localized: int = 2,
 ) -> SimpleNamespace:
+    fault = SimpleNamespace(path="fault.py")
+    root_step = SimpleNamespace(
+        accepted=True,
+        tool="list",
+        action={"tool": "list", "path": ""},
+    )
+    localized_step = SimpleNamespace(
+        accepted=True,
+        tool="read",
+        action={"tool": "read", "path": fault.path},
+    )
+    siblings = [
+        SimpleNamespace(steps=[root_step, *([localized_step] if index < localized else [])])
+        for index in range(4 if checkpointed else 0)
+    ]
     return SimpleNamespace(
         snapshot=object() if checkpointed else None,
         exclusion_reason=None if checkpointed else "PREFIX_CHECKPOINT_NOT_REACHED",
-        prefix=SimpleNamespace(terminal=False),
+        task=SimpleNamespace(faults=[fault]),
+        prefix=SimpleNamespace(terminal=False, steps=[root_step]),
         informative=informative,
         solved_siblings=solved if checkpointed else 0,
-        siblings=[object()] * (4 if checkpointed else 0),
+        siblings=siblings,
     )
 
 
@@ -94,12 +110,19 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
 
     assert result["screen_completed"] is True
     assert result["eligible"] is True
-    assert result["completed_baseline_examples"] == 32
-    assert result["per_level_checkpoint_rates"] == dict.fromkeys(
-        eligibility.SCREEN_LEVELS,
-        0.875,
-    )
+    assert result["completed_baseline_examples"] == 8
+    assert result["minimum_completed_baseline_examples"] == 8
+    assert result["screen_levels"] == [0]
+    assert result["per_level_checkpoint_rates"] == {"0": 0.875}
+    assert result["shared_prefix_checkpoint_strategy"] == "repository_root_observed@1"
+    assert result["baseline_all_fault_sources_observed_examples"] == 4
+    assert result["baseline_all_fault_sources_observed_rate"] == 0.5
+    assert result["per_level_all_fault_sources_observed_rates"] == {"0": 0.5}
     assert result["branch_groups"] == 8
+    assert result["all_fault_sources_observed_branch_groups"] == 6
+    assert result["branch_all_fault_sources_observed_rate"] == 0.75
+    assert result["all_fault_sources_observed_siblings"] == 12
+    assert result["sibling_all_fault_sources_observed_rate"] == 0.5
     assert result["informative_groups"] == 2
     assert result["solved_siblings"] == 6
     assert result["failed_siblings"] == 18
@@ -108,6 +131,7 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["test_split_accessed"] is False
     assert result["training_microbatch_size"] == 1
     assert result["maximum_input_tokens"] == 1_536
+    assert result["optimization_seed"] == 137
     assert result["optimization_seed"] == manifest["screen_limits"]["optimization_seed"]
     assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
     assert result["environment_revision"] == manifest["interface"]["environment_revision"]
@@ -145,28 +169,46 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert authorization["pinned_snapshot_digest"] == result["pinned_snapshot_digest"]
 
 
-def test_every_level_must_pass_even_when_overall_checkpoint_rate_passes() -> None:
+def test_starting_level_checkpoint_gate_requires_six_of_eight_examples() -> None:
     evidence = passing_evidence()
-    evidence.baseline_outcomes = baseline(checkpoints_by_level=(5, 8, 8, 8))
+    evidence.baseline_outcomes = baseline(checkpoint_count=5)
 
     result = eligibility.build_screen_result(evidence, gate.load_manifest())
 
-    assert result["baseline_checkpoint_rate"] == 0.90625
+    assert result["baseline_checkpoint_rate"] == 0.625
     assert result["per_level_checkpoint_rates"]["0"] == 0.625
     assert result["gate_results"]["baseline_checkpoint_rate"] is False
     assert result["eligible"] is False
     assert result["screen_completed"] is True
 
 
-def test_accepted_action_gate_rejects_repeated_rejected_action_loops() -> None:
+def test_protocol_gate_separates_schema_validity_from_semantic_acceptance() -> None:
+    evidence = passing_evidence()
+    evidence.accepted_actions = 850
+
+    result = eligibility.build_screen_result(evidence, gate.load_manifest())
+
+    assert result["action_protocol_validity"] == 1.0
+    assert result["schema_valid_action_rate"] == 1.0
+    assert result["semantic_acceptance_rate"] == 0.85
+    assert result["accepted_action_rate"] == 0.85
+    assert result["gate_results"]["action_protocol_validity"] is True
+
+    evidence.schema_valid_actions = 980
+    result = eligibility.build_screen_result(evidence, gate.load_manifest())
+    assert result["gate_results"]["action_protocol_validity"] is False
+    assert result["ineligible_reasons"] == ["action_protocol_validity"]
+
+
+def test_protocol_gate_rejects_repeated_semantic_rejection_loops() -> None:
     evidence = passing_evidence()
     evidence.repeated_rejected_loop_count = 1
 
     result = eligibility.build_screen_result(evidence, gate.load_manifest())
 
-    assert result["action_protocol_validity"] == 0.995
+    assert result["action_protocol_validity"] == 1.0
+    assert result["semantic_acceptance_rate"] == 0.995
     assert result["gate_results"]["action_protocol_validity"] is False
-    assert result["ineligible_reasons"] == ["action_protocol_validity"]
 
 
 def test_runtime_gate_is_derived_from_capacity_and_baseline_timestamps() -> None:
@@ -247,26 +289,16 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash(
     assert snapshot_hash_started is False
 
 
-def test_baseline_stops_only_after_twelve_when_a_level_gate_is_impossible() -> None:
+def test_baseline_stops_only_after_all_eight_l0_examples() -> None:
     manifest = gate.load_manifest()
     evidence = eligibility.ScreenEvidence(
         baseline_outcomes=[
-            *[
-                eligibility.BaselineOutcome(
-                    level=0,
-                    checkpoint_reached=index < 5,
-                    solved=index == 0,
-                )
-                for index in range(8)
-            ],
-            *[
-                eligibility.BaselineOutcome(
-                    level=1,
-                    checkpoint_reached=True,
-                    solved=False,
-                )
-                for _ in range(4)
-            ],
+            eligibility.BaselineOutcome(
+                level=0,
+                checkpoint_reached=index < 5,
+                solved=index == 0,
+            )
+            for index in range(8)
         ]
     )
 
@@ -302,12 +334,12 @@ def test_branch_fail_fast_covers_informative_rate_and_action_gates() -> None:
         == "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"
     )
 
-    too_many_rejections = passing_evidence()
-    too_many_rejections.branch_collections.pop()
-    too_many_rejections.total_actions = 1_000
-    too_many_rejections.accepted_actions = 900
+    too_many_malformed_actions = passing_evidence()
+    too_many_malformed_actions.branch_collections.pop()
+    too_many_malformed_actions.total_actions = 1_000
+    too_many_malformed_actions.schema_valid_actions = 900
     assert (
-        eligibility.branch_collection_impossible(too_many_rejections, manifest)
+        eligibility.branch_collection_impossible(too_many_malformed_actions, manifest)
         == "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE"
     )
 
@@ -503,7 +535,7 @@ def test_runner_adapter_path_is_disarmed_only_when_empty(
         eligibility.disarm_empty_adapter_path()
 
 
-def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
+def test_runtime_hooks_install_l0_root_checkpoint_v32_k4_screen_and_isolate_test_split(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manifest = gate.load_manifest()
@@ -531,7 +563,9 @@ def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
         "BRANCH_WIDTH",
         "TRAINING_MICROBATCH_SIZE",
         "MAX_INPUT_TOKENS",
+        "SHARED_PREFIX_CHECKPOINT_STRATEGY",
         "RepositoryRepairEnvironment",
+        "branch_checkpoint_diagnostic_actions",
         "branch_checkpoint_reached",
         "make_tasks",
         "fixed_retention_guard_example_count",
@@ -570,11 +604,16 @@ def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
         )
         tasks = eligibility.frozen.family_balanced_validation_tasks(0, count, 40_000)
 
-        assert count == 32
-        assert Counter(task.level for task in tasks) == {0: 8, 1: 8, 2: 8, 3: 8}
+        assert count == 8
+        assert Counter(task.level for task in tasks) == {0: 8}
         assert eligibility.frozen.BRANCH_WIDTH == 4
         assert eligibility.frozen.TRAINING_MICROBATCH_SIZE == 1
         assert eligibility.frozen.MAX_INPUT_TOKENS == 1_536
+        assert (
+            eligibility.frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY
+            == eligibility.SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY
+        )
+        assert eligibility.frozen.branch_checkpoint_diagnostic_actions(tasks[0]) == 1
         assert (
             manifest["interface"]["environment_revision"] == eligibility.frozen.ENVIRONMENT_REVISION
         )
@@ -594,13 +633,21 @@ def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
             eligibility.frozen.RepositoryRepairEnvironment.__mro__[1]
             is eligibility.revision32.RepositoryRepairEnvironment
         )
-        assert (
-            eligibility.frozen.branch_checkpoint_reached(
-                SimpleNamespace(),
-                SimpleNamespace(terminal=True),
-            )
-            is False
-        )
+        environment = eligibility.frozen.RepositoryRepairEnvironment(tasks[0])
+        prompt = environment.policy_prompt("shared_prefix")
+        assert eligibility.ROOT_CHECKPOINT_PHASE_INSTRUCTION in prompt
+        assert "Read each relevant implementation file before the checkpoint." not in prompt
+        assert eligibility.frozen.branch_checkpoint_reached(tasks[0], environment) is False
+        root_result = environment.step('{"tool":"list","path":""}')
+        assert root_result.accepted is True
+        assert eligibility.frozen.branch_checkpoint_reached(tasks[0], environment) is True
+        assert eligibility.all_fault_sources_observed(tasks[0], environment) is False
+        fault_path = tasks[0].faults[0].path
+        read_result = environment.step(f'{{"tool":"read","path":"{fault_path}"}}')
+        assert read_result.accepted is True
+        assert eligibility.all_fault_sources_observed(tasks[0], environment) is True
+        environment.terminal = True
+        assert eligibility.frozen.branch_checkpoint_reached(tasks[0], environment) is False
         with pytest.raises(RuntimeError, match="test split"):
             eligibility.frozen.make_tasks(0, 1, 190_000, split="test")
         assert evidence.test_split_accessed is True
