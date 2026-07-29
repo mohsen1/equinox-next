@@ -327,6 +327,23 @@ run_provider_command() {
   timeout --kill-after=5 "$duration" "$@"
 }
 
+seconds_until_deadline() {
+  local deadline_epoch="$1"
+  local maximum_seconds="$2"
+  local current_epoch
+  local remaining_seconds
+  current_epoch="$(date +%s)"
+  remaining_seconds=$((deadline_epoch - current_epoch))
+  if ((remaining_seconds <= 0)); then
+    return 1
+  fi
+  if ((remaining_seconds < maximum_seconds)); then
+    printf '%s\n' "$remaining_seconds"
+  else
+    printf '%s\n' "$maximum_seconds"
+  fi
+}
+
 fsync_directory() {
   python3 - "$1" <<'PY'
 import os
@@ -1214,8 +1231,11 @@ publish_execution() {
   local progress="$2"
   local completed_at="${3:-}"
   local teardown_confirmed="${4:-false}"
+  local deadline_epoch="${5:-}"
   local payload
   local attempt
+  local request_timeout
+  local retry_delay
   payload="$(
     jq -cn \
       --arg name "$execution_name" \
@@ -1248,7 +1268,12 @@ publish_execution() {
       }'
   )"
   for attempt in 1 2 3; do
-    if curl --fail --silent --show-error --max-time 15 \
+    request_timeout=15
+    if [[ -n "$deadline_epoch" ]] &&
+      ! request_timeout="$(seconds_until_deadline "$deadline_epoch" 15)"; then
+      return 1
+    fi
+    if curl --fail --silent --show-error --max-time "$request_timeout" \
       -X PUT "$api_root/internal/research-compute-executions/$proof_id" \
       -H "Authorization: Bearer $internal_token" \
       -H 'Content-Type: application/json' \
@@ -1256,7 +1281,12 @@ publish_execution() {
       return 0
     fi
     if ((attempt < 3)); then
-      sleep 1
+      retry_delay=1
+      if [[ -n "$deadline_epoch" ]] &&
+        ! retry_delay="$(seconds_until_deadline "$deadline_epoch" 1)"; then
+        return 1
+      fi
+      sleep "$retry_delay"
     fi
   done
   return 1
@@ -1498,6 +1528,8 @@ if [[ "$larger_model_mode" == "pilot" ]]; then
     exit 1
   fi
 fi
+boot_started_epoch="$(date +%s)"
+readiness_deadline_epoch=$((boot_started_epoch + boot_timeout_seconds))
 set +e
 create_response="$(run_provider_command 90 runpodctl "${create_arguments[@]}")"
 create_exit_code="$?"
@@ -1601,20 +1633,23 @@ last_progress="$(
       maximum_updates: $maximum_updates
     }'
 )"
-publish_execution "PROVISIONING" "$last_progress"
+failure_message="The RunPod worker never exposed structured workload progress."
+publish_execution "PROVISIONING" "$last_progress" "" false "$readiness_deadline_epoch"
 
 echo "Worker $pod_id allocated at \$$hourly_cost/hour; waiting for container readiness." >&2
 proxy_root="https://${pod_id}-8000.proxy.runpod.net"
 progress_url="$proxy_root/progress.json"
 remote_authorization="Authorization: Bearer $transport_token"
 exit_code=""
-readiness_attempts=$(( (boot_timeout_seconds + 4) / 5 ))
 workload_transport_ready=false
 preparation_started_epoch=""
-failure_message="The RunPod worker never exposed structured workload progress."
-for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
+attempt=0
+while readiness_poll_timeout="$(
+  seconds_until_deadline "$readiness_deadline_epoch" 10
+)"; do
+  attempt=$((attempt + 1))
   remote_progress="$(
-    curl --fail --silent --show-error --max-time 10 \
+    curl --fail --silent --show-error --max-time "$readiness_poll_timeout" \
       -H "$remote_authorization" "$progress_url" 2>/dev/null || true
   )"
   if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$remote_progress"; then
@@ -1629,12 +1664,12 @@ for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
         --argjson current "$remote_progress" \
         '$previous + $current'
     )"
-    publish_execution "RUNNING" "$last_progress"
+    publish_execution "RUNNING" "$last_progress" "" false "$readiness_deadline_epoch"
     workload_transport_ready=true
     break
   fi
   if ((attempt == 1 || attempt % 3 == 0)); then
-    elapsed_wait=$((attempt * 5))
+    elapsed_wait=$(($(date +%s) - boot_started_epoch))
     last_progress="$(
       jq -cn \
         --arg message "Pod created; waiting for a live container endpoint." \
@@ -1648,9 +1683,14 @@ for ((attempt = 1; attempt <= readiness_attempts; attempt += 1)); do
           maximum_updates: $maximum_updates
         }'
     )"
-    publish_execution "PROVISIONING" "$last_progress"
+    publish_execution "PROVISIONING" "$last_progress" "" false "$readiness_deadline_epoch"
   fi
-  sleep 5
+  if ! readiness_sleep_seconds="$(
+    seconds_until_deadline "$readiness_deadline_epoch" 5
+  )"; then
+    break
+  fi
+  sleep "$readiness_sleep_seconds"
 done
 rm -f -- "$bundle_source_path"
 bundle_source_path=""

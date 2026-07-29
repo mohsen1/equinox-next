@@ -218,6 +218,12 @@ def _assert_no_paid_create(commands: list[list[str]]) -> None:
     ]
 
 
+def _shell_function(source: str, name: str) -> str:
+    start = source.index(f"{name}() {{")
+    end = source.index("\n}\n", start) + len("\n}\n")
+    return source[start:end]
+
+
 @pytest.mark.parametrize(
     ("scenario", "missing_volume", "missing_receipt", "expected_error"),
     [
@@ -298,3 +304,96 @@ def test_valid_preflight_is_read_only_and_reports_the_pinned_profile(tmp_path: P
     assert payload["model_id"] == MODEL_ID
     assert payload["optimization_seed"] == 137
     _assert_no_paid_create(commands)
+
+
+def test_readiness_polling_obeys_one_wall_clock_deadline(tmp_path: Path) -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    start = source.index('exit_code=""\n') + len('exit_code=""\n')
+    end = source.index('rm -f -- "$bundle_source_path"', start)
+    readiness_block = source[start:end]
+
+    assert "readiness_deadline_epoch" in readiness_block
+    assert "readiness_attempts" not in readiness_block
+
+    binary_directory = tmp_path / "bin"
+    binary_directory.mkdir()
+    clock_path = tmp_path / "clock"
+    trace_path = tmp_path / "trace.jsonl"
+    clock_path.write_text("1000\n", encoding="utf-8")
+    _write_executable(
+        binary_directory / "date",
+        """#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+
+if sys.argv[1:] != ["+%s"]:
+    raise SystemExit(f"unsupported fake date arguments: {sys.argv[1:]!r}")
+print(pathlib.Path(os.environ["FAKE_CLOCK"]).read_text(encoding="utf-8").strip())
+""",
+    )
+    advancing_command = """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+
+kind = pathlib.Path(sys.argv[0]).name
+if kind == "curl":
+    arguments = sys.argv[1:]
+    seconds = int(arguments[arguments.index("--max-time") + 1])
+else:
+    seconds = int(float(sys.argv[1]))
+clock_path = pathlib.Path(os.environ["FAKE_CLOCK"])
+current = int(clock_path.read_text(encoding="utf-8").strip())
+clock_path.write_text(f"{current + seconds}\\n", encoding="utf-8")
+with open(os.environ["FAKE_TRACE"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"kind": kind, "seconds": seconds}) + "\\n")
+if kind == "curl":
+    raise SystemExit(28)
+"""
+    _write_executable(binary_directory / "curl", advancing_command)
+    _write_executable(binary_directory / "sleep", advancing_command)
+
+    helper = _shell_function(source, "seconds_until_deadline")
+    harness = f"""set -euo pipefail
+{helper}
+boot_started_epoch=1000
+readiness_deadline_epoch=1012
+boot_timeout_seconds=12
+last_progress='{{}}'
+maximum_updates=1
+progress_url=https://worker.invalid/progress.json
+remote_authorization='Authorization: Bearer test'
+publish_execution() {{ :; }}
+{readiness_block}
+date +%s
+"""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{binary_directory}{os.pathsep}{environment['PATH']}",
+            "FAKE_CLOCK": str(clock_path),
+            "FAKE_TRACE": str(trace_path),
+        }
+    )
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert int(result.stdout.strip()) == 1012
+    trace = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert sum(event["seconds"] for event in trace) == 12
+    assert all(event["seconds"] > 0 for event in trace)
+    assert any(event["kind"] == "curl" for event in trace)
