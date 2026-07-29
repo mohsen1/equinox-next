@@ -264,7 +264,7 @@ function buildLegacyBranchFlow(
       draggable: false,
       data: {
         title: friendlyStatus(snapshot.domain),
-        detail: `Update ${snapshot.update} · Level ${snapshot.level}`,
+        detail: `${branchSnapshotSequenceLabel(snapshot)} · Level ${snapshot.level}`,
       },
     },
     ...snapshot.siblings.map((sibling, position) => ({
@@ -590,7 +590,7 @@ function BranchInspector({
       >
         <header>
           <span>
-            Update {snapshot.update} · Level {snapshot.level}
+            {branchSnapshotSequenceLabel(snapshot)} · Level {snapshot.level}
           </span>
           <StatusBadge status={snapshot.excluded ? "EXCLUDED" : "RUNNING"} />
         </header>
@@ -617,7 +617,7 @@ function BranchInspector({
     >
       <header>
         <span>
-          Update {snapshot.update} · Level {snapshot.level}
+          {branchSnapshotSequenceLabel(snapshot)} · Level {snapshot.level}
         </span>
         <StatusBadge status={status} />
       </header>
@@ -1004,7 +1004,13 @@ export function branchSnapshotLabel(snapshot: ResearchBranchSnapshot): string {
     snapshot.curriculum_role === "adjacent_complexity_probe"
       ? " · Complexity probe"
       : "";
-  return `Update ${snapshot.update} · Level ${snapshot.level}${replay}${probe}`;
+  return `${branchSnapshotSequenceLabel(snapshot)} · Level ${snapshot.level}${replay}${probe}`;
+}
+
+function branchSnapshotSequenceLabel(snapshot: ResearchBranchSnapshot): string {
+  return snapshot.optimizer_update === null
+    ? `Branch group ${snapshot.update}`
+    : `Update ${snapshot.update}`;
 }
 
 function siblingReturn(sibling: ResearchBranchSibling): number {

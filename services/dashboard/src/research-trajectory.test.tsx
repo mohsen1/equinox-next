@@ -7,6 +7,7 @@ import {
 import {
   BranchOutline,
   buildBranchFlow,
+  branchSnapshotLabel,
   ResearchBranchWorkspace,
 } from "./pages/research-branches";
 import type {
@@ -283,6 +284,57 @@ describe("research trajectory", () => {
     expect(
       flow.edges.find((edge) => edge.target.endsWith("sibling-1"))?.className,
     ).toContain("branch-edge-best");
+  });
+
+  it("labels non-mutating eligibility snapshots as branch groups", () => {
+    const eligibilitySnapshot: ResearchBranchSnapshot = {
+      ...multiStepSnapshot,
+      update: 3,
+      optimizer_update: null,
+    };
+    const legacyFlow = buildBranchFlow(
+      {
+        ...trajectory.branch_snapshots[0],
+        update: 3,
+        optimizer_update: null,
+      },
+      0,
+    );
+    const html = renderToStaticMarkup(
+      <ResearchBranchWorkspace
+        snapshot={eligibilitySnapshot}
+        selectedSibling={eligibilitySnapshot.siblings[0]}
+        selectedActionId="sibling-0-3"
+        view="outline"
+        selectSibling={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+
+    expect(branchSnapshotLabel(eligibilitySnapshot)).toBe(
+      "Branch group 3 · Level 1",
+    );
+    expect(legacyFlow.nodes[0]?.data.detail).toBe("Branch group 3 · Level 0");
+    expect(html).toContain("Branch group 3 · Level 1");
+    expect(html).not.toContain("Update 3 · Level 1");
+  });
+
+  it("keeps policy update labels for training snapshots", () => {
+    expect(branchSnapshotLabel(multiStepSnapshot)).toBe("Update 5 · Level 1");
+
+    const html = renderToStaticMarkup(
+      <ResearchBranchWorkspace
+        snapshot={multiStepSnapshot}
+        selectedSibling={multiStepSnapshot.siblings[0]}
+        selectedActionId="sibling-0-3"
+        view="outline"
+        selectSibling={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Update 5 · Level 1");
+    expect(html).not.toContain("Branch group 5 · Level 1");
   });
 
   it("renders an accessible K=4 branch outline", () => {
