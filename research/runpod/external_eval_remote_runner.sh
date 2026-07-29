@@ -9,7 +9,20 @@ error_path="$work_directory/error.log"
 exit_code_path="$work_directory/exit_code"
 input_timeout_seconds="${EQUINOX_EXTERNAL_INPUT_TIMEOUT_SECONDS:-1800}"
 workload_file="${EQUINOX_WORKLOAD_FILE:-}"
-expected_workload_file="research/runpod/revision30_external_eval.py"
+case "$workload_file" in
+  research/runpod/revision30_external_eval.py)
+    progress_workload="revision30-post-freeze-external-adapter-evaluation"
+    progress_pack_id="revision30-post-freeze-external-pack@1"
+    ;;
+  research/runpod/revision31_external_eval.py)
+    progress_workload="revision31-post-freeze-external-adapter-evaluation"
+    progress_pack_id="revision31-post-freeze-external-pack@1"
+    ;;
+  *)
+    progress_workload="unsupported-external-evaluation"
+    progress_pack_id="unsupported"
+    ;;
+esac
 
 durable_json() {
   local destination="$1"
@@ -43,11 +56,17 @@ write_progress() {
   local elapsed_seconds="${4:-0}"
   local payload
   payload="$(
-    python3 - "$phase" "$message" "$error_code" "$elapsed_seconds" <<'PY'
+    python3 - \
+      "$phase" \
+      "$message" \
+      "$error_code" \
+      "$elapsed_seconds" \
+      "$progress_workload" \
+      "$progress_pack_id" <<'PY'
 import json
 import sys
 
-phase, message, error_code, elapsed = sys.argv[1:]
+phase, message, error_code, elapsed, workload, pack_id = sys.argv[1:]
 print(
     json.dumps(
         {
@@ -55,8 +74,8 @@ print(
             "phase": phase,
             "message": message,
             "error": error_code or None,
-            "workload": "revision30-post-freeze-external-adapter-evaluation",
-            "pack_id": "revision30-post-freeze-external-pack@1",
+            "workload": workload,
+            "pack_id": pack_id,
             "model_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
             "elapsed_seconds": int(elapsed),
         },
@@ -95,7 +114,7 @@ if [[ -z "${EQUINOX_RESULT_TOKEN:-}" ]]; then
   publish_exit_code 78
   exit 78
 fi
-if [[ "$workload_file" != "$expected_workload_file" ]]; then
+if [[ "$progress_workload" == "unsupported-external-evaluation" ]]; then
   printf '%s\n' "The external evaluator received an unsupported workload file." >"$error_path"
   write_progress \
     "failed" \
@@ -172,7 +191,7 @@ PYTHONPATH="$work_directory" \
   EQUINOX_PROGRESS_PATH="$progress_path" \
   CUBLAS_WORKSPACE_CONFIG=":4096:8" \
   PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
-  python3 -m research.runpod.revision30_external_eval \
+  python3 "$work_directory/$workload_file" \
   >"$result_pending_path" 2>>"$error_path"
 workload_exit_code="$?"
 

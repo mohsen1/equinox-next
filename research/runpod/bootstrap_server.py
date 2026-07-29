@@ -49,8 +49,29 @@ WORKLOAD_SUPPORT_FILES = {
             "research/runpod/repository_repair_rl.py",
         }
     ),
+    "research/runpod/revision31_external_eval.py": frozenset(
+        {
+            "external_eval_remote_runner.sh",
+            "research/__init__.py",
+            "research/external/revision30_task_pack.py",
+            "research/external/revision31_task_pack.py",
+            "research/frozen/revision31-external-pack.json",
+            "research/runpod/__init__.py",
+            "research/runpod/external_eval_transport.py",
+            "research/runpod/repository_repair_env.py",
+            "research/runpod/repository_repair_env_v31.py",
+            "research/runpod/repository_repair_rl.py",
+            "research/runpod/revision30_external_eval.py",
+        }
+    ),
 }
 EXTERNAL_EVALUATION_WORKLOAD = "research/runpod/revision30_external_eval.py"
+EXTERNAL_EVALUATION_WORKLOADS = frozenset(
+    {
+        EXTERNAL_EVALUATION_WORKLOAD,
+        "research/runpod/revision31_external_eval.py",
+    }
+)
 
 
 def expected_bundle_files(workload_file: str) -> frozenset[str]:
@@ -60,7 +81,7 @@ def expected_bundle_files(workload_file: str) -> frozenset[str]:
         raise ValueError("Unsupported workload file.") from error
     common_files = (
         frozenset({"external_eval_remote_runner.sh"})
-        if workload_file == EXTERNAL_EVALUATION_WORKLOAD
+        if workload_file in EXTERNAL_EVALUATION_WORKLOADS
         else COMMON_BUNDLE_FILES
     )
     return common_files | support_files | {workload_file}
@@ -70,7 +91,7 @@ def runner_file(workload_file: str) -> str:
     expected_bundle_files(workload_file)
     return (
         "external_eval_remote_runner.sh"
-        if workload_file == EXTERNAL_EVALUATION_WORKLOAD
+        if workload_file in EXTERNAL_EVALUATION_WORKLOADS
         else "remote_runner.sh"
     )
 

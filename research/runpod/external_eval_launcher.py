@@ -28,21 +28,42 @@ except ImportError:  # pragma: no cover - macOS operator compatibility.
     UTC = timezone.utc  # noqa: UP017
 
 from research.runpod.bootstrap_server import (
-    EXTERNAL_EVALUATION_WORKLOAD,
+    EXTERNAL_EVALUATION_WORKLOAD as REVISION30_EXTERNAL_EVALUATION_WORKLOAD,
+)
+from research.runpod.bootstrap_server import (
     MAXIMUM_BUNDLE_BYTES,
     expected_bundle_files,
 )
 from research.runpod.external_eval_transport import sha256_file
-from research.runpod.revision30_external_eval import (
-    MODEL_ID,
-    MODEL_REVISION,
-    PACK_ID,
-    WORKLOAD,
-    WORKLOAD_REVISION,
-    canonical_json,
-    validate_evaluation_manifest,
-)
 from research.runpod.revision30_external_operator import load_input_manifest_from_value
+
+EVALUATION_REVISION = os.environ.get("EQUINOX_EXTERNAL_EVALUATION_REVISION", "30")
+if EVALUATION_REVISION == "31":
+    from research.runpod.revision30_external_eval import canonical_json
+    from research.runpod.revision31_external_eval import (
+        MODEL_ID,
+        MODEL_REVISION,
+        PACK_ID,
+        WORKLOAD,
+        WORKLOAD_REVISION,
+        validate_evaluation_manifest,
+    )
+
+    EXTERNAL_EVALUATION_WORKLOAD = "research/runpod/revision31_external_eval.py"
+elif EVALUATION_REVISION == "30":
+    from research.runpod.revision30_external_eval import (
+        MODEL_ID,
+        MODEL_REVISION,
+        PACK_ID,
+        WORKLOAD,
+        WORKLOAD_REVISION,
+        canonical_json,
+        validate_evaluation_manifest,
+    )
+
+    EXTERNAL_EVALUATION_WORKLOAD = REVISION30_EXTERNAL_EVALUATION_WORKLOAD
+else:
+    raise RuntimeError("EQUINOX_EXTERNAL_EVALUATION_REVISION must be 30 or 31")
 
 PROOF_CONTRACT_ERROR = "The remote result did not satisfy the declared proof contract."
 DEFAULT_GPU = "NVIDIA RTX PRO 4500 Blackwell"
@@ -304,17 +325,11 @@ def bootstrap_docker_arguments(
 
 
 def bundle_sources(repository_root: Path) -> dict[str, Path]:
-    sources = {
+    common_sources = {
         "external_eval_remote_runner.sh": (
             repository_root / "research/runpod/external_eval_remote_runner.sh"
         ),
         "research/__init__.py": repository_root / "research/__init__.py",
-        "research/external/revision30_task_pack.py": (
-            repository_root / "research/external/revision30_task_pack.py"
-        ),
-        "research/frozen/revision30-external-pack.json": (
-            repository_root / "research/frozen/revision30-external-pack.json"
-        ),
         "research/runpod/__init__.py": repository_root / "research/runpod/__init__.py",
         "research/runpod/external_eval_transport.py": (
             repository_root / "research/runpod/external_eval_transport.py"
@@ -325,9 +340,41 @@ def bundle_sources(repository_root: Path) -> dict[str, Path]:
         "research/runpod/repository_repair_rl.py": (
             repository_root / "research/runpod/repository_repair_rl.py"
         ),
-        EXTERNAL_EVALUATION_WORKLOAD: (
+    }
+    revision30_sources = {
+        "research/external/revision30_task_pack.py": (
+            repository_root / "research/external/revision30_task_pack.py"
+        ),
+        "research/frozen/revision30-external-pack.json": (
+            repository_root / "research/frozen/revision30-external-pack.json"
+        ),
+        "research/runpod/revision30_external_eval.py": (
             repository_root / "research/runpod/revision30_external_eval.py"
         ),
+    }
+    revision31_sources = {
+        "research/external/revision30_task_pack.py": (
+            repository_root / "research/external/revision30_task_pack.py"
+        ),
+        "research/runpod/revision30_external_eval.py": (
+            repository_root / "research/runpod/revision30_external_eval.py"
+        ),
+        "research/external/revision31_task_pack.py": (
+            repository_root / "research/external/revision31_task_pack.py"
+        ),
+        "research/frozen/revision31-external-pack.json": (
+            repository_root / "research/frozen/revision31-external-pack.json"
+        ),
+        "research/runpod/repository_repair_env_v31.py": (
+            repository_root / "research/runpod/repository_repair_env_v31.py"
+        ),
+        "research/runpod/revision31_external_eval.py": (
+            repository_root / "research/runpod/revision31_external_eval.py"
+        ),
+    }
+    sources = {
+        **common_sources,
+        **(revision31_sources if EVALUATION_REVISION == "31" else revision30_sources),
     }
     if set(sources) != set(expected_bundle_files(EXTERNAL_EVALUATION_WORKLOAD)):
         raise LaunchFailure("external evaluation bundle does not match bootstrap allowlist")
@@ -385,11 +432,38 @@ def load_launch_inputs() -> tuple[str, Path, dict[str, Any], dict[str, Path]]:
 
 
 def load_frozen_pack(repository_root: Path) -> dict[str, Any]:
-    return json.loads(
-        (repository_root / "research/frozen/revision30-external-pack.json").read_text(
-            encoding="utf-8"
-        )
+    filename = (
+        "revision31-external-pack.json"
+        if EVALUATION_REVISION == "31"
+        else "revision30-external-pack.json"
     )
+    return json.loads((repository_root / "research/frozen" / filename).read_text(encoding="utf-8"))
+
+
+def expected_task_domains(
+    repository_root: Path,
+    frozen_pack: dict[str, Any],
+) -> dict[str, str]:
+    if isinstance(frozen_pack.get("tasks"), list):
+        return {str(task["task_id"]): str(task["domain"]) for task in frozen_pack["tasks"]}
+    if EVALUATION_REVISION != "31":
+        raise LaunchFailure(PROOF_CONTRACT_ERROR)
+    from research.external.revision31_task_pack import (
+        canonical_json as task_canonical_json,
+    )
+    from research.external.revision31_task_pack import (
+        external_tasks,
+        task_descriptors,
+    )
+
+    tasks = external_tasks()
+    descriptors = task_descriptors(tasks)
+    observed_digest = hashlib.sha256(task_canonical_json(descriptors).encode()).hexdigest()
+    if len(tasks) != frozen_pack.get("task_count") or observed_digest != frozen_pack.get(
+        "task_descriptor_digest"
+    ):
+        raise LaunchFailure(PROOF_CONTRACT_ERROR)
+    return {task.task_id: task.domain for task in tasks}
 
 
 def verify_policy_result(
@@ -490,7 +564,7 @@ def verify_result_contract(
         or digest != observed_digest
     ):
         raise LaunchFailure(PROOF_CONTRACT_ERROR)
-    expected_tasks = {task["task_id"]: task["domain"] for task in frozen_pack["tasks"]}
+    expected_tasks = expected_task_domains(Path(__file__).resolve().parents[2], frozen_pack)
     base = result.get("base")
     adapters = result.get("adapters")
     if not isinstance(base, dict) or not isinstance(adapters, list):
@@ -553,6 +627,7 @@ class ExternalEvaluationLaunch:
         self.manifest_path = manifest_path
         self.manifest = manifest
         self.archive_map = archive_map
+        self.task_count = int(load_frozen_pack(repository_root)["task_count"])
         self.internal_token = self._internal_token()
         self.api_root = os.environ.get("EQUINOX_API_ROOT", "http://127.0.0.1:8180")
         self.dashboard_root = os.environ.get(
@@ -621,7 +696,7 @@ class ExternalEvaluationLaunch:
             "message": "Requesting one bounded RunPod worker.",
             "external_evaluation_id": evaluation_id,
             "adapter_count": len(manifest["adapters"]),
-            "task_count": 9,
+            "task_count": self.task_count,
             "elapsed_seconds": 0,
         }
 
@@ -711,7 +786,7 @@ class ExternalEvaluationLaunch:
             "evaluation_id": self.evaluation_id,
             "adapter_count": len(self.manifest["adapters"]),
             "adapter_bytes": sum(adapter["size_bytes"] for adapter in self.manifest["adapters"]),
-            "task_count": 9,
+            "task_count": self.task_count,
             "gpu_id": self.gpu_id,
             "maximum_hourly_cost_usd": self.maximum_hourly_cost,
             "maximum_lifetime_minutes": self.maximum_lifetime_minutes,
