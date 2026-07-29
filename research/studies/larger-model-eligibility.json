@@ -6,16 +6,68 @@
     "revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
     "parameter_count": 7615616512,
     "safetensors_bytes": 15231271864,
+    "snapshot_files": {
+      "config.json": {
+        "size_bytes": 663,
+        "sha256": "c0242402ad6a13b331ea320feea8c7e3776ffb7a4eff0757b9cd667e116d9a28"
+      },
+      "generation_config.json": {
+        "size_bytes": 242,
+        "sha256": "1a628a5775bc69cde01c6749a531150ca4d3189652c618a174f7077923acf3b1"
+      },
+      "merges.txt": {
+        "size_bytes": 1671839,
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+      },
+      "model-00001-of-00004.safetensors": {
+        "size_bytes": 4877660776,
+        "sha256": "0b6f069918b07c064cbba8ae4f00f529aa9bbf84b7cdfcb7fc2694a40f6aa8ef"
+      },
+      "model-00002-of-00004.safetensors": {
+        "size_bytes": 4932751008,
+        "sha256": "c3d46733e7aa054ea7b063fbccd0a5a08446e7bd1814bef26936c5aa1331da62"
+      },
+      "model-00003-of-00004.safetensors": {
+        "size_bytes": 4330865200,
+        "sha256": "9fe45dacee087385b3d2d6dd27a7413a8a56d95f145772facc148fa86fc73446"
+      },
+      "model-00004-of-00004.safetensors": {
+        "size_bytes": 1089994880,
+        "sha256": "5aa6e5cbe642377fd441fb4e60e83cca96b2bcd9820e245b9ea06d94653f17f2"
+      },
+      "model.safetensors.index.json": {
+        "size_bytes": 27752,
+        "sha256": "998a078123ffc97763690de7f2a677eb89168af5eaf8a5e12e6bc24d18e25bdb"
+      },
+      "tokenizer.json": {
+        "size_bytes": 7031645,
+        "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+      },
+      "tokenizer_config.json": {
+        "size_bytes": 7305,
+        "sha256": "959e7f1d9a1b7641a6d6ce05ca97b75c7894fcb66cbe5a040406458fb1128ee4"
+      },
+      "vocab.json": {
+        "size_bytes": 2776833,
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      }
+    },
     "dtype": "bfloat16"
   },
   "runtime": {
     "template_id": "runpod-torch-v280",
     "image": "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404",
+    "image_digest": "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851",
+    "torch_version": "2.8.0+cu128",
     "dependencies": {
       "accelerate": "1.14.0",
       "peft": "0.19.1",
       "transformers": "5.14.1"
     }
+  },
+  "interface": {
+    "environment_revision": "repository-repair-simulator@6",
+    "action_protocol_revision": "repository-repair-json-tools@5"
   },
   "hardware": {
     "provider": "runpod",
@@ -23,6 +75,7 @@
     "gpu_id": "NVIDIA L40",
     "gpu_display_name": "L40",
     "minimum_gpu_memory_gb": 48,
+    "minimum_cuda_memory_bytes": 47000000000,
     "container_disk_gb": 50,
     "volume_disk_gb": 50,
     "minimum_free_cache_bytes": 25000000000,
@@ -37,16 +90,28 @@
   "screen_limits": {
     "maximum_hourly_cost_usd": 1.0,
     "maximum_total_cost_usd": 0.75,
-    "maximum_lifetime_seconds": 2700,
+    "maximum_lifetime_seconds": 2580,
+    "boot_timeout_seconds": 360,
     "model_load_timeout_seconds": 1200,
-    "maximum_workload_attempts": 1
+    "stale_progress_timeout_seconds": 600,
+    "maximum_workload_attempts": 1,
+    "target_runtime_seconds": 1500,
+    "retry_reserve_seconds": 300,
+    "maximum_final_evaluation_reserve_seconds": 300,
+    "optimization_seed": 137
   },
   "pilot_limits": {
     "maximum_hourly_cost_usd": 1.0,
     "maximum_total_cost_usd": 4.0,
-    "maximum_lifetime_seconds": 14400,
+    "maximum_lifetime_seconds": 14280,
+    "boot_timeout_seconds": 360,
     "model_load_timeout_seconds": 1200,
-    "maximum_workload_attempts": 1
+    "stale_progress_timeout_seconds": 900,
+    "maximum_workload_attempts": 1,
+    "target_runtime_seconds": 9000,
+    "retry_reserve_seconds": 1800,
+    "maximum_final_evaluation_reserve_seconds": 1800,
+    "optimization_seed": 137
   },
   "screen": {
     "workload": "repository-repair-larger-model-eligibility-screen",
@@ -73,8 +138,23 @@
       "minimum_solved_sibling_rate": 0.05,
       "maximum_solved_sibling_rate": 0.8,
       "minimum_baseline_exact_rate": 0.02,
-      "maximum_baseline_exact_rate": 0.75
+      "maximum_baseline_exact_rate": 0.75,
+      "maximum_predicted_final_evaluation_seconds": 1440
     }
+  },
+  "pilot": {
+    "target_runtime_seconds": 9000,
+    "maximum_updates": 40,
+    "validation_examples": 8,
+    "test_examples": 12,
+    "training_tasks_per_update": 4,
+    "replay_tasks_per_level": 1,
+    "mastery_windows": 2,
+    "maximum_final_evaluation_reserve_seconds": 1800,
+    "training_microbatch_size": 1,
+    "maximum_input_tokens": 1536,
+    "minimum_effective_policy_updates": 1,
+    "final_evaluation_safety_factor": 1.5
   },
   "authorization": {
     "maximum_age_hours": 168,
@@ -94,6 +174,7 @@
       "pinned_snapshot_ready",
       "offline_mode_active",
       "hardware_verified",
+      "pilot_runtime_feasible",
       "policy_unchanged",
       "optimizer_state_restored",
       "test_split_isolated"

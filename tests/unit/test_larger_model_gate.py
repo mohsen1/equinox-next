@@ -31,6 +31,7 @@ from research.runpod.larger_model_gate import (
     require_cuda_hardware,
     require_runpod_gpu,
     result_digest,
+    verify_dependency_import_smoke,
     verify_huggingface_metadata,
     verify_pilot_authorization,
     verify_volume_readiness_receipt,
@@ -209,6 +210,10 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
         name: metadata["sha256"] for name, metadata in manifest["model"]["snapshot_files"].items()
     } == EXPECTED_SNAPSHOT_HASHES
     assert manifest["model"]["snapshot_files"] == SNAPSHOT_FILES
+    assert manifest["runtime"]["image_digest"] == (
+        "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851"
+    )
+    assert manifest["runtime"]["torch_version"] == "2.8.0+cu128"
     assert manifest["hardware"]["gpu_id"] == "NVIDIA L40"
     assert manifest["hardware"]["minimum_gpu_memory_gb"] == 48
     assert manifest["hardware"]["minimum_cuda_memory_bytes"] == 47_000_000_000
@@ -376,7 +381,7 @@ def test_actual_cuda_hardware_requires_exact_identity_byte_floor_and_bf16() -> N
     manifest = load_manifest()
     observed = require_cuda_hardware(
         manifest,
-        type("Torch", (), {"cuda": FakeCuda()})(),
+        type("Torch", (), {"__version__": "2.8.0+cu128", "cuda": FakeCuda()})(),
     )
     assert observed.gpu_name == "NVIDIA L40"
     assert observed.total_memory_bytes == 47_000_000_000
@@ -390,8 +395,37 @@ def test_actual_cuda_hardware_requires_exact_identity_byte_floor_and_bf16() -> N
         with pytest.raises(GateError, match="does not match"):
             require_cuda_hardware(
                 manifest,
-                type("Torch", (), {"cuda": cuda})(),
+                type("Torch", (), {"__version__": "2.8.0+cu128", "cuda": cuda})(),
             )
+    with pytest.raises(GateError, match="torch build"):
+        require_cuda_hardware(
+            manifest,
+            type("Torch", (), {"__version__": "2.9.0+cu128", "cuda": FakeCuda()})(),
+        )
+
+
+def test_dependency_import_smoke_requires_importable_exact_versions() -> None:
+    manifest = load_manifest()
+
+    def matching_import(package: str) -> object:
+        return type("Dependency", (), {"__version__": manifest["runtime"]["dependencies"][package]})()
+
+    assert verify_dependency_import_smoke(manifest, importer=matching_import) == (
+        "accelerate",
+        "peft",
+        "transformers",
+    )
+
+    with pytest.raises(GateError, match="could not be imported"):
+        verify_dependency_import_smoke(
+            manifest,
+            importer=lambda _package: (_ for _ in ()).throw(ImportError("broken")),
+        )
+    with pytest.raises(GateError, match="expected"):
+        verify_dependency_import_smoke(
+            manifest,
+            importer=lambda _package: type("Dependency", (), {"__version__": "wrong"})(),
+        )
 
 
 def test_huggingface_metadata_verifies_revision_parameters_and_bytes() -> None:

@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -x "$repository_root/.venv/bin/python3" ]]; then
+  PATH="$repository_root/.venv/bin:$PATH"
+fi
+preflight_only=""
+if (($# > 1)); then
+  echo "Usage: $0 [--preflight-only]" >&2
+  exit 64
+fi
+if (($# == 1)); then
+  if [[ "$1" != "--preflight-only" ]]; then
+    echo "Usage: $0 [--preflight-only]" >&2
+    exit 64
+  fi
+  preflight_only=1
+fi
+
+screen_result="${EQUINOX_LARGER_MODEL_SCREEN_RESULT:-}"
+screen_receipt="${EQUINOX_LARGER_MODEL_SCREEN_RECEIPT:-}"
+if [[ -z "$screen_result" || -z "$screen_receipt" ]]; then
+  while IFS= read -r candidate; do
+    candidate_receipt="${candidate%.result.json}.json"
+    if [[ ! -f "$candidate_receipt" ]]; then
+      continue
+    fi
+    if authorization="$(
+      python3 "$repository_root/research/runpod/larger_model_gate.py" \
+        authorize \
+        "$candidate" \
+        "$candidate_receipt" 2>/dev/null
+    )"; then
+      screen_result="$candidate"
+      screen_receipt="$candidate_receipt"
+      break
+    fi
+  done < <(
+    find "$repository_root/var/research-proofs" \
+      -maxdepth 1 \
+      -type f \
+      -name 'runpod-proof-*.result.json' \
+      -print 2>/dev/null |
+      sort -r
+  )
+fi
+if [[ -z "$screen_result" || -z "$screen_receipt" ]]; then
+  echo "No fresh eligible 7B screen result and matching teardown receipt were found." >&2
+  exit 1
+fi
+
+python3 "$repository_root/research/runpod/larger_model_gate.py" manifest >/dev/null
+python3 "$repository_root/research/runpod/larger_model_gate.py" verify-model >/dev/null
+timeout --kill-after=5 30 runpodctl gpu list --include-unavailable |
+  jq '[.[] | select(.gpuId == "NVIDIA L40")]' |
+  python3 "$repository_root/research/runpod/larger_model_gate.py" inventory - >/dev/null
+authorization="$(
+  python3 "$repository_root/research/runpod/larger_model_gate.py" \
+    authorize \
+    "$screen_result" \
+    "$screen_receipt"
+)"
+
+export EQUINOX_LARGER_MODEL_MODE=pilot
+export EQUINOX_LARGER_MODEL_SCREEN_RESULT="$screen_result"
+export EQUINOX_LARGER_MODEL_SCREEN_RECEIPT="$screen_receipt"
+export EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST
+EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST="$(jq -r '.digest' <<<"$authorization")"
+export EQUINOX_RL_MODEL_ID=Qwen/Qwen2.5-Coder-7B-Instruct
+export EQUINOX_RUNPOD_GPU="NVIDIA L40"
+export EQUINOX_RUNPOD_CLOUD_TYPE=SECURE
+export EQUINOX_RUNPOD_CONTAINER_DISK_GB=50
+export EQUINOX_RUNPOD_VOLUME_GB=50
+export EQUINOX_RUNPOD_MIN_GPU_MEMORY_GB=48
+export EQUINOX_RUNPOD_MAX_HOURLY_COST=1.00
+export EQUINOX_RUNPOD_MAX_TOTAL_COST=4.00
+export EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES=238
+export EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS=1200
+export EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS=900
+export EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS=1
+export EQUINOX_RL_SEED=137
+export EQUINOX_RL_TARGET_SECONDS=9000
+export EQUINOX_RL_MAX_UPDATES=40
+export EQUINOX_RL_VALIDATION_EXAMPLES=8
+export EQUINOX_RL_TEST_EXAMPLES=12
+export EQUINOX_RL_MASTERY_WINDOWS=2
+export EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=4
+export EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=1
+export EQUINOX_RUNPOD_RETRY_RESERVE_SECONDS=1800
+export EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=1800
+if [[ "$preflight_only" == "1" ]]; then
+  export EQUINOX_RUNPOD_PREFLIGHT_ONLY=1
+fi
+
+exec "$repository_root/scripts/runpod-rl-proof"

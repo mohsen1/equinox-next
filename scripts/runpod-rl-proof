@@ -253,6 +253,7 @@ default_model_load_timeout_seconds="1200"
 default_maximum_workload_attempts="2"
 default_container_disk_in_gb="30"
 default_persistent_volume_in_gb="10"
+default_stale_progress_timeout_seconds="1800"
 if [[ "$larger_model_mode" == "screen" ]]; then
   default_maximum_hourly_cost="1.00"
   default_maximum_total_cost="0.75"
@@ -260,6 +261,7 @@ if [[ "$larger_model_mode" == "screen" ]]; then
   default_maximum_workload_attempts="1"
   default_container_disk_in_gb="50"
   default_persistent_volume_in_gb="50"
+  default_stale_progress_timeout_seconds="600"
 elif [[ "$larger_model_mode" == "pilot" ]]; then
   default_maximum_hourly_cost="1.00"
   default_maximum_total_cost="4.00"
@@ -267,12 +269,13 @@ elif [[ "$larger_model_mode" == "pilot" ]]; then
   default_maximum_workload_attempts="1"
   default_container_disk_in_gb="50"
   default_persistent_volume_in_gb="50"
+  default_stale_progress_timeout_seconds="900"
 fi
 maximum_hourly_cost="${EQUINOX_RUNPOD_MAX_HOURLY_COST:-$default_maximum_hourly_cost}"
 maximum_total_cost="${EQUINOX_RUNPOD_MAX_TOTAL_COST:-$default_maximum_total_cost}"
 minimum_gpu_memory_gb="${EQUINOX_RUNPOD_MIN_GPU_MEMORY_GB:-$default_minimum_gpu_memory_gb}"
 model_load_timeout_seconds="${EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS:-$default_model_load_timeout_seconds}"
-stale_progress_timeout_seconds="${EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS:-1800}"
+stale_progress_timeout_seconds="${EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS:-$default_stale_progress_timeout_seconds}"
 maximum_workload_attempts="${EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS:-$default_maximum_workload_attempts}"
 larger_model_authorization_digest="${EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST:-}"
 larger_model_screen_result="${EQUINOX_LARGER_MODEL_SCREEN_RESULT:-}"
@@ -290,17 +293,119 @@ network_volume_data_center_id=""
 proof_id="runpod-proof-$(date -u '+%Y%m%dT%H%M%SZ')-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
 persistent_work_directory="/workspace/equinox-runs/$proof_id"
 model_cache_directory="/workspace/equinox-state/huggingface"
-operator_lock_directory="$receipt_directory/.runpod-operator.lock"
+operator_state_root="${EQUINOX_RUNPOD_OPERATOR_STATE_DIR:-$(
+  python3 - <<'PY'
+from pathlib import Path
+
+print(Path.home() / ".local/state/equinox/runpod")
+PY
+)}"
+if [[ "$operator_state_root" != /* || "$operator_state_root" == *$'\n'* ]]; then
+  echo "EQUINOX_RUNPOD_OPERATOR_STATE_DIR must be an absolute single-line path." >&2
+  exit 1
+fi
+operator_lock_directory="$operator_state_root/operator.lock"
+authorization_consumption_directory="$operator_state_root/larger-model-authorizations"
 operator_lock_acquired=false
 provider_teardown_confirmed=false
+ambiguous_create_unresolved=false
+ambiguous_create_safe_after_epoch=0
+cleanup_reserve_seconds=120
+ambiguous_create_visibility_seconds=300
+ambiguous_create_reconciliation_seconds=330
+artifact_retrieval_reserve_seconds=60
+if [[ "$experiment" == "repository-repair" && "$larger_model_mode" != "screen" ]]; then
+  artifact_retrieval_reserve_seconds=180
+fi
+
+run_provider_command() {
+  local duration="$1"
+  shift
+  timeout --kill-after=5 "$duration" "$@"
+}
+
+fsync_directory() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+path = os.path.abspath(sys.argv[1])
+descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
+durable_write_stdin() {
+  python3 -c '
+import os
+import pathlib
+import sys
+import tempfile
+
+destination = pathlib.Path(sys.argv[1])
+payload = sys.stdin.buffer.read()
+descriptor, pending = tempfile.mkstemp(prefix=".pending-", dir=destination.parent)
+try:
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(pending, destination)
+    directory = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+except BaseException:
+    try:
+        os.unlink(pending)
+    except FileNotFoundError:
+        pass
+    raise
+' "$1"
+}
+
+durable_create_stdin() {
+  python3 -c '
+import os
+import pathlib
+import sys
+
+destination = pathlib.Path(sys.argv[1])
+payload = sys.stdin.buffer.read()
+descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    directory = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+except BaseException:
+    try:
+        os.unlink(destination)
+    except FileNotFoundError:
+        pass
+    raise
+' "$1"
+}
 
 release_operator_lock() {
   if [[ "$operator_lock_acquired" != true ]]; then
     return
   fi
   rm -f -- "$operator_lock_directory/lease.json"
+  fsync_directory "$operator_lock_directory" || true
   if rmdir "$operator_lock_directory"; then
     operator_lock_acquired=false
+    fsync_directory "$operator_state_root" || true
   fi
 }
 if [[ "$experiment" == "sequence-ladder" ]]; then
@@ -340,7 +445,11 @@ command -v timeout >/dev/null
 command -v base64 >/dev/null
 command -v python3 >/dev/null
 command -v tar >/dev/null
-runpod_create_help="$(runpodctl pod create --help)"
+if [[ "$(timeout --help)" != *"--kill-after"* ]]; then
+  echo "The timeout command must support --kill-after." >&2
+  exit 1
+fi
+runpod_create_help="$(run_provider_command 30 runpodctl pod create --help)"
 if [[ "$runpod_create_help" != *"--env string"* ||
   "$runpod_create_help" != *"environment variables as json object"* ]]; then
   echo "This runpodctl version does not document the JSON --env contract required for result transport." >&2
@@ -397,7 +506,7 @@ if [[ "$experiment" == "repository-repair" ]]; then
     read_python_string_constant "$contract_workload_path" SHARED_PREFIX_CHECKPOINT_STRATEGY
   )"
 fi
-template_response="$(runpodctl template get "$template_id")"
+template_response="$(run_provider_command 30 runpodctl template get "$template_id")"
 image="$(jq -r '.imageName // empty' <<<"$template_response")"
 if [[ -z "$image" ]]; then
   echo "RunPod template $template_id did not resolve to a container image." >&2
@@ -426,8 +535,14 @@ PY
     --argjson maximum_hourly "$maximum_hourly_cost" \
     --argjson maximum_total "$maximum_total_cost" \
     --argjson maximum_lifetime_seconds "$((maximum_lifetime_minutes * 60))" \
+    --argjson boot_timeout "$boot_timeout_seconds" \
     --argjson model_load_timeout "$model_load_timeout_seconds" \
+    --argjson stale_progress_timeout "$stale_progress_timeout_seconds" \
     --argjson maximum_attempts "$maximum_workload_attempts" \
+    --argjson target_runtime "$target_runtime_seconds" \
+    --argjson retry_reserve "$retry_reserve_seconds" \
+    --argjson final_evaluation_reserve "$maximum_final_evaluation_reserve_seconds" \
+    --argjson optimization_seed "$optimization_seed" \
     '
       $manifest.runtime.template_id == $template_id
       and $manifest.runtime.image == $image
@@ -439,12 +554,20 @@ PY
       and $manifest[$limit_key].maximum_hourly_cost_usd == $maximum_hourly
       and $manifest[$limit_key].maximum_total_cost_usd == $maximum_total
       and $manifest[$limit_key].maximum_lifetime_seconds == $maximum_lifetime_seconds
+      and $manifest[$limit_key].boot_timeout_seconds == $boot_timeout
       and $manifest[$limit_key].model_load_timeout_seconds == $model_load_timeout
+      and $manifest[$limit_key].stale_progress_timeout_seconds == $stale_progress_timeout
       and $manifest[$limit_key].maximum_workload_attempts == $maximum_attempts
+      and $manifest[$limit_key].target_runtime_seconds == $target_runtime
+      and $manifest[$limit_key].retry_reserve_seconds == $retry_reserve
+      and $manifest[$limit_key].maximum_final_evaluation_reserve_seconds
+        == $final_evaluation_reserve
+      and $manifest[$limit_key].optimization_seed == $optimization_seed
     ' >/dev/null; then
     echo "The larger-model provider settings do not exactly match the immutable profile." >&2
     exit 1
   fi
+  image="$image@$(jq -r '.runtime.image_digest' <<<"$larger_model_manifest")"
 fi
 if [[ "$cloud_type" != "COMMUNITY" && "$cloud_type" != "SECURE" ]]; then
   echo "EQUINOX_RUNPOD_CLOUD_TYPE must be COMMUNITY or SECURE." >&2
@@ -501,7 +624,7 @@ if [[ -n "$larger_model_mode" ]]; then
     exit 1
   fi
   if ! network_volume="$(
-    timeout 30 runpodctl network-volume get "$network_volume_id" 2>/dev/null
+    run_provider_command 30 runpodctl network-volume get "$network_volume_id" 2>/dev/null
   )"; then
     echo "The configured RunPod network volume could not be verified." >&2
     exit 1
@@ -551,7 +674,7 @@ if [[ -n "$larger_model_mode" ]]; then
     echo "The configured data centers do not include the network volume data center." >&2
     exit 1
   fi
-  data_center_inventory="$(timeout 30 runpodctl datacenter list)"
+  data_center_inventory="$(run_provider_command 30 runpodctl datacenter list)"
   if ! jq -e \
     --arg data_center_id "$network_volume_data_center_id" \
     --arg gpu_id "$gpu_id" \
@@ -601,13 +724,13 @@ if [[ -n "$larger_model_mode" ]]; then
       echo "The pilot volume or snapshot does not match the screened authorization." >&2
       exit 1
     fi
-    authorization_consumption_path="$receipt_directory/larger-model-authorizations/${larger_model_screen_result_digest#sha256:}.json"
+    authorization_consumption_path="$authorization_consumption_directory/${larger_model_screen_result_digest#sha256:}.json"
     if [[ -e "$authorization_consumption_path" ]]; then
       echo "The matching larger-model screen authorization has already been consumed." >&2
       exit 1
     fi
   fi
-  gpu_inventory="$(runpodctl gpu list --include-unavailable)"
+  gpu_inventory="$(run_provider_command 30 runpodctl gpu list --include-unavailable)"
   if ! jq -e \
     --arg gpu_id "$gpu_id" \
     --arg cloud_type "$cloud_type" \
@@ -806,17 +929,55 @@ pod_environment="$(
     }'
 )"
 docker_args="bash -lc \"mkdir -p $persistent_work_directory $model_cache_directory; echo $bootstrap_source_b64 | base64 -d > $persistent_work_directory/bootstrap_server.py; EQUINOX_REMOTE_WORKDIR=$persistent_work_directory EQUINOX_WORKLOAD_FILE=$workload_file EQUINOX_RL_MODEL_ID=$model_id EQUINOX_RL_SEED=$optimization_seed EQUINOX_RL_TARGET_SECONDS=$target_runtime_seconds EQUINOX_RL_MAX_RESUME_GAP_SECONDS=$retry_reserve_seconds EQUINOX_RL_MAX_UPDATES=$maximum_updates EQUINOX_RL_VALIDATION_EXAMPLES=$validation_examples EQUINOX_RL_TEST_EXAMPLES=$test_examples EQUINOX_RL_MASTERY_WINDOWS=$mastery_windows EQUINOX_RL_TRAINING_TASKS_PER_UPDATE=$training_tasks_per_update EQUINOX_RL_REPLAY_TASKS_PER_LEVEL=$replay_tasks_per_level EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS=$maximum_final_evaluation_reserve_seconds EQUINOX_STUDY_CONDITION=$study_condition EQUINOX_STUDY_VALIDATION_SEED_BASE=$study_validation_seed_base EQUINOX_STUDY_TEST_SEED_BASE=$study_test_seed_base EQUINOX_STUDY_COMPLETION_BUDGET=$study_completion_budget EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS=$maximum_workload_attempts EQUINOX_LARGER_MODEL_PROFILE_PATH=$persistent_work_directory/$larger_model_profile_file EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST=$larger_model_authorization_digest EQUINOX_LARGER_MODEL_EXPECTED_SNAPSHOT_DIGEST=$larger_model_expected_snapshot_digest EQUINOX_RUNPOD_NETWORK_VOLUME_ID=$network_volume_id EQUINOX_EXPECTED_GPU_ID='$gpu_id' EQUINOX_MINIMUM_GPU_MEMORY_GB=$minimum_gpu_memory_gb HF_HOME=$model_cache_directory HUGGINGFACE_HUB_CACHE=$model_cache_directory/hub HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PIP_NO_INDEX=1 PYTHONPATH=/workspace/equinox-state/python python3 $persistent_work_directory/bootstrap_server.py\""
+
+provider_pods() {
+  local pods
+  if ! pods="$(run_provider_command 15 runpodctl pod list --all)"; then
+    return 1
+  fi
+  if ! jq -e \
+    'type == "array"
+      and all(.[];
+        type == "object"
+        and (.id | type) == "string"
+        and (.id | length) > 0
+        and (.name | type) == "string"
+        and (.name | length) > 0
+      )' \
+    >/dev/null 2>&1 <<<"$pods"; then
+    return 1
+  fi
+  printf '%s\n' "$pods"
+}
+
+provider_current_spend() {
+  local account
+  if ! account="$(run_provider_command 15 runpodctl user)"; then
+    return 1
+  fi
+  jq -er \
+    'if (.currentSpendPerHr | type) == "number" and .currentSpendPerHr >= 0
+     then .currentSpendPerHr
+     else error("invalid currentSpendPerHr")
+     end' \
+    <<<"$account"
+}
+
 preflight_only="${EQUINOX_RUNPOD_PREFLIGHT_ONLY:-}"
 if [[ -n "$preflight_only" && "$preflight_only" != "1" ]]; then
   echo "EQUINOX_RUNPOD_PREFLIGHT_ONLY must be 1 when set." >&2
   exit 1
 fi
 if [[ "$preflight_only" == "1" ]]; then
-  if [[ "$(runpodctl user | jq -r '.currentSpendPerHr')" != "0" ]]; then
+  if [[ -e "$operator_lock_directory" ]]; then
+    echo "Preflight failed: an unresolved shared RunPod operator lease exists." >&2
+    exit 1
+  fi
+  if ! current_spend="$(provider_current_spend)" || [[ "$current_spend" != "0" ]]; then
     echo "Preflight failed: the RunPod account already has active hourly spend." >&2
     exit 1
   fi
-  if [[ "$(runpodctl pod list --all | jq 'length')" != "0" ]]; then
+  if ! current_pods="$(provider_pods)" || [[ "$(jq 'length' <<<"$current_pods")" != "0" ]]; then
     echo "Preflight failed: the RunPod account already contains a pod." >&2
     exit 1
   fi
@@ -833,7 +994,7 @@ if [[ "$preflight_only" == "1" ]]; then
     --arg model_id "$model_id" \
     --arg model_revision "$(
       if [[ -n "$larger_model_mode" ]]; then
-        read_python_string_constant "$workload_path" MODEL_REVISION
+        jq -r '.model.revision' <<<"$larger_model_manifest"
       fi
     )" \
     --arg profile_id "$(
@@ -906,6 +1067,11 @@ if [[ "$preflight_only" == "1" ]]; then
 fi
 
 mkdir -p "$receipt_directory"
+(
+  umask 077
+  mkdir -p "$operator_state_root" "$authorization_consumption_directory"
+  chmod 700 "$operator_state_root" "$authorization_consumption_directory"
+)
 pod_name="equinox-${proof_id}"
 started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 started_epoch="$(date +%s)"
@@ -927,10 +1093,10 @@ if ! mkdir "$operator_lock_directory"; then
   exit 1
 fi
 operator_lock_acquired=true
+chmod 700 "$operator_lock_directory"
+fsync_directory "$operator_state_root"
 trap release_operator_lock EXIT
-(
-  umask 077
-  jq -n \
+if ! jq -n \
     --arg proof_id "$proof_id" \
     --arg pod_name "$pod_name" \
     --arg mode "$larger_model_mode" \
@@ -945,8 +1111,11 @@ trap release_operator_lock EXIT
       started_at: $started_at,
       terminate_after: $terminate_after,
       state: "preallocation"
-    }' >"$operator_lock_directory/lease.json"
-)
+    }' |
+  durable_write_stdin "$operator_lock_directory/lease.json"; then
+  echo "The shared RunPod operator lease could not be persisted durably." >&2
+  exit 1
+fi
 pod_id=""
 provider_handle=""
 hourly_cost=""
@@ -1068,10 +1237,6 @@ publish_execution() {
   return 1
 }
 
-provider_pods() {
-  timeout 30 runpodctl pod list --all
-}
-
 reconcile_pod_id_by_name() {
   local pods
   local matches
@@ -1088,6 +1253,7 @@ reconcile_pod_id_by_name() {
   fi
   pod_id="$matches"
   provider_handle="runpod://pods/$pod_id"
+  ambiguous_create_unresolved=false
 }
 
 pod_presence_state() {
@@ -1106,14 +1272,21 @@ pod_presence_state() {
 
 confirm_provider_teardown() {
   local consecutive_absent=0
+  local reconciliation_seconds="$cleanup_reserve_seconds"
+  if [[ "$ambiguous_create_unresolved" == true ]]; then
+    reconciliation_seconds="$ambiguous_create_reconciliation_seconds"
+  fi
+  local cleanup_deadline_epoch="$(( $(date +%s) + reconciliation_seconds ))"
+  local current_epoch
+  local remaining_seconds
   local state
   local spend
-  for _ in {1..12}; do
+  while (( $(date +%s) < cleanup_deadline_epoch )); do
     if [[ -z "$pod_id" ]]; then
       reconcile_pod_id_by_name || true
     fi
     if [[ -n "$pod_id" ]]; then
-      timeout 30 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
+      run_provider_command 15 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
     fi
     state="$(pod_presence_state)"
     if [[ "$state" == "absent" ]]; then
@@ -1121,14 +1294,25 @@ confirm_provider_teardown() {
     else
       consecutive_absent=0
     fi
-    if ((consecutive_absent >= 3)); then
-      if spend="$(timeout 30 runpodctl user 2>/dev/null | jq -r '.currentSpendPerHr')"; then
-        if [[ "$spend" == "0" ]]; then
-          return 0
-        fi
-      fi
+    current_epoch="$(date +%s)"
+    if ((consecutive_absent >= 3)) &&
+      {
+        [[ "$ambiguous_create_unresolved" != true ]] ||
+          ((current_epoch >= ambiguous_create_safe_after_epoch))
+      } &&
+      spend="$(provider_current_spend 2>/dev/null)" &&
+      [[ "$spend" == "0" ]]; then
+      return 0
     fi
-    sleep 5
+    remaining_seconds=$((cleanup_deadline_epoch - current_epoch))
+    if ((remaining_seconds <= 0)); then
+      break
+    fi
+    if ((remaining_seconds < 5)); then
+      sleep "$remaining_seconds"
+    else
+      sleep 5
+    fi
   done
   return 1
 }
@@ -1139,6 +1323,7 @@ cleanup() {
   local completed_at
   local failed_progress
   trap - EXIT
+  trap '' INT TERM HUP
   set +e
 
   if [[ -n "$bundle_source_path" ]]; then
@@ -1148,14 +1333,6 @@ cleanup() {
 
   if [[ "$pod_create_attempted" == true && -z "$pod_id" ]]; then
     reconcile_pod_id_by_name || true
-  fi
-  if [[ -n "$pod_id" ]]; then
-    for _ in {1..3}; do
-      timeout 30 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
-      if [[ "$(pod_presence_state)" == "absent" ]]; then
-        break
-      fi
-    done
   fi
   if [[ "$pod_create_attempted" == true && "$teardown_confirmed" != true ]]; then
     if confirm_provider_teardown; then
@@ -1189,14 +1366,14 @@ cleanup() {
   exit "$exit_code"
 }
 trap cleanup EXIT
-trap 'failure_message="The operator interrupted the RunPod harness."; exit 130' INT TERM
+trap 'failure_message="The operator interrupted the RunPod harness."; exit 130' INT TERM HUP
 
-if [[ "$(runpodctl user | jq -r '.currentSpendPerHr')" != "0" ]]; then
+if ! current_spend="$(provider_current_spend)" || [[ "$current_spend" != "0" ]]; then
   echo "Refusing to start: the RunPod account already has active hourly spend." >&2
   exit 1
 fi
 
-if [[ "$(runpodctl pod list --all | jq 'length')" != "0" ]]; then
+if ! current_pods="$(provider_pods)" || [[ "$(jq 'length' <<<"$current_pods")" != "0" ]]; then
   echo "Refusing to start: the RunPod account already contains a pod." >&2
   exit 1
 fi
@@ -1279,10 +1456,7 @@ if [[ -n "$data_center_ids" ]]; then
 fi
 pod_create_attempted=true
 if [[ "$larger_model_mode" == "pilot" ]]; then
-  mkdir -p "$(dirname "$authorization_consumption_path")"
-  if ! (
-    set -o noclobber
-    jq -n \
+  if ! jq -n \
       --arg proof_id "$proof_id" \
       --arg screen_result_digest "$larger_model_screen_result_digest" \
       --arg authorization_digest "$larger_model_authorization_digest" \
@@ -1292,20 +1466,29 @@ if [[ "$larger_model_mode" == "pilot" ]]; then
         screen_result_digest: $screen_result_digest,
         authorization_digest: $authorization_digest,
         consumed_at: $consumed_at
-      }' >"$authorization_consumption_path"
-  ) 2>/dev/null; then
+      }' |
+    durable_create_stdin "$authorization_consumption_path" 2>/dev/null; then
     pod_create_attempted=false
     echo "The matching larger-model screen authorization was consumed concurrently." >&2
     exit 1
   fi
 fi
 set +e
-create_response="$(timeout 90 runpodctl "${create_arguments[@]}")"
+create_response="$(run_provider_command 90 runpodctl "${create_arguments[@]}")"
 create_exit_code="$?"
 set -e
 pod_id="$(jq -r '.id // .pod.id // empty' <<<"$create_response" 2>/dev/null || true)"
-if [[ "$create_exit_code" != "0" || ! "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+if [[ "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  provider_handle="runpod://pods/$pod_id"
+  if [[ "$create_exit_code" != "0" ]]; then
+    failure_message="RunPod pod creation returned a valid pod id with a failed command status."
+    echo "RunPod returned $pod_id with status $create_exit_code; cleanup will delete that exact pod." >&2
+    exit 1
+  fi
+else
   pod_id=""
+  ambiguous_create_unresolved=true
+  ambiguous_create_safe_after_epoch="$(($(date +%s) + ambiguous_create_visibility_seconds))"
   if reconcile_pod_id_by_name; then
     failure_message="RunPod pod creation returned ambiguously after allocating a worker."
     echo "Reconciled ambiguous pod creation to $pod_id; cleanup will delete it." >&2
@@ -1315,10 +1498,9 @@ if [[ "$create_exit_code" != "0" || ! "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   fi
   exit 1
 fi
-provider_handle="runpod://pods/$pod_id"
 
 failure_message="RunPod did not report a bounded hourly rate."
-pod_response="$(timeout 30 runpodctl pod get "$pod_id")"
+pod_response="$(run_provider_command 30 runpodctl pod get "$pod_id")"
 hourly_cost="$(
   jq -r '.adjustedCostPerHr // .costPerHr // .costPerHour // empty' <<<"$pod_response"
 )"
@@ -1453,7 +1635,8 @@ if [[ "$workload_transport_ready" != true ]]; then
 fi
 
 echo "Container is live; streaming structured progress to Equinox." >&2
-result_deadline_epoch=$((started_epoch + maximum_lifetime_minutes * 60 - 60))
+provider_deadline_epoch=$((started_epoch + maximum_lifetime_minutes * 60))
+result_deadline_epoch=$((provider_deadline_epoch - cleanup_reserve_seconds - artifact_retrieval_reserve_seconds))
 failure_message="The remote workload did not finish before the provider cleanup reserve."
 while (( $(date +%s) < result_deadline_epoch )); do
   current_epoch="$(date +%s)"
@@ -1525,7 +1708,8 @@ fi
 if [[ "$exit_code" != "0" ]]; then
   failure_message="The remote workload failed with exit code $exit_code."
   echo "The remote workload failed with exit code $exit_code." >&2
-  curl --fail --silent --show-error -H "$remote_authorization" \
+  curl --fail --silent --show-error --max-time 30 \
+    -H "$remote_authorization" \
     "$proxy_root/error.log" 2>/dev/null |
     tail -40 >&2 || true
   exit 1
@@ -2003,7 +2187,11 @@ if [[ "$larger_model_mode" == "pilot" ]]; then
     and .maximum_input_tokens == 1536
     and .gradient_checkpointing_enabled == true
     and .gradient_checkpointing_use_reentrant == false
+    and (.retained_checkpoint_update | type) == "number"
+    and .retained_checkpoint_update >= 1
+    and .retained_checkpoint_update == .best_validation.update
     and .effective_policy_update_count >= 1
+    and .effective_policy_update_count <= .policy_update_count
     and .probative_post_training == true
     and .final_evaluation_complete == true
   '
@@ -2146,12 +2334,6 @@ fi
 
 echo "Remote loop passed; terminating worker $pod_id." >&2
 failure_message="RunPod teardown could not be confirmed."
-for _ in {1..3}; do
-  timeout 30 runpodctl pod delete "$pod_id" >/dev/null 2>&1 || true
-  if [[ "$(pod_presence_state)" == "absent" ]]; then
-    break
-  fi
-done
 if ! confirm_provider_teardown; then
   echo "RunPod teardown is unknown or spend remains nonzero; refusing confirmed teardown." >&2
   exit 1
@@ -2179,7 +2361,7 @@ jq -n \
   --arg provider_name "RunPod" \
   --arg provider "runpod" \
   --arg provider_handle "$provider_handle" \
-  --arg provider_cli_version "$(runpodctl version | awk '{print $2}')" \
+  --arg provider_cli_version "$(run_provider_command 15 runpodctl version | awk '{print $2}')" \
   --arg gpu_id "$gpu_id" \
   --arg image "$image" \
   --arg cloud_type "$cloud_type" \

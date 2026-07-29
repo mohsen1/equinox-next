@@ -22,6 +22,7 @@ the source of truth:
 | Maximum hourly cost | $1.00 | $1.00 |
 | Maximum total cost | $0.75 | $4.00 |
 | Model-load timeout | 20 minutes | 20 minutes |
+| No-progress watchdog | 10 minutes | 15 minutes |
 | Paid launcher lifetime | 43 minutes | 238 minutes |
 | Cleanup cost reserve | 120 seconds | 120 seconds |
 | Workload attempts | 1 | 1 |
@@ -53,7 +54,7 @@ to bound CPU spend and long enough to complete the transfer.
 runpodctl pod create \
   --name equinox-7b-prewarm \
   --compute-type cpu \
-  --image runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 \
+  --image runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404@sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851 \
   --network-volume-id "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" \
   --data-center-ids "$EQUINOX_RUNPOD_DATA_CENTER_IDS" \
   --terminate-after PREWARM_DEADLINE_UTC
@@ -121,8 +122,9 @@ runpodctl network-volume get "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" |
 ```
 
 The receipt binds the profile, model revision, every required file digest, dependency
-versions, volume ID, data center, and size. It expires after seven days. Copy it back
-before deleting the CPU pod.
+versions and successful imports, volume ID, data center, and size. It expires after seven
+days. The base image supplies `torch==2.8.0+cu128`; do not install another torch build into
+the volume. Copy the receipt back before deleting the CPU pod.
 
 ```bash
 runpodctl pod delete PREWARM_POD_ID
@@ -170,8 +172,9 @@ floor, the volume or receipt does not match, or any cap is missing or inconsiste
 
 The launcher rechecks every preallocation condition immediately before requesting a
 worker. After allocation, it verifies the actual GPU identity, memory, free cache space,
-and every cached file digest before model initialization. It also requires the exact
-dependency versions from the volume. The paid L40 sets `HF_HUB_OFFLINE=1`,
+the exact `torch==2.8.0+cu128` build, and every cached file digest before model
+initialization. It also requires the exact dependency versions from the volume. The paid
+L40 sets `HF_HUB_OFFLINE=1`,
 `TRANSFORMERS_OFFLINE=1`, and `PIP_NO_INDEX=1`: it never installs packages or downloads
 model weights. Missing or changed artifacts fail immediately.
 
@@ -217,9 +220,13 @@ is a bounded experiment, not authorization for a larger follow-on study.
 
 The pilot authorization is single-use. `--preflight-only` does not consume it. A paid
 pilot writes a consumption record at
-`var/research-proofs/larger-model-authorizations/SCREEN_RESULT_DIGEST_HEX.json`
+`~/.local/state/equinox/runpod/larger-model-authorizations/SCREEN_RESULT_DIGEST_HEX.json`
 immediately before requesting a pod. A failed or ambiguous create still consumes the
 authorization; another pilot requires a new eligibility screen.
+
+Result retrieval is also inside the paid deadline. The launcher reserves 60 seconds for
+the screen result, 180 seconds for the pilot result and adapter, and then the full
+120-second teardown window.
 
 ## Hard stop conditions
 
@@ -247,32 +254,38 @@ exceed the total-cost cap.
 Before allocation, the launcher creates:
 
 ```text
-var/research-proofs/.runpod-operator.lock/lease.json
+~/.local/state/equinox/runpod/operator.lock/lease.json
 ```
 
 The lease records the proof ID, unique pod name, mode, process ID, start time, and
 provider deadline. It prevents a second operator from allocating concurrently. Normal
 completion removes it only after teardown is confirmed; unresolved cleanup leaves it in
-place.
+place. This state is shared by local worktrees. It is not a distributed lock: operate the
+RunPod account from one designated host only.
 
 After an interruption, do not delete the lease to force another launch. Inspect it and
 reconcile the exact pod name:
 
 ```bash
-jq . var/research-proofs/.runpod-operator.lock/lease.json
+jq . ~/.local/state/equinox/runpod/operator.lock/lease.json
 runpodctl pod list --all
 runpodctl user
 ```
 
 If the named pod exists, delete that exact pod ID. Confirm three successful provider
 queries report it absent and `currentSpendPerHr` is zero. Only then remove
-`var/research-proofs/.runpod-operator.lock/lease.json` and its now-empty lock directory.
+`~/.local/state/equinox/runpod/operator.lock/lease.json` and its now-empty lock directory.
 The next preflight reconciles a stale Runs record. This is cleanup recovery, not workload
 resume.
 
+When pod creation returns without an ID, the launcher treats provider state as ambiguous.
+It watches the unique pod name for five minutes and allows up to 330 seconds for
+reconciliation. A failed or malformed provider query is `unknown`, not proof of absence.
+If reconciliation cannot prove both pod absence and zero hourly spend, the lease remains.
+
 ```bash
-rm -- var/research-proofs/.runpod-operator.lock/lease.json
-rmdir -- var/research-proofs/.runpod-operator.lock
+rm -- ~/.local/state/equinox/runpod/operator.lock/lease.json
+rmdir -- ~/.local/state/equinox/runpod/operator.lock
 ```
 
 ## Confirm teardown
@@ -291,6 +304,17 @@ After either paid command:
 If teardown is not confirmed, treat the run as an active-spend incident. Remove the pod
 through RunPod, verify zero ongoing spend, and reconcile the execution before launching
 anything else.
+
+After the pilot is complete—or explicitly abandoned—copy and verify every result,
+adapter, and receipt you intend to keep, then delete the network volume:
+
+```bash
+runpodctl network-volume delete "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID"
+runpodctl network-volume list
+```
+
+The network volume remains billable independently of GPU teardown. Do not leave it
+allocated after the larger-model sequence is finished.
 
 ## Inspect the run
 

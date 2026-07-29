@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import importlib.metadata
 import json
 import math
@@ -112,6 +113,8 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
     "runtime": {
         "template_id": "runpod-torch-v280",
         "image": "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404",
+        "image_digest": "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851",
+        "torch_version": "2.8.0+cu128",
         "dependencies": {
             "accelerate": "1.14.0",
             "peft": "0.19.1",
@@ -144,15 +147,27 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "maximum_hourly_cost_usd": 1.0,
         "maximum_total_cost_usd": 0.75,
         "maximum_lifetime_seconds": 2_580,
+        "boot_timeout_seconds": 360,
         "model_load_timeout_seconds": 1_200,
+        "stale_progress_timeout_seconds": 600,
         "maximum_workload_attempts": 1,
+        "target_runtime_seconds": 1_500,
+        "retry_reserve_seconds": 300,
+        "maximum_final_evaluation_reserve_seconds": 300,
+        "optimization_seed": 137,
     },
     "pilot_limits": {
         "maximum_hourly_cost_usd": 1.0,
         "maximum_total_cost_usd": 4.0,
         "maximum_lifetime_seconds": 14_280,
+        "boot_timeout_seconds": 360,
         "model_load_timeout_seconds": 1_200,
+        "stale_progress_timeout_seconds": 900,
         "maximum_workload_attempts": 1,
+        "target_runtime_seconds": 9_000,
+        "retry_reserve_seconds": 1_800,
+        "maximum_final_evaluation_reserve_seconds": 1_800,
+        "optimization_seed": 137,
     },
     "screen": {
         "workload": SCREEN_WORKLOAD,
@@ -429,6 +444,13 @@ def require_cuda_hardware(
     """Require the exact paid CUDA profile before hashing or loading model bytes."""
 
     _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    observed_torch_version = getattr(torch_module, "__version__", None)
+    expected_torch_version = manifest["runtime"]["torch_version"]
+    if observed_torch_version != expected_torch_version:
+        raise GateError(
+            "the paid larger-model worker torch build does not match the immutable profile "
+            f"(observed={observed_torch_version!r}, expected={expected_torch_version!r})"
+        )
     cuda = getattr(torch_module, "cuda", None)
     if cuda is None or not cuda.is_available():
         raise GateError("the paid larger-model worker has no available CUDA device")
@@ -678,6 +700,30 @@ def _receipt_digest(receipt: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical_json(content)).hexdigest()
 
 
+def verify_dependency_import_smoke(
+    manifest: Mapping[str, Any],
+    *,
+    importer: Callable[[str], Any] = importlib.import_module,
+) -> tuple[str, ...]:
+    """Import every pinned volume dependency before declaring the cache ready."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    imported: list[str] = []
+    for package, expected_version in manifest["runtime"]["dependencies"].items():
+        try:
+            module = importer(package)
+        except Exception as error:
+            raise GateError(f"prewarmed dependency {package} could not be imported") from error
+        observed_version = getattr(module, "__version__", None)
+        if observed_version != expected_version:
+            raise GateError(
+                f"prewarmed dependency {package} import reported {observed_version!r}, "
+                f"expected {expected_version!r}"
+            )
+        imported.append(package)
+    return tuple(imported)
+
+
 def build_volume_readiness_receipt(
     manifest: Mapping[str, Any],
     snapshot: Path,
@@ -705,6 +751,7 @@ def build_volume_readiness_receipt(
         or dict(dependency_versions) != manifest["runtime"]["dependencies"]
     ):
         raise GateError("volume readiness dependencies do not match the immutable profile")
+    verify_dependency_import_smoke(manifest)
     snapshot_evidence = verify_local_snapshot(manifest, snapshot)
     prepared_at = now or datetime.now(UTC)
     if prepared_at.tzinfo is None or prepared_at.utcoffset() is None:
@@ -1096,10 +1143,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 / "snapshots"
                 / manifest["model"]["revision"]
             )
-            versions = {
-                package: importlib.metadata.version(package)
-                for package in manifest["runtime"]["dependencies"]
-            }
+            try:
+                versions = {
+                    package: importlib.metadata.version(package)
+                    for package in manifest["runtime"]["dependencies"]
+                }
+            except importlib.metadata.PackageNotFoundError as error:
+                raise GateError(
+                    f"prewarmed dependency {error.name or 'unknown'} is unavailable"
+                ) from error
             output = build_volume_readiness_receipt(
                 manifest,
                 snapshot,

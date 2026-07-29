@@ -59,13 +59,15 @@ def test_screen_preflight_verifies_model_inventory_and_immutable_caps() -> None:
     assert "gpu list --include-unavailable" in source
     assert "EQUINOX_RUNPOD_PREFLIGHT_ONLY=1" in source
     larger_model_case = launcher_source[
-        launcher_source.index('if [[ -n "$larger_model_mode" ]]; then'):
-        launcher_source.index('elif [[ -z "$study_condition" ]]; then')
+        launcher_source.index('if [[ -n "$larger_model_mode" ]]; then') : launcher_source.index(
+            'elif [[ -z "$study_condition" ]]; then'
+        )
     ]
     assert 'contract_workload_file="$workload_file"' not in larger_model_case
     assert 'network-volume get "$network_volume_id"' in launcher_source
     assert "network_volume_data_center_id" in launcher_source
     assert "runpodctl datacenter list" in launcher_source
+    assert "jq -r '.model.revision' <<<\"$larger_model_manifest\"" in launcher_source
     assert (
         f"EQUINOX_RUNPOD_MAX_TOTAL_COST={manifest['screen_limits']['maximum_total_cost_usd']}"
         in source
@@ -81,6 +83,9 @@ def test_pilot_requires_exact_screen_authorization_before_launcher() -> None:
     assert "EQUINOX_LARGER_MODEL_SCREEN_RESULT" in source
     assert "EQUINOX_LARGER_MODEL_SCREEN_RECEIPT" in source
     assert "EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST" in source
+    launcher_source = LAUNCHER.read_text(encoding="utf-8")
+    assert ".retained_checkpoint_update == .best_validation.update" in launcher_source
+    assert ".effective_policy_update_count <= .policy_update_count" in launcher_source
 
 
 def test_paid_larger_model_worker_is_offline_and_cannot_invoke_pip() -> None:
@@ -105,6 +110,73 @@ def test_provider_query_failure_is_unknown_and_teardown_requires_zero_spend() ->
     assert 'if [[ -z "$pod_id" ]]; then\n      reconcile_pod_id_by_name || true' in source
     assert "pod_is_present" not in source
     assert "teardown_confirmed=true" in source
+    assert 'and (.id | type) == "string"' in source
+    assert 'and (.name | type) == "string"' in source
+    assert "ambiguous_create_safe_after_epoch" in source
+    assert "current_epoch >= ambiguous_create_safe_after_epoch" in source
+
+
+def test_paid_provider_commands_and_cleanup_are_hard_bounded() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+
+    assert 'timeout --kill-after=5 "$duration"' in source
+    assert 'create_response="$(run_provider_command 90 runpodctl' in source
+    assert 'pod_response="$(run_provider_command 30 runpodctl pod get' in source
+    assert "trap '' INT TERM HUP" in source
+    assert "cleanup_reserve_seconds=120" in source
+    assert "ambiguous_create_visibility_seconds=300" in source
+    assert "ambiguous_create_reconciliation_seconds=330" in source
+    assert "artifact_retrieval_reserve_seconds=180" in source
+    assert (
+        "result_deadline_epoch=$((provider_deadline_epoch - cleanup_reserve_seconds "
+        "- artifact_retrieval_reserve_seconds))"
+    ) in source
+
+
+def test_operator_lease_and_authorization_are_shared_and_durable() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+
+    assert '".local/state/equinox/runpod"' in source
+    assert 'operator_lock_directory="$operator_state_root/operator.lock"' in source
+    assert "durable_write_stdin" in source
+    assert "durable_create_stdin" in source
+    assert "os.O_EXCL" in source
+    assert "os.fsync" in source
+    assert "an unresolved shared RunPod operator lease exists" in source
+
+
+def test_ambiguous_create_preserves_any_valid_returned_pod_id() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    valid_id_branch = source[
+        source.index('if [[ "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]') :
+        source.index('failure_message="RunPod did not report a bounded hourly rate."')
+    ]
+
+    assert 'provider_handle="runpod://pods/$pod_id"' in valid_id_branch
+    assert 'pod_id=""' not in valid_id_branch.split("else", maxsplit=1)[0]
+    assert "cleanup will delete that exact pod" in valid_id_branch
+
+
+def test_larger_model_direct_launch_caps_are_manifest_pinned() -> None:
+    manifest = load_manifest()
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    screen = SCREEN.read_text(encoding="utf-8")
+    pilot = PILOT.read_text(encoding="utf-8")
+
+    assert ".runtime.image_digest" in launcher
+    for key in (
+        "boot_timeout_seconds",
+        "stale_progress_timeout_seconds",
+        "target_runtime_seconds",
+        "retry_reserve_seconds",
+        "maximum_final_evaluation_reserve_seconds",
+        "optimization_seed",
+    ):
+        assert key in launcher
+    assert f"EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS={manifest['screen_limits']['stale_progress_timeout_seconds']}" in screen
+    assert f"EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS={manifest['pilot_limits']['stale_progress_timeout_seconds']}" in pilot
+    assert "EQUINOX_RL_SEED=137" in screen
+    assert "EQUINOX_RL_SEED=137" in pilot
 
 
 def test_total_cost_and_phase_deadlines_are_enforced_during_polling() -> None:
@@ -115,12 +187,15 @@ def test_total_cost_and_phase_deadlines_are_enforced_during_polling() -> None:
     assert "preparation_started_epoch" in source
     assert "model_load_timeout_seconds" in source
     assert "last_progress_change_epoch" in source
+    assert (
+        'curl --fail --silent --show-error --max-time 30 \\\n    -H "$remote_authorization"'
+        in source
+    )
 
 
 def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates() -> None:
     gate_results = {
-        gate_name: True
-        for gate_name in load_manifest()["authorization"]["required_gate_results"]
+        gate_name: True for gate_name in load_manifest()["authorization"]["required_gate_results"]
     }
     gate_results["peak_reserved_vram_within_limit"] = False
     gate_results["pilot_runtime_feasible"] = False
