@@ -370,6 +370,13 @@ def main() -> None:
             )
         except (OSError, tarfile.TarError, ValueError) as error:
             raise SystemExit(f"Volume bundle could not be installed: {error}") from error
+        os.environ.update(
+            {
+                "EQUINOX_BUNDLE_VOLUME_PATH": volume_bundle_path,
+                "EQUINOX_BUNDLE_SHA256": expected_environment_bundle_digest,
+                "EQUINOX_BUNDLE_SIZE_BYTES": expected_environment_bundle_size,
+            }
+        )
     else:
         if expected_environment_bundle_digest or expected_environment_bundle_size:
             raise SystemExit(

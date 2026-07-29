@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import tarfile
 from http import HTTPStatus
 from http.client import HTTPConnection, RemoteDisconnected
@@ -19,6 +20,7 @@ from research.runpod.bootstrap_server import (
     install_bundle,
     install_environment_bundle,
     install_volume_bundle,
+    main,
 )
 
 
@@ -263,6 +265,51 @@ def test_install_volume_bundle_verifies_content_address_and_exact_allowlist(
     )
 
     assert {path.name for path in work_directory.iterdir()} == set(files)
+
+
+def test_volume_bootstrap_restores_verified_handoff_identity_for_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    volume_path = (
+        "/workspace/equinox-state/workload-bundles/profile@1/"
+        f"{digest.removeprefix('sha256:')}.tar.xz"
+    )
+    monkeypatch.setenv("EQUINOX_REMOTE_WORKDIR", str(tmp_path))
+    monkeypatch.setenv("EQUINOX_WORKLOAD_FILE", "repository_repair_rl.py")
+    monkeypatch.setenv("EQUINOX_RESULT_TOKEN", "test-token")
+    monkeypatch.setenv("EQUINOX_BUNDLE_VOLUME_PATH", volume_path)
+    monkeypatch.setenv("EQUINOX_BUNDLE_SHA256", digest)
+    monkeypatch.setenv("EQUINOX_BUNDLE_SIZE_BYTES", "73208")
+    monkeypatch.setattr(
+        "research.runpod.bootstrap_server.install_volume_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr("research.runpod.bootstrap_server.time.sleep", lambda _seconds: None)
+    executed: dict[str, object] = {}
+
+    def capture_exec(
+        executable: str,
+        arguments: list[str],
+        environment: dict[str, str],
+    ) -> None:
+        executed.update(
+            executable=executable,
+            arguments=arguments,
+            environment=dict(environment),
+        )
+
+    monkeypatch.setattr(os, "execvpe", capture_exec)
+
+    main()
+
+    assert executed["executable"] == "bash"
+    environment = executed["environment"]
+    assert isinstance(environment, dict)
+    assert environment["EQUINOX_BUNDLE_VOLUME_PATH"] == volume_path
+    assert environment["EQUINOX_BUNDLE_SHA256"] == digest
+    assert environment["EQUINOX_BUNDLE_SIZE_BYTES"] == "73208"
 
 
 @pytest.mark.parametrize("failure", ("digest", "size", "symlink", "path"))
