@@ -260,9 +260,9 @@ def test_policy_credit_is_limited_to_fresh_read_and_fix_chain(
             "path": fault.path,
             "old": fault.old,
             "new": fault.new,
-            },
-            {"tool": "test"},
-        )
+        },
+        {"tool": "test"},
+    )
 
     def sample_one(
         _prompt: str,
