@@ -482,6 +482,22 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def research_trajectory_source(
+    execution: dict[str, Any],
+    proof_result: Any,
+) -> dict[str, Any] | None:
+    if isinstance(proof_result, dict):
+        return proof_result
+    progress = execution.get("progress")
+    if not isinstance(progress, dict):
+        return None
+    return {
+        **progress,
+        "branch_width": execution.get("branch_width"),
+        "complexity_strategy": execution.get("complexity_strategy"),
+    }
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
@@ -2271,9 +2287,7 @@ def get_research_compute_trajectory(execution_id: str) -> dict[str, Any]:
         )
     execution = dict(item)
     proof_result = execution.pop("proof_result")
-    trajectory_source = (
-        proof_result if isinstance(proof_result, dict) else execution.get("progress")
-    )
+    trajectory_source = research_trajectory_source(execution, proof_result)
     return {
         "execution": execution,
         "trajectory": (

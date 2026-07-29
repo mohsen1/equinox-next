@@ -384,6 +384,31 @@ seconds_until_deadline() {
   fi
 }
 
+finalize_larger_model_screen_progress() {
+  local result="$1"
+  jq -c \
+    --argjson result "$result" \
+    '
+      . + {
+        phase: "finalizing",
+        message: "Eligibility recorded; confirming teardown.",
+        branch_width: $result.branch_width,
+        complexity_strategy: "adaptive",
+        elapsed_seconds: $result.elapsed_seconds,
+        eligible: $result.eligible,
+        profile_id: $result.profile_id,
+        model_revision: $result.model_revision,
+        branch_checkpoint_rate: $result.branch_checkpoint_rate,
+        informative_group_rate: $result.informative_group_rate,
+        peak_reserved_vram_fraction: $result.peak_reserved_vram_fraction,
+        policy_mutation_detected: $result.policy_mutation_detected,
+        gate_results: $result.gate_results,
+        ineligibility_reasons: $result.ineligibility_reasons,
+        test_split_accessed: false
+      }
+    '
+}
+
 fsync_directory() {
   python3 - "$1" <<'PY'
 import os
@@ -2706,25 +2731,7 @@ fi
 
 if [[ "$larger_model_mode" == "screen" ]]; then
   last_progress="$(
-    jq -cn \
-      --argjson result "$metrics" \
-      '{
-        phase: "finalizing",
-        message: "Eligibility recorded; confirming teardown.",
-        branch_width: $result.branch_width,
-        complexity_strategy: "adaptive",
-        elapsed_seconds: $result.elapsed_seconds,
-        eligible: $result.eligible,
-        profile_id: $result.profile_id,
-        model_revision: $result.model_revision,
-        branch_checkpoint_rate: $result.branch_checkpoint_rate,
-        informative_group_rate: $result.informative_group_rate,
-        peak_reserved_vram_fraction: $result.peak_reserved_vram_fraction,
-        policy_mutation_detected: $result.policy_mutation_detected,
-        gate_results: $result.gate_results,
-        ineligibility_reasons: $result.ineligibility_reasons,
-        test_split_accessed: false
-      }'
+    finalize_larger_model_screen_progress "$metrics" <<<"$last_progress"
   )"
 elif [[ "$study_eligibility_only" == "1" ]]; then
   last_progress="$(

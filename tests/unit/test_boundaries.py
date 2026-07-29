@@ -14,6 +14,7 @@ from services.orchestrator.app.main import (
     research_proof_response,
     research_result_progress,
     research_trajectory,
+    research_trajectory_source,
 )
 from services.orchestrator.app.providers import (
     JUDGE_PROVIDER_NAMES,
@@ -661,3 +662,26 @@ def test_research_trajectory_projects_live_multi_step_branch_lineage() -> None:
     assert trajectory["restored_continuations"] is True
     assert trajectory["branch_snapshots"] == [latest_branch]
     assert trajectory["total_sampled_actions"] == 34
+
+
+@pytest.mark.parametrize("branch_width", (1, 4))
+def test_live_trajectory_inherits_static_execution_contract_before_remote_progress(
+    branch_width: int,
+) -> None:
+    source = research_trajectory_source(
+        {
+            "branch_width": branch_width,
+            "complexity_strategy": "adaptive",
+            "progress": {
+                "phase": "requesting_capacity",
+                "message": "Requesting one bounded RunPod worker.",
+            },
+        },
+        None,
+    )
+
+    assert source is not None
+    trajectory = research_trajectory(source)
+    assert trajectory["branch_width"] == branch_width
+    assert trajectory["complexity_strategy"] == "adaptive"
+    assert trajectory["branch_snapshots"] == []

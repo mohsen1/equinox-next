@@ -386,6 +386,70 @@ def _shell_function(source: str, name: str) -> str:
     return source[start:end]
 
 
+def test_terminal_screen_progress_preserves_live_branch_observer_fields() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    assert 'finalize_larger_model_screen_progress "$metrics" <<<"$last_progress"' in source
+    helper = _shell_function(source, "finalize_larger_model_screen_progress")
+    latest_branch_snapshot = {
+        "snapshot_id": "update-1-snapshot-root",
+        "update": 1,
+        "level": 0,
+        "siblings": [{"index": index, "steps": []} for index in range(4)],
+    }
+    progress = {
+        "phase": "training",
+        "branch_width": 4,
+        "complexity_strategy": "adaptive",
+        "multi_step": True,
+        "restored_continuations": True,
+        "maximum_level": 3,
+        "maximum_updates": 1,
+        "current_level": 0,
+        "latest_branch_snapshot": latest_branch_snapshot,
+    }
+    metrics = {
+        "branch_width": 4,
+        "elapsed_seconds": 93.5,
+        "eligible": True,
+        "profile_id": "qwen2.5-coder-7b-runpod-h100@2",
+        "model_revision": "model-revision",
+        "branch_checkpoint_rate": 1.0,
+        "informative_group_rate": 0.5,
+        "peak_reserved_vram_fraction": 0.42,
+        "policy_mutation_detected": False,
+        "gate_results": {"branch_checkpoint_rate": True},
+        "ineligibility_reasons": [],
+    }
+    harness = f"""set -euo pipefail
+{helper}
+finalize_larger_model_screen_progress \
+  '{json.dumps(metrics, separators=(",", ":"))}' \
+  <<'JSON'
+{json.dumps(progress, separators=(",", ":"))}
+JSON
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    finalized = json.loads(result.stdout)
+    assert finalized["phase"] == "finalizing"
+    assert finalized["latest_branch_snapshot"] == latest_branch_snapshot
+    assert finalized["multi_step"] is True
+    assert finalized["restored_continuations"] is True
+    assert finalized["maximum_level"] == 3
+    assert finalized["maximum_updates"] == 1
+    assert finalized["eligible"] is True
+    assert finalized["test_split_accessed"] is False
+
+
 @pytest.mark.parametrize(
     ("scenario", "missing_volume", "missing_receipt", "expected_error"),
     [
