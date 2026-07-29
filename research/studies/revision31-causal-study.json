@@ -48,7 +48,7 @@
   "shared_configuration": {
     "completion_budget": 320,
     "maximum_updates": 40,
-    "target_runtime_seconds": 10800,
+    "target_runtime_seconds": 14400,
     "maximum_resume_gap_seconds": 2700,
     "maximum_final_evaluation_reserve_seconds": 2700,
     "validation_examples": 8,

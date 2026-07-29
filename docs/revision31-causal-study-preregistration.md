@@ -35,6 +35,8 @@ Each cell uses seeds 137, 269, 443, 617, and 887. Conditions sharing a seed also
 
 Outcome-triggered early stops for regression, uninformative groups, and maximum-level mastery are disabled in every cell so they cannot break completion-budget matching. Provider deadlines, final-evaluation reserve, action-protocol failure, and the exact 320-completion stop remain binding.
 
+Before any condition produced an accepted result, provider trials showed that the original three-hour wall-clock envelope could stop a run just short of the exact completion budget even when the GPU and final evaluation were healthy. The wall-clock envelope is therefore four hours. This is an operational allowance, not a larger training budget: every cell still stops at exactly 320 sampled completions, and every scientific setting remains unchanged. The failed attempts and the amendment are retained in the study record.
+
 The primary estimands are paired within seed:
 
 1. the branching main effect, `K=4 − K=1`, averaged across curriculum policies;

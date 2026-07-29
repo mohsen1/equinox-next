@@ -67,6 +67,7 @@ def test_launcher_environment_selects_revision31(
     assert environment["EQUINOX_STUDY_CONDITION"] == "k1_scheduled_dynamic"
     assert environment["EQUINOX_RL_TRAINING_TASKS_PER_UPDATE"] == "12"
     assert environment["EQUINOX_STUDY_COMPLETION_BUDGET"] == "320"
+    assert environment["EQUINOX_RL_TARGET_SECONDS"] == "14400"
     assert environment["EQUINOX_RUNPOD_PREFLIGHT_ONLY"] == "1"
     assert environment["EQUINOX_RUNPOD_GPU"] == "NVIDIA A40"
 

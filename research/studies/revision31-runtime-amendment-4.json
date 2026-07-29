@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "amendment_id": "repository-repair-causal-factorial-study@2/amendment-4",
+  "study_id": "repository-repair-causal-factorial-study@2",
+  "recorded_at": "2026-07-29T03:48:00Z",
+  "applies_before_successful_condition_count": 0,
+  "triggering_evidence": [
+    {
+      "execution_id": "runpod-proof-20260729T001954Z",
+      "gpu": "NVIDIA L40",
+      "outcome": "Final evaluation completed, but the exact completion-budget invariant rejected the result after the training reserve stopped collection."
+    },
+    {
+      "execution_id": "runpod-proof-20260729T032417Z",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "outcome": "Through checkpoint 1, end-to-end training throughput was within approximately two percent of the L40 while the calibrated reserve left less training time."
+    }
+  ],
+  "changes": {
+    "target_runtime_seconds": {
+      "from": 10800,
+      "to": 14400
+    },
+    "hardware_preference": {
+      "from": "NVIDIA GeForce RTX 5090 on RunPod secure cloud",
+      "to": "NVIDIA L40 on RunPod community cloud"
+    }
+  },
+  "rationale": {
+    "runtime": "The scientific compute budget is the exact 320 sampled completions, not elapsed wall time. The original wall-clock envelope was too short to reliably consume that fixed budget and then run the unchanged final evaluation.",
+    "hardware": "Measured end-to-end workload throughput on the RTX 5090 did not justify its higher rate. The L40 passed reserve calibration and is the lowest-cost observed worker with sufficient memory.",
+    "study_integrity": "No revision-31 condition had produced an accepted result when this amendment was recorded. The protocol and source are refrozen before rerunning any factorial cell."
+  },
+  "unchanged": [
+    "exact 320-completion budget",
+    "maximum 40 updates",
+    "2,700-second maximum final-evaluation reserve",
+    "model and revision",
+    "factorial cells",
+    "optimization seeds",
+    "validation and test splits",
+    "optimizer and objective",
+    "reward and policy-credit semantics",
+    "curriculum policies",
+    "tool contract",
+    "external task pack",
+    "graduation gates",
+    "larger-model gate"
+  ]
+}
