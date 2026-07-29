@@ -37,6 +37,26 @@ WORKLOAD_SUPPORT_FILES = {
             "repository_repair_study.py",
         }
     ),
+    "repository_repair_large_model_eligibility.py": frozenset(
+        {
+            "larger_model_gate.py",
+            "repository_repair_env.py",
+            "repository_repair_env_v31.py",
+            "repository_repair_env_v32.py",
+            "repository_repair_rl.py",
+            "repository_repair_study.py",
+        }
+    ),
+    "repository_repair_large_model_pilot.py": frozenset(
+        {
+            "larger_model_gate.py",
+            "repository_repair_env.py",
+            "repository_repair_env_v31.py",
+            "repository_repair_env_v32.py",
+            "repository_repair_rl.py",
+            "repository_repair_study.py",
+        }
+    ),
     "research/runpod/revision30_external_eval.py": frozenset(
         {
             "external_eval_remote_runner.sh",

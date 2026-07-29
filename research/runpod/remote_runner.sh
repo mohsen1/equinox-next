@@ -17,6 +17,7 @@ study_condition="${EQUINOX_STUDY_CONDITION:-}"
 study_validation_seed_base="${EQUINOX_STUDY_VALIDATION_SEED_BASE:-}"
 study_test_seed_base="${EQUINOX_STUDY_TEST_SEED_BASE:-}"
 study_completion_budget="${EQUINOX_STUDY_COMPLETION_BUDGET:-}"
+maximum_workload_attempts="${EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS:-2}"
 branch_width=4
 if [[ "$study_condition" == "k1_train" || "$study_condition" == k1_* ]]; then
   branch_width=1
@@ -29,6 +30,7 @@ error_path="$work_directory/error.log"
 exit_code_path="$work_directory/exit_code"
 adapter_path="$work_directory/adapter"
 attempt_counter_path="$work_directory/workload-attempt-count"
+non_retryable_failure_path="$work_directory/non-retryable-failure"
 boot_attempt=1
 if [[ -z "${EQUINOX_RESULT_TOKEN:-}" ]]; then
   printf '%s\n' \
@@ -208,7 +210,7 @@ serve_boot_failure() {
 }
 
 case "$workload_file" in
-  repository_repair_rl.py | repository_repair_study.py | repository_repair_study_v31.py | repository_repair_eligibility.py)
+  repository_repair_rl.py | repository_repair_study.py | repository_repair_study_v31.py | repository_repair_eligibility.py | repository_repair_large_model_eligibility.py | repository_repair_large_model_pilot.py)
     progress_schema_version=2
     repository_workload=true
     ;;
@@ -223,6 +225,13 @@ case "$workload_file" in
       "The remote runner received an unsupported workload file."
     ;;
 esac
+
+if [[ ! "$maximum_workload_attempts" =~ ^[12]$ ]]; then
+  serve_boot_failure \
+    "$progress_schema_version" \
+    "WORKLOAD_ATTEMPT_LIMIT_INVALID" \
+    "The workload attempt limit must be 1 or 2."
+fi
 
 if [[ "$repository_workload" == "true" && -z "$model_id" ]]; then
   serve_boot_failure \
@@ -291,6 +300,45 @@ if [[ "$workload_file" == "repository_repair_study.py" ||
   fi
 fi
 
+non_retryable_failure_code() {
+  local attempt_error_path="$1"
+  if grep -Eiq \
+    'CUDA([^[:cntrl:]]*)out of memory|CUDA out of memory|OutOfMemoryError|CUDNN_STATUS_ALLOC_FAILED' \
+    "$attempt_error_path"; then
+    printf '%s\n' "GPU_MEMORY_EXHAUSTED"
+    return 0
+  fi
+  if grep -Eiq \
+    'MODEL_LOAD_FAILED|MODEL_LOAD_TIMEOUT|model load(ing)? failed|failed to load (the )?model|RevisionNotFoundError|RepositoryNotFoundError|GatedRepoError|not a valid model identifier|safetensors(_rust)?[^[:cntrl:]]*(error|exception)' \
+    "$attempt_error_path"; then
+    printf '%s\n' "MODEL_LOAD_FAILED"
+    return 0
+  fi
+  return 1
+}
+
+persist_non_retryable_failure() {
+  local failure_code="$1"
+  printf '%s\n' "$failure_code" >"$non_retryable_failure_path.pending"
+  mv "$non_retryable_failure_path.pending" "$non_retryable_failure_path"
+}
+
+non_retryable_failure_message() {
+  case "$1" in
+    GPU_MEMORY_EXHAUSTED)
+      printf '%s\n' \
+        "The workload exhausted GPU memory; retrying unchanged would waste compute."
+      ;;
+    MODEL_LOAD_FAILED)
+      printf '%s\n' \
+        "The configured model could not be loaded; retrying unchanged would waste compute."
+      ;;
+    *)
+      printf '%s\n' "The workload encountered a non-retryable failure."
+      ;;
+  esac
+}
+
 touch "$error_path"
 for interrupted_error_path in "$work_directory"/error.attempt-*.log; do
   if [[ ! -f "$interrupted_error_path" ]]; then
@@ -299,6 +347,12 @@ for interrupted_error_path in "$work_directory"/error.attempt-*.log; do
   interrupted_attempt="${interrupted_error_path##*/error.attempt-}"
   interrupted_attempt="${interrupted_attempt%.log}"
   if [[ "$interrupted_attempt" =~ ^[0-9]+$ ]]; then
+    interrupted_non_retryable_failure=""
+    if interrupted_non_retryable_failure="$(
+      non_retryable_failure_code "$interrupted_error_path"
+    )"; then
+      persist_non_retryable_failure "$interrupted_non_retryable_failure"
+    fi
     merge_attempt_error_log_or_fallback \
       "$interrupted_error_path" \
       "$interrupted_attempt" \
@@ -333,10 +387,14 @@ if sys.argv[2] in {
     "repository_repair_rl.py",
     "repository_repair_study.py",
     "repository_repair_study_v31.py",
+    "repository_repair_large_model_pilot.py",
 }:
     if result.get("experiment_completed") is not True:
         raise SystemExit(1)
-if sys.argv[2] == "repository_repair_eligibility.py":
+if sys.argv[2] in {
+    "repository_repair_eligibility.py",
+    "repository_repair_large_model_eligibility.py",
+}:
     if result.get("screen_completed") is not True:
         raise SystemExit(1)
 if (
@@ -384,7 +442,23 @@ terminal_error=""
 terminal_message=""
 if [[ "$pending_result_completed" == "true" || -f "$result_path" ]]; then
   retry_allowed=false
-elif ((recorded_attempts >= 2)); then
+elif [[ -f "$non_retryable_failure_path" ]]; then
+  persisted_non_retryable_failure="$(<"$non_retryable_failure_path")"
+  case "$persisted_non_retryable_failure" in
+    GPU_MEMORY_EXHAUSTED | MODEL_LOAD_FAILED)
+      retry_allowed=false
+      terminal_error="$persisted_non_retryable_failure"
+      terminal_message="$(
+        non_retryable_failure_message "$persisted_non_retryable_failure"
+      )"
+      ;;
+    *)
+      retry_allowed=false
+      terminal_error="WORKLOAD_FAILURE_STATE_INVALID"
+      terminal_message="The persisted non-retryable failure state is invalid."
+      ;;
+  esac
+elif ((recorded_attempts >= maximum_workload_attempts)); then
   retry_allowed=false
   terminal_error="WORKLOAD_ATTEMPT_BUDGET_EXHAUSTED"
   terminal_message="The bounded workload attempt budget is exhausted."
@@ -445,7 +519,7 @@ elif [[ -f "$exit_code_path" ]]; then
   fi
 fi
 while [[ ! -f "$result_path" && "$retry_allowed" == "true" ]] &&
-  ((recorded_attempts < 2)); do
+  ((recorded_attempts < maximum_workload_attempts)); do
   if completed_pending_result_available; then
     workload_exit_code=0
     pending_result_completed=true
@@ -512,6 +586,12 @@ PY
     python3 "$work_directory/$workload_file" \
     >"$result_pending_path" 2>"$attempt_error_path"
   workload_exit_code="$?"
+  detected_non_retryable_failure=""
+  if detected_non_retryable_failure="$(
+    non_retryable_failure_code "$attempt_error_path"
+  )"; then
+    persist_non_retryable_failure "$detected_non_retryable_failure"
+  fi
   merge_attempt_error_log_or_fallback \
     "$attempt_error_path" \
     "$workload_attempt" \
@@ -535,7 +615,15 @@ PY
       "Recovered a completed result; packaging artifacts."
     break
   fi
-  if ((workload_attempt >= 2)) ||
+  if [[ -n "$detected_non_retryable_failure" ]]; then
+    retry_allowed=false
+    terminal_error="$detected_non_retryable_failure"
+    terminal_message="$(
+      non_retryable_failure_message "$detected_non_retryable_failure"
+    )"
+    break
+  fi
+  if ((workload_attempt >= maximum_workload_attempts)) ||
     [[ ! -f "$adapter_path/checkpoints/latest.json" ]]; then
     break
   fi
@@ -556,7 +644,7 @@ if [[ "$workload_exit_code" != "0" && ! -f "$result_path" ]] &&
   elif [[ ! -f "$adapter_path/checkpoints/latest.json" ]]; then
     terminal_error="WORKLOAD_FAILED_BEFORE_FIRST_CHECKPOINT"
     terminal_message="The workload failed before producing a resumable checkpoint."
-  elif ((recorded_attempts >= 2)); then
+  elif ((recorded_attempts >= maximum_workload_attempts)); then
     terminal_error="WORKLOAD_ATTEMPT_BUDGET_EXHAUSTED"
     terminal_message="The bounded workload attempt budget is exhausted."
   else

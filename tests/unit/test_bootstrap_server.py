@@ -91,6 +91,40 @@ def test_eligibility_bundle_requires_the_screen_and_frozen_study_sources(
     }
 
 
+@pytest.mark.parametrize(
+    "workload_file",
+    (
+        "repository_repair_large_model_eligibility.py",
+        "repository_repair_large_model_pilot.py",
+    ),
+)
+def test_large_model_bundle_requires_the_gate_and_versioned_environment(
+    tmp_path: Path,
+    workload_file: str,
+) -> None:
+    files = {name: f"{name}\n".encode() for name in expected_bundle_files(workload_file)}
+
+    install_bundle(
+        bundle_payload(files),
+        work_directory=tmp_path,
+        workload_file=workload_file,
+    )
+
+    assert set(files) == {
+        "larger_model_gate.py",
+        "remote_runner.sh",
+        "repository_repair_env.py",
+        "repository_repair_env_v31.py",
+        "repository_repair_env_v32.py",
+        "repository_repair_large_model_eligibility.py"
+        if workload_file.endswith("eligibility.py")
+        else "repository_repair_large_model_pilot.py",
+        "repository_repair_rl.py",
+        "repository_repair_study.py",
+        "result_server.py",
+    }
+
+
 def test_external_evaluation_bundle_preserves_the_frozen_package_layout(
     tmp_path: Path,
 ) -> None:

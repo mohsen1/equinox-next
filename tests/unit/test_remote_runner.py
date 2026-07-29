@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def run_remote_runner(
     tmp_path: Path,
@@ -21,11 +23,13 @@ def run_remote_runner(
         """#!/bin/sh
 case "$1" in
   -)
-    if [ "$EQUINOX_WORKLOAD_FILE" = "repository_repair_eligibility.py" ] &&
+    if { [ "$EQUINOX_WORKLOAD_FILE" = "repository_repair_eligibility.py" ] ||
+      [ "$EQUINOX_WORKLOAD_FILE" = "repository_repair_large_model_eligibility.py" ]; } &&
       grep -q '"screen_completed":[[:space:]]*true' "$2"; then
       exit 0
     fi
     if [ "$EQUINOX_WORKLOAD_FILE" != "repository_repair_eligibility.py" ] &&
+      [ "$EQUINOX_WORKLOAD_FILE" != "repository_repair_large_model_eligibility.py" ] &&
       grep -q '"experiment_completed":[[:space:]]*true' "$2"; then
       exit 0
     fi
@@ -66,6 +70,20 @@ if [ "$EQUINOX_FAKE_FAILURE_MODE" = "invalid-once" ] && [ "$attempt" -eq 1 ]; th
     >"$EQUINOX_ADAPTER_PATH/checkpoints/latest.json"
   printf '%s\\n' '{}'
   exit 0
+fi
+if [ "$EQUINOX_FAKE_FAILURE_MODE" = "cuda-oom" ]; then
+  mkdir -p "$EQUINOX_ADAPTER_PATH/checkpoints"
+  printf '%s\\n' '{"checkpoint":"update-1"}' \
+    >"$EQUINOX_ADAPTER_PATH/checkpoints/latest.json"
+  printf '%s\\n' 'torch.OutOfMemoryError: CUDA out of memory' >&2
+  exit 7
+fi
+if [ "$EQUINOX_FAKE_FAILURE_MODE" = "model-load-failed" ]; then
+  mkdir -p "$EQUINOX_ADAPTER_PATH/checkpoints"
+  printf '%s\\n' '{"checkpoint":"update-1"}' \
+    >"$EQUINOX_ADAPTER_PATH/checkpoints/latest.json"
+  printf '%s\\n' 'RevisionNotFoundError: failed to load model' >&2
+  exit 7
 fi
 if [ "$EQUINOX_FAKE_FAILURE_MODE" = "no-checkpoint" ]; then
   printf '%s\\n' 'failure before checkpoint' >&2
@@ -109,6 +127,14 @@ exec /usr/bin/tar "$@"
     (tmp_path / "repository_repair_rl.py").write_text("", encoding="utf-8")
     (tmp_path / "repository_repair_study.py").write_text("", encoding="utf-8")
     (tmp_path / "repository_repair_eligibility.py").write_text("", encoding="utf-8")
+    (tmp_path / "repository_repair_large_model_eligibility.py").write_text(
+        "",
+        encoding="utf-8",
+    )
+    (tmp_path / "repository_repair_large_model_pilot.py").write_text(
+        "",
+        encoding="utf-8",
+    )
     (tmp_path / "branching_sequence_ladder.py").write_text("", encoding="utf-8")
 
     environment = {
@@ -223,6 +249,97 @@ def test_remote_runner_retries_once_from_a_persisted_checkpoint(tmp_path: Path) 
     assert "=== attempt 1 · exit 7 ===" in error_log
     assert "transient failure" in error_log
     assert "=== attempt 2 · exit 0 ===" in error_log
+
+
+def test_remote_runner_honors_a_single_attempt_budget(tmp_path: Path) -> None:
+    run_remote_runner(
+        tmp_path,
+        "retry-success",
+        environment_overrides={"EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS": "1"},
+    )
+
+    assert (tmp_path / "attempts").read_text(encoding="utf-8").strip() == "1"
+    assert (tmp_path / "workload-attempt-count").read_text(encoding="utf-8").strip() == "1"
+    assert (tmp_path / "exit_code").read_text(encoding="utf-8").strip() == "7"
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["error"] == "WORKLOAD_ATTEMPT_BUDGET_EXHAUSTED"
+
+
+@pytest.mark.parametrize("maximum_attempts", ("0", "3", "many"))
+def test_remote_runner_rejects_an_invalid_attempt_budget(
+    tmp_path: Path,
+    maximum_attempts: str,
+) -> None:
+    completed = run_remote_runner(
+        tmp_path,
+        "retry-success",
+        environment_overrides={"EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS": maximum_attempts},
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert not (tmp_path / "attempts").exists()
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["error"] == "WORKLOAD_ATTEMPT_LIMIT_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_error"),
+    (
+        ("cuda-oom", "GPU_MEMORY_EXHAUSTED"),
+        ("model-load-failed", "MODEL_LOAD_FAILED"),
+    ),
+)
+def test_remote_runner_does_not_retry_a_deterministic_expensive_failure(
+    tmp_path: Path,
+    failure_mode: str,
+    expected_error: str,
+) -> None:
+    run_remote_runner(tmp_path, failure_mode)
+
+    assert (tmp_path / "attempts").read_text(encoding="utf-8").strip() == "1"
+    assert (tmp_path / "workload-attempt-count").read_text(encoding="utf-8").strip() == "1"
+    assert (tmp_path / "non-retryable-failure").read_text(
+        encoding="utf-8"
+    ).strip() == expected_error
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["error"] == expected_error
+    assert "waste compute" in progress["message"]
+
+
+def test_remote_runner_retains_a_non_retryable_failure_across_restart(
+    tmp_path: Path,
+) -> None:
+    run_remote_runner(tmp_path, "cuda-oom")
+    run_remote_runner(tmp_path, "retry-success")
+
+    assert (tmp_path / "attempts").read_text(encoding="utf-8").strip() == "1"
+    assert (tmp_path / "workload-attempt-count").read_text(encoding="utf-8").strip() == "1"
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["error"] == "GPU_MEMORY_EXHAUSTED"
+
+
+def test_remote_runner_does_not_retry_an_interrupted_oom_attempt(
+    tmp_path: Path,
+) -> None:
+    checkpoint_root = tmp_path / "adapter" / "checkpoints"
+    checkpoint_root.mkdir(parents=True)
+    (checkpoint_root / "latest.json").write_text(
+        '{"checkpoint":"update-1"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "workload-attempt-count").write_text("1\n", encoding="utf-8")
+    (tmp_path / "error.attempt-1.log").write_text(
+        "torch.OutOfMemoryError: CUDA out of memory\n",
+        encoding="utf-8",
+    )
+
+    run_remote_runner(tmp_path, "retry-success")
+
+    assert not (tmp_path / "attempts").exists()
+    assert (tmp_path / "workload-attempt-count").read_text(encoding="utf-8").strip() == "1"
+    progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert progress["error"] == "GPU_MEMORY_EXHAUSTED"
 
 
 def test_remote_runner_supplies_deterministic_cublas_workspace(tmp_path: Path) -> None:
@@ -562,6 +679,45 @@ def test_remote_runner_accepts_eligibility_result_without_adapter(
     result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert result == {"screen_completed": True, "protocol_eligible": True}
     assert not (tmp_path / "adapter.tgz").exists()
+
+
+def test_remote_runner_accepts_large_model_eligibility_without_study_or_adapter(
+    tmp_path: Path,
+) -> None:
+    run_remote_runner(
+        tmp_path,
+        "eligibility-success",
+        workload_file="repository_repair_large_model_eligibility.py",
+        missing_variables=(
+            "EQUINOX_STUDY_CONDITION",
+            "EQUINOX_STUDY_VALIDATION_SEED_BASE",
+            "EQUINOX_STUDY_TEST_SEED_BASE",
+        ),
+        environment_overrides={"EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS": "1"},
+    )
+
+    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert result == {"screen_completed": True, "protocol_eligible": True}
+    assert not (tmp_path / "adapter.tgz").exists()
+
+
+def test_remote_runner_accepts_large_model_pilot_without_study_configuration(
+    tmp_path: Path,
+) -> None:
+    run_remote_runner(
+        tmp_path,
+        "retry-success",
+        workload_file="repository_repair_large_model_pilot.py",
+        missing_variables=(
+            "EQUINOX_STUDY_CONDITION",
+            "EQUINOX_STUDY_VALIDATION_SEED_BASE",
+            "EQUINOX_STUDY_TEST_SEED_BASE",
+        ),
+    )
+
+    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert result == {"experiment_completed": True}
+    assert (tmp_path / "adapter.tgz").is_file()
 
 
 def test_remote_runner_rejects_study_without_matched_completion_budget(
