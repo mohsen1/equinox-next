@@ -13,27 +13,27 @@ try:
     import larger_model_gate as gate
     import repository_repair_env as frozen_environment
     import repository_repair_env_v32 as interface
+    import repository_repair_large_model_eligibility as eligibility
     import repository_repair_rl as frozen
     import repository_repair_study as study
 except ModuleNotFoundError:
     from . import larger_model_gate as gate
     from . import repository_repair_env as frozen_environment
     from . import repository_repair_env_v32 as interface
+    from . import repository_repair_large_model_eligibility as eligibility
     from . import repository_repair_rl as frozen
     from . import repository_repair_study as study
 
 
-WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@2"
+WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@3"
 OBJECTIVE_ID = "verified-repair-chain-root-branch-retention-policy-gradient@16"
 SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed@1"
 LOCALIZATION_TELEMETRY_STRATEGY = "all_fault_sources_observed"
 POLICY_CREDIT_SCOPE = (
-    "fault_fixing_edits_and_immediately_upstream_fresh_reads_"
-    "from_verified_successful_siblings"
+    "fault_fixing_edits_and_immediately_upstream_fresh_reads_from_verified_successful_siblings"
 )
 LEARNING_SIGNAL = (
-    "verified_fresh_read_and_fault_fixing_edit_chains_"
-    "from_mixed_correctness_sibling_groups"
+    "verified_fresh_read_and_fault_fixing_edit_chains_from_mixed_correctness_sibling_groups"
 )
 MODEL_REVISION = gate.MODEL_REVISION
 PILOT_WORKLOAD = "repository-repair-restored-continuation-post-training"
@@ -62,12 +62,7 @@ class PilotRepositoryRepairEnvironment(interface.RepositoryRepairEnvironment):
         if not prompt.startswith(prompt_header) or environment_boundary not in prompt:
             raise RuntimeError("the structured phase prompt contract changed")
         _, environment_payload = prompt.split(environment_boundary, 1)
-        return (
-            prompt_header
-            + pilot_instruction
-            + environment_boundary
-            + environment_payload
-        )
+        return prompt_header + pilot_instruction + environment_boundary + environment_payload
 
 
 def repository_root_observed_checkpoint(task: Any, prefix: Any) -> bool:
@@ -77,11 +72,7 @@ def repository_root_observed_checkpoint(task: Any, prefix: Any) -> bool:
         return False
     expected_paths = sorted(task.files)
     for step in prefix.steps:
-        if (
-            not step.accepted
-            or step.tool != "list"
-            or step.action != {"tool": "list", "path": ""}
-        ):
+        if not step.accepted or step.tool != "list" or step.action != {"tool": "list", "path": ""}:
             continue
         try:
             observation = json.loads(step.observation)
@@ -135,11 +126,7 @@ def fault_fixing_edit_and_fresh_read_actions(
             if action_index:
                 preceding_generated = generated_actions[action_index - 1]
                 preceding_step = post_branch_steps[action_index - 1]
-                edited_path = (
-                    step.action.get("path")
-                    if isinstance(step.action, dict)
-                    else None
-                )
+                edited_path = step.action.get("path") if isinstance(step.action, dict) else None
                 if (
                     preceding_step.accepted
                     and preceding_step.tool == "read"
@@ -310,6 +297,17 @@ def require_authorization_digest() -> str:
     return digest
 
 
+def install_fail_closed_tokenizer_loader(transformers_module: Any) -> None:
+    """Wrap every pilot tokenizer with the shared no-truncation guard."""
+
+    original_tokenizer_load = transformers_module.AutoTokenizer.from_pretrained
+
+    def fail_closed_tokenizer_load(*args: Any, **kwargs: Any) -> Any:
+        return eligibility.fail_closed_prompt_tokenizer(original_tokenizer_load(*args, **kwargs))
+
+    transformers_module.AutoTokenizer.from_pretrained = fail_closed_tokenizer_load
+
+
 def install_memory_profile(manifest: dict[str, Any]) -> None:
     """Apply the screened 7B memory envelope without changing frozen sources."""
 
@@ -321,6 +319,7 @@ def install_memory_profile(manifest: dict[str, Any]) -> None:
         if observed_versions != manifest["runtime"]["dependencies"]:
             raise RuntimeError("the paid worker does not contain the manifest-pinned dependencies")
         import peft
+        import transformers
 
         original_get_peft_model = peft.get_peft_model
         original_lora_config = peft.LoraConfig
@@ -340,6 +339,7 @@ def install_memory_profile(manifest: dict[str, Any]) -> None:
 
         peft.LoraConfig = pinned_lora_config
         peft.get_peft_model = memory_bounded_get_peft_model
+        install_fail_closed_tokenizer_loader(transformers)
 
     frozen.ensure_dependencies = ensure_dependencies_and_patch_peft
     frozen.TRAINING_MICROBATCH_SIZE = manifest["pilot"]["training_microbatch_size"]

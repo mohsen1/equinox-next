@@ -12,6 +12,20 @@ from research.runpod import larger_model_gate as gate
 from research.runpod import repository_repair_large_model_pilot as pilot
 
 
+def test_pilot_installs_the_shared_fail_closed_tokenizer_guard() -> None:
+    raw_tokenizer = object()
+    transformers = SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(
+            from_pretrained=lambda *_args, **_kwargs: raw_tokenizer,
+        )
+    )
+
+    pilot.install_fail_closed_tokenizer_loader(transformers)
+    guarded = transformers.AutoTokenizer.from_pretrained("model", revision="revision")
+
+    assert isinstance(guarded, pilot.eligibility.FailClosedPromptTokenizer)
+
+
 def test_authorization_digest_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST", raising=False)
     with pytest.raises(RuntimeError, match="authorization digest"):
@@ -72,11 +86,8 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash() -> None:
 
 def test_v32_pilot_constants_do_not_modify_frozen_sources() -> None:
     assert pilot.MODEL_REVISION == gate.MODEL_REVISION
-    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@2"
-    assert (
-        pilot.OBJECTIVE_ID
-        == "verified-repair-chain-root-branch-retention-policy-gradient@16"
-    )
+    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@3"
+    assert pilot.OBJECTIVE_ID == "verified-repair-chain-root-branch-retention-policy-gradient@16"
     assert pilot.SHARED_PREFIX_CHECKPOINT_STRATEGY == "repository_root_observed@1"
     assert Path(pilot.__file__).name == "repository_repair_large_model_pilot.py"
     assert os.path.basename(pilot.frozen.__file__) == "repository_repair_rl.py"
@@ -171,10 +182,7 @@ def test_branching_precedes_localization_and_keeps_coverage_as_telemetry(
     assert len(collection.siblings) == 4
     assert collection.prefix.steps[0].action == {"tool": "list", "path": ""}
     assert serialized["checkpoint"]["static_branch_width"] == 4
-    assert (
-        serialized["shared_prefix"]["checkpoint_strategy"]
-        == "repository_root_observed@1"
-    )
+    assert serialized["shared_prefix"]["checkpoint_strategy"] == "repository_root_observed@1"
     assert serialized["shared_prefix"]["required_diagnostic_actions"] == 1
     assert serialized["shared_prefix"]["required_fault_source_reads"] == 0
     assert serialized["shared_prefix"]["observed_fault_source_paths"] == []
@@ -186,8 +194,7 @@ def test_branching_precedes_localization_and_keeps_coverage_as_telemetry(
     assert telemetry["siblings"][0]["observed_fault_source_paths"] == [fault_path]
     assert telemetry["siblings"][0]["all_fault_sources_observed"] is True
     assert all(
-        sibling["all_fault_sources_observed"] is False
-        for sibling in telemetry["siblings"][1:]
+        sibling["all_fault_sources_observed"] is False for sibling in telemetry["siblings"][1:]
     )
 
 
@@ -213,15 +220,9 @@ def test_bootstrap_contract_pins_static_k_and_truthful_training_globals(
     assert pilot.frozen.BRANCH_WIDTH == 4
     assert pilot.frozen_environment.BRANCH_WIDTH == 4
     assert pilot.frozen.MINIMUM_PREFIX_ACCEPTED_ACTIONS == 1
-    assert (
-        pilot.frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY
-        == "repository_root_observed@1"
-    )
+    assert pilot.frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY == "repository_root_observed@1"
     assert pilot.frozen.POLICY_CREDIT_SCOPE == pilot.POLICY_CREDIT_SCOPE
-    assert (
-        pilot.frozen.fault_fixing_edit_actions
-        is pilot.fault_fixing_edit_and_fresh_read_actions
-    )
+    assert pilot.frozen.fault_fixing_edit_actions is pilot.fault_fixing_edit_and_fresh_read_actions
     with pytest.raises(ValueError, match="static K=4"):
         pilot.install_bootstrap_checkpoint_contract(1)
 
@@ -297,9 +298,14 @@ def test_policy_credit_is_limited_to_fresh_read_and_fix_chain(
     assert pilot.fault_fixing_edit_and_fresh_read_actions(collection, 1) == []
     assert [example.weight for example in examples] == [0.5, 0.5]
     assert sum(example.weight for example in examples) == 1.0
-    assert [
-        step["policy_signal"] for step in serialized["siblings"][0]["steps"]
-    ] == [False, False, True, True, False, False]
+    assert [step["policy_signal"] for step in serialized["siblings"][0]["steps"]] == [
+        False,
+        False,
+        True,
+        True,
+        False,
+        False,
+    ]
     assert serialized["policy_credit_scope"] == pilot.POLICY_CREDIT_SCOPE
 
 

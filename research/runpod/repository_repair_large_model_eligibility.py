@@ -104,6 +104,76 @@ class EligibilityScreenComplete(BaseException):
         super().__init__("the larger-model eligibility screen completed")
 
 
+class FailClosedPromptTokenizer:
+    """Proxy a tokenizer while refusing every over-limit prompt.
+
+    The frozen trainer requests tokenizer truncation. This proxy performs that
+    request without truncation, verifies the resulting width, and fails before
+    generation when the full task-generic prompt exceeds the declared limit.
+    """
+
+    def __init__(self, tokenizer: Any) -> None:
+        object.__setattr__(self, "_tokenizer", tokenizer)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_tokenizer"), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(object.__getattribute__(self, "_tokenizer"), name, value)
+
+    @staticmethod
+    def _sequence_width(input_ids: Any) -> int:
+        shape = getattr(input_ids, "shape", None)
+        if shape is not None:
+            dimensions = tuple(int(value) for value in shape)
+            if len(dimensions) == 1:
+                return dimensions[0]
+            if len(dimensions) == 2:
+                return dimensions[1]
+            raise RuntimeError("prompt tokenizer returned unsupported input_ids dimensions")
+        if isinstance(input_ids, list | tuple):
+            if not input_ids:
+                return 0
+            if all(isinstance(value, int) for value in input_ids):
+                return len(input_ids)
+            if all(isinstance(row, list | tuple) for row in input_ids):
+                return max((len(row) for row in input_ids), default=0)
+        raise RuntimeError("prompt tokenizer did not return measurable input_ids")
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        truncation = kwargs.get("truncation")
+        if truncation in (None, False, "do_not_truncate"):
+            return object.__getattribute__(self, "_tokenizer")(*args, **kwargs)
+        maximum_input_tokens = kwargs.get("max_length")
+        if type(maximum_input_tokens) is not int or maximum_input_tokens <= 0:
+            raise RuntimeError("fail-closed prompt tokenization requires a positive max_length")
+        untruncated_kwargs = {**kwargs, "truncation": False}
+        encoded = object.__getattribute__(self, "_tokenizer")(
+            *args,
+            **untruncated_kwargs,
+        )
+        try:
+            input_ids = encoded["input_ids"]
+        except (KeyError, TypeError):
+            input_ids = getattr(encoded, "input_ids", None)
+        observed_tokens = self._sequence_width(input_ids)
+        if observed_tokens > maximum_input_tokens:
+            raise RuntimeError(
+                "PROMPT_INPUT_TOKEN_LIMIT_EXCEEDED: "
+                f"observed {observed_tokens} tokens with a "
+                f"{maximum_input_tokens}-token limit; truncation is forbidden"
+            )
+        return encoded
+
+
+def fail_closed_prompt_tokenizer(tokenizer: Any) -> FailClosedPromptTokenizer:
+    """Wrap one tokenizer exactly once with the no-truncation contract."""
+
+    if isinstance(tokenizer, FailClosedPromptTokenizer):
+        return tokenizer
+    return FailClosedPromptTokenizer(tokenizer)
+
+
 @dataclass
 class BaselineOutcome:
     level: int
@@ -455,15 +525,15 @@ def run_capacity_smoke(
     model: Any,
     optimizer: Any,
     *,
-    maximum_input_tokens: int,
+    sequence_tokens: int,
     torch_module: Any,
 ) -> None:
-    """Exercise the screen's exact reference/policy/backward/Adam memory shape."""
+    """Exercise the largest reference/policy/backward/Adam sequence shape."""
 
     parameter = next(model.parameters())
     device = parameter.device
     input_ids = torch_module.zeros(
-        (1, maximum_input_tokens),
+        (1, sequence_tokens),
         device=device,
         dtype=torch_module.long,
     )
@@ -514,6 +584,18 @@ def run_capacity_smoke(
         target_ids,
     )
     torch_module.cuda.empty_cache()
+
+
+def capacity_smoke_sequence_tokens(manifest: dict[str, Any]) -> int:
+    """Return the largest prompt envelope plus the frozen continuation."""
+
+    return (
+        max(
+            manifest["screen"]["maximum_input_tokens"],
+            manifest["pilot"]["maximum_input_tokens"],
+        )
+        + frozen.MAX_NEW_TOKENS
+    )
 
 
 def _baseline_counts(evidence: ScreenEvidence) -> dict[str, dict[str, int]]:
@@ -946,7 +1028,7 @@ def build_screen_result(
         "offline_mode_active": evidence.offline_mode_active,
         "training_microbatch_size": screen["training_microbatch_size"],
         "maximum_input_tokens": screen["maximum_input_tokens"],
-        "capacity_smoke_sequence_tokens": (screen["maximum_input_tokens"] + frozen.MAX_NEW_TOKENS),
+        "capacity_smoke_sequence_tokens": capacity_smoke_sequence_tokens(manifest),
         "baseline_runtime_seconds": round(baseline_runtime_seconds, 3),
         "predicted_final_evaluation_seconds": round(
             predicted_final_evaluation_seconds,
@@ -1184,7 +1266,7 @@ def install_model_hooks(evidence: ScreenEvidence, manifest: dict[str, Any]) -> N
                 raise RuntimeError("network tokenizer loading is forbidden")
             kwargs["local_files_only"] = True
             kwargs["cache_dir"] = manifest["artifact_readiness"]["cache_directory"]
-            return original_tokenizer_load(model_id, *args, **kwargs)
+            return fail_closed_prompt_tokenizer(original_tokenizer_load(model_id, *args, **kwargs))
 
         def offline_model_load(model_id: str, *args: Any, **kwargs: Any) -> Any:
             require_identity(model_id, kwargs.get("revision"))
@@ -1236,9 +1318,7 @@ def install_model_hooks(evidence: ScreenEvidence, manifest: dict[str, Any]) -> N
             run_capacity_smoke(
                 latest_peft_model,
                 optimizer,
-                maximum_input_tokens=(
-                    manifest["screen"]["maximum_input_tokens"] + frozen.MAX_NEW_TOKENS
-                ),
+                sequence_tokens=capacity_smoke_sequence_tokens(manifest),
                 torch_module=torch,
             )
             evidence.capacity_smoke_completed = True

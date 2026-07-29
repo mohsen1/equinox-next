@@ -128,7 +128,8 @@ def eligible_screen(**overrides: object) -> dict[str, object]:
         ],
         "branch_width": 4,
         "training_microbatch_size": 1,
-        "maximum_input_tokens": 1_536,
+        "maximum_input_tokens": 2_048,
+        "capacity_smoke_sequence_tokens": 2_240,
         "capacity_smoke_completed": True,
         "gradient_checkpointing_enabled": True,
         "pinned_snapshot_digest": expected_snapshot_digest(manifest),
@@ -257,8 +258,8 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     assert manifest["hardware"]["minimum_cuda_memory_bytes"] == 78_000_000_000
     assert manifest["hardware"]["maximum_peak_reserved_vram_fraction"] == 0.85
     assert manifest["interface"] == {
-        "environment_revision": "repository-repair-simulator@7",
-        "action_protocol_revision": "repository-repair-json-tools@6",
+        "environment_revision": "repository-repair-simulator@8",
+        "action_protocol_revision": "repository-repair-json-tools@7",
     }
     assert manifest["source_contract"] == {
         "algorithm": "sha256",
@@ -266,17 +267,34 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     }
     assert manifest["screen"]["validation_examples"] == 8
     assert manifest["screen"]["admission_levels"] == [0]
-    assert (
-        manifest["screen"]["shared_prefix_checkpoint_strategy"]
-        == "repository_root_observed@1"
-    )
+    assert manifest["screen"]["shared_prefix_checkpoint_strategy"] == "repository_root_observed@1"
     assert manifest["screen"]["minimum_completed_baseline_examples"] == 8
     assert manifest["screen"]["baseline_examples_per_level"] == 8
     assert manifest["screen"]["training_microbatch_size"] == 1
-    assert manifest["screen"]["maximum_input_tokens"] == 1_536
+    assert manifest["screen"]["maximum_input_tokens"] == 2_048
+    assert manifest["screen"]["thresholds"]["minimum_baseline_exact_rate"] == 0.0
+    assert manifest["screen"]["thresholds"]["maximum_baseline_exact_rate"] == 0.75
+    assert {
+        key: manifest["screen"]["thresholds"][key]
+        for key in (
+            "minimum_informative_group_rate",
+            "minimum_informative_groups",
+            "minimum_solved_siblings",
+            "minimum_failed_siblings",
+            "minimum_solved_sibling_rate",
+            "maximum_solved_sibling_rate",
+        )
+    } == {
+        "minimum_informative_group_rate": 0.1,
+        "minimum_informative_groups": 2,
+        "minimum_solved_siblings": 2,
+        "minimum_failed_siblings": 2,
+        "minimum_solved_sibling_rate": 0.05,
+        "maximum_solved_sibling_rate": 0.8,
+    }
     assert manifest["screen"]["thresholds"]["maximum_predicted_final_evaluation_seconds"] == 1_440
     assert manifest["pilot"] == {
-        "workload_revision": "runpod-repository-repair-large-model-pilot@2",
+        "workload_revision": "runpod-repository-repair-large-model-pilot@3",
         "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@16",
         "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
         "localization_telemetry_strategy": "all_fault_sources_observed",
@@ -293,7 +311,7 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
         "mastery_windows": 2,
         "maximum_final_evaluation_reserve_seconds": 1_800,
         "training_microbatch_size": 1,
-        "maximum_input_tokens": 1_536,
+        "maximum_input_tokens": 2_048,
         "minimum_effective_policy_updates": 1,
         "final_evaluation_safety_factor": 1.5,
     }

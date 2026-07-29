@@ -14,8 +14,58 @@ from research.runpod import larger_model_gate as gate
 from research.runpod import repository_repair_large_model_eligibility as eligibility
 
 
+class FakeTokenizer:
+    def __init__(self, token_count: int) -> None:
+        self.token_count = token_count
+        self.calls: list[dict[str, object]] = []
+        self.pad_token = None
+
+    def __call__(self, _prompt: str, **kwargs: object) -> dict[str, object]:
+        self.calls.append(kwargs)
+        return {"input_ids": [list(range(self.token_count))]}
+
+
 def profile() -> dict[str, object]:
     return copy.deepcopy(gate.load_manifest())
+
+
+def test_prompt_tokenizer_returns_full_in_budget_encoding_without_truncation() -> None:
+    tokenizer = FakeTokenizer(2_048)
+    guarded = eligibility.fail_closed_prompt_tokenizer(tokenizer)
+
+    encoded = guarded(
+        "task-generic prompt",
+        truncation=True,
+        max_length=2_048,
+    )
+    guarded.pad_token = "eos"
+
+    assert len(encoded["input_ids"][0]) == 2_048
+    assert tokenizer.calls == [{"truncation": False, "max_length": 2_048}]
+    assert tokenizer.pad_token == "eos"
+    assert eligibility.fail_closed_prompt_tokenizer(guarded) is guarded
+
+
+def test_prompt_tokenizer_fails_before_silent_right_truncation() -> None:
+    tokenizer = FakeTokenizer(2_049)
+    guarded = eligibility.fail_closed_prompt_tokenizer(tokenizer)
+
+    with pytest.raises(RuntimeError, match="PROMPT_INPUT_TOKEN_LIMIT_EXCEEDED"):
+        guarded(
+            "task-generic prompt",
+            truncation=True,
+            max_length=2_048,
+        )
+
+    assert tokenizer.calls == [{"truncation": False, "max_length": 2_048}]
+
+
+def test_capacity_smoke_covers_the_larger_prompt_envelope_and_continuation() -> None:
+    manifest = profile()
+    manifest["screen"]["maximum_input_tokens"] = 1_024
+    manifest["pilot"]["maximum_input_tokens"] = 2_048
+
+    assert eligibility.capacity_smoke_sequence_tokens(manifest) == 2_240
 
 
 def baseline(
@@ -131,7 +181,8 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["persistent_policy_updates"] == 0
     assert result["test_split_accessed"] is False
     assert result["training_microbatch_size"] == 1
-    assert result["maximum_input_tokens"] == 1_536
+    assert result["maximum_input_tokens"] == 2_048
+    assert result["capacity_smoke_sequence_tokens"] == 2_240
     assert result["optimization_seed"] == 137
     assert result["optimization_seed"] == manifest["screen_limits"]["optimization_seed"]
     assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
@@ -757,7 +808,7 @@ def test_runtime_hooks_install_l0_root_checkpoint_v32_k4_screen_and_isolate_test
         assert Counter(task.level for task in tasks) == {0: 8}
         assert eligibility.frozen.BRANCH_WIDTH == 4
         assert eligibility.frozen.TRAINING_MICROBATCH_SIZE == 1
-        assert eligibility.frozen.MAX_INPUT_TOKENS == 1_536
+        assert eligibility.frozen.MAX_INPUT_TOKENS == 2_048
         assert (
             eligibility.frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY
             == eligibility.SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY

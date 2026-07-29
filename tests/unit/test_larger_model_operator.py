@@ -276,6 +276,8 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
         "optimizer_state_restored": True,
         "test_split_accessed": False,
         "branch_width": 4,
+        "maximum_input_tokens": 2_048,
+        "capacity_smoke_sequence_tokens": 2_240,
         "gpu_id": "NVIDIA H100 80GB HBM3",
         "gpu_total_memory_bytes": 80_000_000_000,
         "peak_reserved_vram_fraction": 0.9,

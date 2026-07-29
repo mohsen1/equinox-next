@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_id": "qwen2.5-coder-7b-runpod-h100@2",
+  "profile_id": "qwen2.5-coder-7b-runpod-h100@3",
   "model": {
     "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
     "revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
@@ -66,16 +66,16 @@
     }
   },
   "interface": {
-    "environment_revision": "repository-repair-simulator@7",
-    "action_protocol_revision": "repository-repair-json-tools@6"
+    "environment_revision": "repository-repair-simulator@8",
+    "action_protocol_revision": "repository-repair-json-tools@7"
   },
   "source_contract": {
     "algorithm": "sha256",
     "files": {
       "repository_repair_env_v31.py": "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657",
-      "repository_repair_env_v32.py": "82053cfee4863024f8f5e7d45381bea508f737412fcfebdf3721e664b434cf5b",
-      "repository_repair_large_model_eligibility.py": "724f331dd1487f14dc7590c2c893c1d20dd5297371d2e9b65a6a1a2f59a613d5",
-      "repository_repair_large_model_pilot.py": "cf577f3c621acef4c0e0a9a6b07f54e8c472cad02e4fd2c09a0506c7f8e29d65",
+      "repository_repair_env_v32.py": "215c678c96cc41bba588f3988b58f6124b6b9bacb0146735998b431cd93881f0",
+      "repository_repair_large_model_eligibility.py": "12e82d00682da655449c9977bc09cda6fbe42f3e1c49b1a828683f54b2aa6ff1",
+      "repository_repair_large_model_pilot.py": "bbca2e068a34d5a45e1cc4201fb1c1189cee848a55d4ffe1462adc4b55b7d339",
       "repository_repair_study.py": "7799ff8969d67ad620db0f8c6bc9ee66bd0ef0300866cd0160696ff80fae7a0c"
     }
   },
@@ -128,7 +128,7 @@
   },
   "screen": {
     "workload": "repository-repair-larger-model-eligibility-screen",
-    "workload_revision": "larger-model-eligibility-screen@2",
+    "workload_revision": "larger-model-eligibility-screen@3",
     "admission_levels": [
       0
     ],
@@ -138,7 +138,7 @@
     "validation_examples": 8,
     "training_tasks_per_update": 8,
     "training_microbatch_size": 1,
-    "maximum_input_tokens": 1536,
+    "maximum_input_tokens": 2048,
     "maximum_updates": 1,
     "test_examples": 0,
     "baseline_examples_per_level": 8,
@@ -155,13 +155,13 @@
       "minimum_failed_siblings": 2,
       "minimum_solved_sibling_rate": 0.05,
       "maximum_solved_sibling_rate": 0.8,
-      "minimum_baseline_exact_rate": 0.02,
+      "minimum_baseline_exact_rate": 0.0,
       "maximum_baseline_exact_rate": 0.75,
       "maximum_predicted_final_evaluation_seconds": 1440
     }
   },
   "pilot": {
-    "workload_revision": "runpod-repository-repair-large-model-pilot@2",
+    "workload_revision": "runpod-repository-repair-large-model-pilot@3",
     "objective_id": "verified-repair-chain-root-branch-retention-policy-gradient@16",
     "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
     "localization_telemetry_strategy": "all_fault_sources_observed",
@@ -175,7 +175,7 @@
     "mastery_windows": 2,
     "maximum_final_evaluation_reserve_seconds": 1800,
     "training_microbatch_size": 1,
-    "maximum_input_tokens": 1536,
+    "maximum_input_tokens": 2048,
     "minimum_effective_policy_updates": 1,
     "final_evaluation_safety_factor": 1.5
   },

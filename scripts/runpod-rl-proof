@@ -2204,6 +2204,8 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     and .optimizer_state_restored == true
     and .test_split_accessed == false
     and .branch_width == 4
+    and .maximum_input_tokens == 2048
+    and .capacity_smoke_sequence_tokens == 2240
     and .gpu_id == "NVIDIA H100 80GB HBM3"
     and .gpu_total_memory_bytes >= 78000000000
     and .pinned_snapshot_digest == $expected_snapshot_digest
@@ -2649,7 +2651,7 @@ if [[ "$larger_model_mode" == "pilot" ]]; then
     and .pinned_snapshot_digest == $expected_snapshot_digest
     and .network_volume_id == $expected_network_volume_id
     and .training_microbatch_size == 1
-    and .maximum_input_tokens == 1536
+    and .maximum_input_tokens == 2048
     and .gradient_checkpointing_enabled == true
     and .gradient_checkpointing_use_reentrant == false
     and (.retained_checkpoint_update | type) == "number"

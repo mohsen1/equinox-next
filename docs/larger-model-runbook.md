@@ -5,7 +5,7 @@ stage below require an explicit operator command.
 
 The guarded larger-model flow targets the manifest-pinned
 `Qwen/Qwen2.5-Coder-7B-Instruct` revision under profile
-`qwen2.5-coder-7b-runpod-h100@2`. It has two paid stages:
+`qwen2.5-coder-7b-runpod-h100@3`. It has two paid stages:
 
 1. a bounded eligibility screen that does not update the policy; and
 2. a branch-aware training pilot authorized by the screen receipt.
@@ -40,7 +40,7 @@ the authorized `$25.00` for CPU prewarm, network-volume storage, and contingency
 The launcher never creates or populates a network volume. With no existing volume and
 matching readiness receipt, both `--preflight-only` and paid launch are blocked.
 Readiness receipts and screen authorizations from the former L40 profile or the H100
-`@1` profile do not match this profile and cannot be reused.
+`@1` or `@2` profiles do not match this profile and cannot be reused.
 
 Create a 50 GB volume in a data center that offers an `NVIDIA H100 80GB HBM3`:
 
@@ -199,6 +199,17 @@ branch probes with no policy mutation. Branching starts after one accepted repos
 root listing. Localization and repair happen independently in each sibling. Higher
 levels remain pilot curriculum targets; requiring them before training would defeat the
 adaptive starting frontier.
+
+The screen and pilot both reject a prompt that exceeds 2,048 input tokens. They never
+silently discard the oldest prompt content. Before the screen, the reversible H100
+capacity smoke exercises 2,240 tokens: the larger screen/pilot input envelope plus the
+192-token generation cap.
+
+Baseline exact solves are not the nonzero competence gate. The baseline keeps only its
+75% maximum headroom check. Pilot authorization instead requires mixed outcomes across
+the `K=4` branches: at least two solved siblings, at least two failed siblings, a solved
+rate from 5% through 80%, and at least two informative branch groups. If the model
+cannot produce that mixed branch evidence, stop without launching the pilot.
 
 The screen does not access the sealed final-test pack or persist a trained adapter. Its
 result records:
