@@ -18,6 +18,7 @@ import {
 import { formatEstimatedCost, formatRelativeTime } from "../format";
 import { Link, useParams } from "../router";
 import {
+  booleanValue,
   complexityForLevel,
   formatDuration,
   formatRateInterval,
@@ -36,6 +37,9 @@ import type {
   ResearchValidationSummary,
 } from "../types";
 import { ResearchRunTabs } from "./research-trajectory";
+
+const LARGER_MODEL_ELIGIBILITY_WORKLOAD =
+  "repository-repair-larger-model-eligibility";
 
 export function RunsPage() {
   const runs = useApi<RunsResponse>("/v1/runs", 2_000, decodeRunsResponse);
@@ -148,6 +152,27 @@ export function ResearchRunPage() {
   const error = stringValue(run?.progress.error);
   const claimStrength = stringValue(run?.progress.claim_strength);
   const attempt = numberValue(run?.progress.attempt);
+  const isEligibilityScreen =
+    run?.workload_id === LARGER_MODEL_ELIGIBILITY_WORKLOAD;
+  const eligibility = run ? largerModelEligibility(run) : null;
+  const stages = run
+    ? observerStages(
+        run.status,
+        phase,
+        run.teardown_confirmed,
+        attempt,
+        numberValue(run.progress.update) !== null ||
+          numberValue(run.progress.current_level) !== null,
+      ).map((stage) =>
+        isEligibilityScreen && stage.label === "Learn"
+          ? {
+              ...stage,
+              label: "Screen",
+              detail: "Load · sample · admit",
+            }
+          : stage,
+      )
+    : [];
 
   return (
     <>
@@ -175,8 +200,13 @@ export function ResearchRunPage() {
                 <Notice tone="negative" title="Run failed">
                   {error}
                 </Notice>
-              ) : run.status === "SUCCEEDED" ? (
-                <Notice title="Run complete">
+              ) : run.status === "SUCCEEDED" &&
+                (!isEligibilityScreen || !run.teardown_confirmed) ? (
+                <Notice
+                  title={
+                    isEligibilityScreen ? "Release unconfirmed" : "Run complete"
+                  }
+                >
                   {run.teardown_confirmed
                     ? "Result persisted. Compute release confirmed."
                     : "Result persisted. Compute release is not confirmed."}
@@ -184,14 +214,7 @@ export function ResearchRunPage() {
               ) : null}
 
               <section className="observer-stage" aria-label="Run lifecycle">
-                {observerStages(
-                  run.status,
-                  phase,
-                  run.teardown_confirmed,
-                  attempt,
-                  numberValue(run.progress.update) !== null ||
-                    numberValue(run.progress.current_level) !== null,
-                ).map((stage) => (
+                {stages.map((stage) => (
                   <div
                     key={stage.label}
                     className={`observer-stage-item ${stage.state}`}
@@ -213,15 +236,34 @@ export function ResearchRunPage() {
               </section>
 
               <div className="run-overview research-observer-grid">
-                <Section title="Progress">
-                  <KeyValue items={progressItems(run)} />
-                </Section>
+                {isEligibilityScreen && eligibility ? (
+                  <Section
+                    title="Eligibility"
+                    aside={
+                      <StatusBadge
+                        status={
+                          eligibility.eligible === null
+                            ? "SCREENING"
+                            : eligibility.eligible
+                              ? "ELIGIBLE"
+                              : "INELIGIBLE"
+                        }
+                      />
+                    }
+                  >
+                    <KeyValue items={eligibility.items} />
+                  </Section>
+                ) : (
+                  <Section title="Progress">
+                    <KeyValue items={progressItems(run)} />
+                  </Section>
+                )}
                 <Section title="Compute">
                   <KeyValue items={allocationItems(run)} />
                 </Section>
               </div>
 
-              {validationRows(run).length ? (
+              {!isEligibilityScreen && validationRows(run).length ? (
                 <Section title="Validation">
                   <ValidationHistory
                     rows={validationRows(run)}
@@ -230,7 +272,7 @@ export function ResearchRunPage() {
                 </Section>
               ) : null}
 
-              {run.status === "SUCCEEDED" ? (
+              {run.status === "SUCCEEDED" && !isEligibilityScreen ? (
                 <Section title="Result">
                   <KeyValue items={resultItems(run, claimStrength)} />
                 </Section>
@@ -269,6 +311,131 @@ export function ResearchRunPage() {
       </div>
     </>
   );
+}
+
+function largerModelEligibility(run: ResearchComputeExecution) {
+  const progress = run.progress;
+  const evidence =
+    recordValue(progress.larger_model_eligibility) ??
+    recordValue(progress.eligibility);
+  const value = (key: string): unknown =>
+    progress[key] ?? evidence?.[key] ?? null;
+  const eligible = firstBoolean(
+    value("eligible"),
+    value("larger_model_eligible"),
+  );
+  const profile = firstString(
+    value("larger_model_profile_id"),
+    value("profile_id"),
+    value("profile"),
+  );
+  const revision = firstString(value("model_revision"), value("model_commit"));
+  const checkpointAdmission = firstNumber(
+    value("checkpoint_admission_rate"),
+    value("branch_checkpoint_rate"),
+    value("checkpoint_rate"),
+  );
+  const informativeBranching = firstNumber(
+    value("informative_branching_rate"),
+    value("informative_group_rate"),
+  );
+  const peakGpuMemoryGb = gpuMemoryGb(
+    firstNumber(
+      value("peak_gpu_memory_gb"),
+      value("peak_cuda_memory_gb"),
+      value("gpu_peak_memory_gb"),
+      value("peak_reserved_vram_gb"),
+    ),
+    firstNumber(
+      value("peak_gpu_memory_bytes"),
+      value("peak_cuda_memory_bytes"),
+      value("peak_reserved_vram_bytes"),
+    ),
+  );
+  const mutationVerified = firstBoolean(
+    value("policy_mutation_verified"),
+    value("no_policy_mutation_verified"),
+    value("policy_parameters_unchanged"),
+    value("policy_unchanged"),
+  );
+  const mutationEnabled = firstBoolean(value("policy_mutation_enabled"));
+
+  return {
+    eligible,
+    items: [
+      {
+        label: "Revision",
+        value: revision ? (
+          <MachineId value={revision} />
+        ) : (
+          "Awaiting model load"
+        ),
+      },
+      { label: "Profile", value: profile ?? "Awaiting screen" },
+      {
+        label: "Checkpoint admission",
+        value: percent(checkpointAdmission, "Awaiting samples"),
+      },
+      {
+        label: "Informative branching",
+        value: percent(informativeBranching, "Awaiting samples"),
+      },
+      {
+        label: "Peak GPU memory",
+        value:
+          peakGpuMemoryGb === null
+            ? "Awaiting model load"
+            : `${formatDecimal(peakGpuMemoryGb)} GB`,
+      },
+      {
+        label: "Policy mutation",
+        value:
+          mutationVerified === true
+            ? "None · verified"
+            : mutationVerified === false || mutationEnabled === true
+              ? "Detected"
+              : mutationEnabled === false
+                ? "Disabled · verification pending"
+                : "Verification pending",
+      },
+    ],
+  };
+}
+
+function firstBoolean(...values: unknown[]): boolean | null {
+  for (const value of values) {
+    const parsed = booleanValue(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function firstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = numberValue(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    const parsed = stringValue(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function gpuMemoryGb(
+  gigabytes: number | null,
+  bytes: number | null,
+): number | null {
+  if (gigabytes !== null) return gigabytes;
+  return bytes === null ? null : bytes / 1_000_000_000;
+}
+
+function formatDecimal(value: number): string {
+  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
 }
 
 function progressItems(run: ResearchComputeExecution) {

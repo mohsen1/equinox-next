@@ -13,6 +13,46 @@ function response(body: unknown) {
   };
 }
 
+function largerModelEligibilityExecution(eligible: boolean) {
+  const timestamp = new Date().toISOString();
+  return {
+    execution_id: `runpod-proof-larger-model-${eligible ? "eligible" : "ineligible"}`,
+    name: "Qwen 7B eligibility screen",
+    workload_id: "repository-repair-larger-model-eligibility",
+    model_id: "Qwen/Qwen2.5-Coder-7B-Instruct",
+    branch_width: 4,
+    complexity_strategy: "adaptive",
+    status: "SUCCEEDED",
+    provider_name: "RunPod",
+    provider_handle: "runpod://pods/larger-model-screen",
+    resource_profile: {
+      gpu_id: "NVIDIA L40",
+      cloud_type: "SECURE",
+      hourly_cost_usd: 0.69,
+      maximum_hourly_cost_usd: 1,
+    },
+    progress: {
+      phase: "complete",
+      screen_completed: true,
+      eligible,
+      larger_model_profile_id: "qwen25-coder-7b-l40@1",
+      model_revision: "c03e6d358207e414f1eca0bb1891e29f1db0e242",
+      checkpoint_admission_rate: 0.875,
+      informative_group_rate: 0.25,
+      peak_cuda_memory_bytes: 19_750_000_000,
+      policy_mutation_verified: true,
+      policy_mutation_enabled: false,
+      elapsed_seconds: 521,
+    },
+    proof_id: null,
+    receipt_digest: "sha256:eligibility",
+    started_at: timestamp,
+    updated_at: timestamp,
+    completed_at: timestamp,
+    teardown_confirmed: true,
+  };
+}
+
 describe("Runs and Proofs workspaces", () => {
   let container: HTMLDivElement;
   let root: Root | undefined;
@@ -232,6 +272,82 @@ describe("Runs and Proofs workspaces", () => {
     );
     expect(container.textContent).toContain("Best retained");
   });
+
+  it.each([
+    { eligible: true, decision: "Eligible", tone: "positive" },
+    { eligible: false, decision: "Ineligible", tone: "negative" },
+  ])(
+    "shows the larger-model screen as a concise $decision decision",
+    async ({ eligible, decision, tone }) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => response(largerModelEligibilityExecution(eligible))),
+      );
+      window.history.replaceState(
+        null,
+        "",
+        `/runs/research/runpod-proof-larger-model-${eligible ? "eligible" : "ineligible"}`,
+      );
+      root = createRoot(container);
+
+      await act(async () => {
+        root?.render(
+          <BrowserRouter>
+            <Routes>
+              <Route
+                path="/runs/research/:executionId"
+                element={<ResearchRunPage />}
+              />
+            </Routes>
+          </BrowserRouter>,
+        );
+        await Promise.resolve();
+      });
+
+      const eligibilitySection = [
+        ...container.querySelectorAll(".section"),
+      ].find(
+        (section) => section.querySelector("h2")?.textContent === "Eligibility",
+      );
+      const headings = [...container.querySelectorAll("h2")].map(
+        (heading) => heading.textContent,
+      );
+
+      expect(eligibilitySection).toBeDefined();
+      expect(eligibilitySection?.querySelector(".status")?.textContent).toBe(
+        decision,
+      );
+      expect(
+        eligibilitySection?.querySelector(".status")?.classList.contains(tone),
+      ).toBe(true);
+      expect(eligibilitySection?.textContent).toContain(
+        "qwen25-coder-7b-l40@1",
+      );
+      expect(
+        eligibilitySection?.querySelector(
+          '[title="c03e6d358207e414f1eca0bb1891e29f1db0e242"]',
+        ),
+      ).not.toBeNull();
+      expect(eligibilitySection?.textContent).toContain(
+        "Checkpoint admission87.5%",
+      );
+      expect(eligibilitySection?.textContent).toContain(
+        "Informative branching25.0%",
+      );
+      expect(eligibilitySection?.textContent).toContain(
+        "Peak GPU memory19.8 GB",
+      );
+      expect(eligibilitySection?.textContent).toContain(
+        "Policy mutationNone · verified",
+      );
+      expect(container.querySelector(".observer-stage")?.textContent).toContain(
+        "ScreenLoad · sample · admit",
+      );
+      expect(headings).not.toContain("Progress");
+      expect(headings).not.toContain("Validation");
+      expect(headings).not.toContain("Result");
+    },
+  );
 
   it("links each proof row to focused proof evidence", async () => {
     vi.stubGlobal(

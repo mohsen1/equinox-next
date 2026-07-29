@@ -92,6 +92,7 @@ function statusTone(status: string): string {
       "PROMOTED",
       "RELEASED",
       "PASS",
+      "ELIGIBLE",
     ].includes(status)
   )
     return "positive";
@@ -102,6 +103,7 @@ function statusTone(status: string): string {
       "INTEGRITY_VIOLATION",
       "EXCLUDED",
       "CANDIDATE_FAILED",
+      "INELIGIBLE",
     ].includes(status)
   )
     return "negative";
