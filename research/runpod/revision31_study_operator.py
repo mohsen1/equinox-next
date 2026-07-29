@@ -132,6 +132,7 @@ def launcher_environment(
     gpu_override = os.environ.get("EQUINOX_RUNPOD_GPU_OVERRIDE", "")
     selected_gpu = gpu_override or str(shared["hardware_preference"])
     cloud_type_override = os.environ.get("EQUINOX_RUNPOD_CLOUD_TYPE_OVERRIDE", "")
+    cost_override = os.environ.get("EQUINOX_RUNPOD_MAX_HOURLY_COST_OVERRIDE", "")
     environment = {
         **os.environ,
         "EQUINOX_RUNPOD_EXPERIMENT": "repository-repair",
@@ -154,7 +155,7 @@ def launcher_environment(
         "EQUINOX_STUDY_COMPLETION_BUDGET": str(condition["completion_budget"]),
         "EQUINOX_RL_TRAINING_TASKS_PER_UPDATE": str(condition["training_tasks_per_update"]),
         "EQUINOX_RUNPOD_GPU": selected_gpu,
-        "EQUINOX_RUNPOD_MAX_HOURLY_COST": str(shared["maximum_hourly_cost_usd"]),
+        "EQUINOX_RUNPOD_MAX_HOURLY_COST": (cost_override or str(shared["maximum_hourly_cost_usd"])),
     }
     if cloud_type_override:
         environment["EQUINOX_RUNPOD_CLOUD_TYPE"] = cloud_type_override

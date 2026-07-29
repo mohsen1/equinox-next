@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "amendment_id": "repository-repair-causal-factorial-study@2/amendment-1",
+  "study_id": "repository-repair-causal-factorial-study@2",
+  "recorded_at": "2026-07-29T00:07:00Z",
+  "applies_before_successful_condition_count": 0,
+  "reason": {
+    "requested_a40": "provider reported no capacity",
+    "l4_24gb": "first backward pass exhausted 22.03 GiB usable VRAM",
+    "available_32gb_or_larger_offers": "provider reported $0.69/hour",
+    "conclusion": "The original $0.50/hour ceiling cannot currently supply a worker with enough memory."
+  },
+  "change": {
+    "maximum_hourly_cost_usd": {
+      "from": 0.5,
+      "to": 0.75
+    },
+    "minimum_gpu_memory_gb": 32,
+    "hardware_selection": "first available RunPod GPU satisfying memory and amended cost ceilings"
+  },
+  "unchanged": [
+    "trainer source and dependencies",
+    "model and revision",
+    "factorial cells",
+    "optimization seeds",
+    "validation and test splits",
+    "completion budget",
+    "curriculum policies",
+    "tool contract",
+    "external task pack",
+    "graduation gates",
+    "larger-model gate"
+  ]
+}

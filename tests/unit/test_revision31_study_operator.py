@@ -53,6 +53,7 @@ def test_launcher_environment_selects_revision31(
 ) -> None:
     monkeypatch.delenv("EQUINOX_RUNPOD_GPU_OVERRIDE", raising=False)
     monkeypatch.delenv("EQUINOX_RUNPOD_CLOUD_TYPE_OVERRIDE", raising=False)
+    monkeypatch.delenv("EQUINOX_RUNPOD_MAX_HOURLY_COST_OVERRIDE", raising=False)
     study_manifest = manifest()
     condition = condition_from_id(study_manifest, "k1_scheduled_dynamic_seed443")
 
@@ -78,6 +79,7 @@ def test_launcher_allows_recorded_gpu_substitution(
         "NVIDIA GeForce RTX 4090",
     )
     monkeypatch.setenv("EQUINOX_RUNPOD_CLOUD_TYPE_OVERRIDE", "COMMUNITY")
+    monkeypatch.setenv("EQUINOX_RUNPOD_MAX_HOURLY_COST_OVERRIDE", "0.75")
     study_manifest = manifest()
     condition = condition_from_id(study_manifest, "k4_adaptive_seed137")
 
@@ -89,6 +91,7 @@ def test_launcher_allows_recorded_gpu_substitution(
 
     assert environment["EQUINOX_RUNPOD_GPU"] == "NVIDIA GeForce RTX 4090"
     assert environment["EQUINOX_RUNPOD_CLOUD_TYPE"] == "COMMUNITY"
+    assert environment["EQUINOX_RUNPOD_MAX_HOURLY_COST"] == "0.75"
 
 
 def test_study_identity_is_stable() -> None:
