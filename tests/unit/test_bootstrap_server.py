@@ -111,6 +111,7 @@ def test_large_model_bundle_requires_the_gate_and_versioned_environment(
     )
 
     assert set(files) == {
+        "larger-model-eligibility.json",
         "larger_model_gate.py",
         "remote_runner.sh",
         "repository_repair_env.py",

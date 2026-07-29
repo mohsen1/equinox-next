@@ -39,6 +39,7 @@ WORKLOAD_SUPPORT_FILES = {
     ),
     "repository_repair_large_model_eligibility.py": frozenset(
         {
+            "larger-model-eligibility.json",
             "larger_model_gate.py",
             "repository_repair_env.py",
             "repository_repair_env_v31.py",
@@ -49,6 +50,7 @@ WORKLOAD_SUPPORT_FILES = {
     ),
     "repository_repair_large_model_pilot.py": frozenset(
         {
+            "larger-model-eligibility.json",
             "larger_model_gate.py",
             "repository_repair_env.py",
             "repository_repair_env_v31.py",
