@@ -152,6 +152,38 @@ def install_fixed_budget_stop_policy() -> None:
     frozen.MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS = DISABLED_OUTCOME_STOP_THRESHOLD
 
 
+def normalize_cuda_rng_states(states: Any) -> list[Any]:
+    """Restore checkpoint RNG states as the CPU byte tensors PyTorch requires."""
+    import torch
+
+    if not isinstance(states, (list, tuple)) or not states:
+        raise RuntimeError("training checkpoint CUDA RNG states are invalid")
+    normalized = []
+    for state in states:
+        if isinstance(state, torch.Tensor):
+            tensor = state.detach().to(device="cpu", dtype=torch.uint8)
+        else:
+            tensor = torch.tensor(state, device="cpu", dtype=torch.uint8)
+        if tensor.ndim != 1 or tensor.numel() == 0:
+            raise RuntimeError("training checkpoint CUDA RNG state is invalid")
+        normalized.append(tensor)
+    return normalized
+
+
+def install_cuda_rng_resume_compatibility() -> None:
+    """Normalize device-mapped RNG tensors before the frozen resume path uses them."""
+    original_validate_resume_state = frozen.validate_resume_state
+
+    def compatible_validate_resume_state(
+        state: dict[str, Any],
+        **arguments: Any,
+    ) -> tuple[float, int, float, float]:
+        state["cuda_rng_states"] = normalize_cuda_rng_states(state.get("cuda_rng_states"))
+        return original_validate_resume_state(state, **arguments)
+
+    frozen.validate_resume_state = compatible_validate_resume_state
+
+
 def install_revision31_condition(
     configuration: StudyConfiguration,
     evidence: revision30_study.RuntimeEvidence,
@@ -199,6 +231,7 @@ def install_revision31_condition(
     if configuration.curriculum_policy == "scheduled_dynamic":
         frozen.adaptive_frontier_probe_decision = scheduled_frontier_probe_decision
         frozen.next_retained_mastery_windows = scheduled_mastery_windows
+    install_cuda_rng_resume_compatibility()
     install_fixed_budget_stop_policy()
     revision30_study.install_collection_budget(configuration, evidence, evidence_path)
 
@@ -217,7 +250,12 @@ def augment_result(
         completed_groups * configuration.branch_width,
     )
     if sampled_completions != configuration.completion_budget:
-        raise RuntimeError("the condition did not consume the preregistered completion budget")
+        raise RuntimeError(
+            "the condition did not consume the preregistered completion budget: "
+            f"expected {configuration.completion_budget}, observed {sampled_completions} "
+            f"(runtime evidence {evidence.sampled_completions}, "
+            f"completed groups {completed_groups})"
+        )
     policy_updates = int(result.get("policy_update_count", 0))
     training_configuration = {
         **result.get("training_configuration", {}),

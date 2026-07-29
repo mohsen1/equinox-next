@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,6 +122,90 @@ def test_result_records_factorial_condition() -> None:
     assert observed["hypothesis_passed"] is True
 
 
+def test_result_reports_observed_completion_budget_on_failure() -> None:
+    configuration = study.StudyConfiguration(
+        condition="k1_scheduled_dynamic",
+        optimization_seed=137,
+        validation_seed_base=731000000,
+        test_seed_base=831000000,
+        branch_width=1,
+        curriculum_policy="scheduled_dynamic",
+        completion_budget=320,
+        training_tasks_per_update=12,
+    )
+    evidence = SimpleNamespace(sampled_completions=318)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"expected 320, observed 318 \(runtime evidence 318, completed groups 0\)",
+    ):
+        study.augment_result(
+            {
+                "total_task_groups": 0,
+                "excluded_task_groups": 0,
+            },
+            configuration,
+            evidence,
+        )
+
+
+def test_resume_normalizes_cuda_rng_states_before_frozen_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeTensor:
+        def __init__(
+            self,
+            values: list[int],
+            *,
+            device: str = "cuda",
+            dtype: str = "int64",
+        ) -> None:
+            self.values = values
+            self.device = SimpleNamespace(type=device)
+            self.dtype = dtype
+            self.ndim = 1
+
+        def detach(self) -> "FakeTensor":
+            return self
+
+        def to(self, *, device: str, dtype: str) -> "FakeTensor":
+            return FakeTensor(self.values, device=device, dtype=dtype)
+
+        def numel(self) -> int:
+            return len(self.values)
+
+    fake_torch = SimpleNamespace(
+        Tensor=FakeTensor,
+        uint8="uint8",
+        tensor=lambda values, *, device, dtype: FakeTensor(
+            list(values),
+            device=device,
+            dtype=dtype,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    observed: dict = {}
+
+    def validate(state: dict, **arguments: object) -> tuple[float, int, float, float]:
+        del arguments
+        observed.update(state)
+        return (1.0, 2, 3.0, 3.0)
+
+    monkeypatch.setattr(frozen, "validate_resume_state", validate)
+    study.install_cuda_rng_resume_compatibility()
+    state = {
+        "cuda_rng_states": [
+            FakeTensor([1, 2, 3]),
+            [4, 5, 6],
+        ]
+    }
+
+    assert frozen.validate_resume_state(state) == (1.0, 2, 3.0, 3.0)
+    assert len(observed["cuda_rng_states"]) == 2
+    assert all(item.device.type == "cpu" for item in observed["cuda_rng_states"])
+    assert all(item.dtype == "uint8" for item in observed["cuda_rng_states"])
+
+
 def test_install_uses_revision31_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -144,6 +229,7 @@ def test_install_uses_revision31_environment(
         "VALIDATION_SEED_BASE",
         "TEST_SEED_BASE",
         "BRANCH_WIDTH",
+        "validate_resume_state",
         "training_stop_decision",
         "MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS",
         "MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS",

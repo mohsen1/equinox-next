@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "amendment_id": "repository-repair-causal-factorial-study@2/amendment-2",
+  "study_id": "repository-repair-causal-factorial-study@2",
+  "recorded_at": "2026-07-29T03:00:00Z",
+  "applies_before_successful_condition_count": 0,
+  "triggering_attempt": {
+    "execution_id": "runpod-proof-20260729T001954Z",
+    "condition_id": "k1_scheduled_dynamic_seed137",
+    "accepted_as_study_result": false,
+    "teardown_confirmed": true,
+    "gpu": "NVIDIA L40",
+    "hourly_cost_usd": 0.69,
+    "failures": [
+      "The final-evaluation reserve stopped training before the exact 320-completion budget was reached.",
+      "The automatic retry mapped CUDA RNG checkpoint tensors into a representation rejected by torch.cuda.set_rng_state_all."
+    ]
+  },
+  "changes": {
+    "maximum_hourly_cost_usd": {
+      "from": 0.75,
+      "to": 0.8
+    },
+    "hardware_preference": {
+      "from": "first available RunPod GPU with at least 32 GB under the amended ceiling",
+      "to": "NVIDIA L40S on RunPod community cloud"
+    },
+    "resume_compatibility": "Normalize restored CUDA RNG states to non-empty one-dimensional CPU uint8 tensors before the frozen resume path uses them.",
+    "completion_budget_diagnostic": "Report the expected and observed sampled-completion counts when a failed attempt cannot satisfy the exact-budget invariant."
+  },
+  "rationale": {
+    "hardware": "The L40 completed final evaluation but was marginally too slow to consume the fixed budget before the preregistered reserve. RunPod had previously quoted the faster L40S at $0.79/hour.",
+    "resume": "The normalization preserves the checkpointed RNG bytes and changes only their dtype and device representation. It does not alter seeds, sampling, gradients, rewards, or accepted results.",
+    "study_integrity": "No revision-31 condition had produced an accepted result when this amendment was recorded. The amended source is refrozen before rerunning any factorial cell."
+  },
+  "unchanged": [
+    "model and revision",
+    "factorial cells",
+    "optimization seeds",
+    "validation and test splits",
+    "completion budget",
+    "target runtime and evaluation reserve",
+    "optimizer and objective",
+    "reward and policy-credit semantics",
+    "curriculum policies",
+    "tool contract",
+    "external task pack",
+    "graduation gates",
+    "larger-model gate"
+  ]
+}
