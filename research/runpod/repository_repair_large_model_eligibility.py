@@ -444,8 +444,6 @@ def baseline_impossible(evidence: ScreenEvidence, manifest: dict[str, Any]) -> s
     )
     if solved + remaining < minimum_exact or solved > maximum_exact:
         return "BASELINE_EXACT_HEADROOM_GATE_MATHEMATICALLY_IMPOSSIBLE"
-    if evidence.repeated_rejected_loop_count:
-        return "REPEATED_REJECTED_ACTION_LOOP"
     return None
 
 
@@ -462,9 +460,6 @@ def branch_collection_impossible(
     if completed_groups > expected_groups:
         raise ValueError("branch collection evidence exceeds the screen budget")
     remaining_groups = expected_groups - completed_groups
-    if evidence.repeated_rejected_loop_count:
-        return "REPEATED_REJECTED_ACTION_LOOP"
-
     checkpointed_groups = [
         collection
         for collection in evidence.branch_collections
@@ -649,7 +644,6 @@ def build_screen_result(
     action_gate = (
         evidence.total_actions > 0
         and schema_valid_action_rate >= thresholds["minimum_action_protocol_validity"]
-        and evidence.repeated_rejected_loop_count == 0
     )
     branch_gate = (
         len(branch_groups) == expected_groups

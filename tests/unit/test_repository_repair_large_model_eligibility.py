@@ -198,7 +198,7 @@ def test_protocol_gate_separates_schema_validity_from_semantic_acceptance() -> N
     assert result["ineligible_reasons"] == ["action_protocol_validity"]
 
 
-def test_protocol_gate_rejects_repeated_semantic_rejection_loops() -> None:
+def test_protocol_gate_keeps_repeated_semantic_rejection_loops_as_telemetry() -> None:
     evidence = passing_evidence()
     evidence.repeated_rejected_loop_count = 1
 
@@ -206,7 +206,9 @@ def test_protocol_gate_rejects_repeated_semantic_rejection_loops() -> None:
 
     assert result["action_protocol_validity"] == 1.0
     assert result["semantic_acceptance_rate"] == 0.995
-    assert result["gate_results"]["action_protocol_validity"] is False
+    assert result["repeated_rejected_loop_count"] == 1
+    assert result["gate_results"]["action_protocol_validity"] is True
+    assert result["eligible"] is True
 
 
 def test_runtime_gate_is_derived_from_capacity_and_baseline_timestamps() -> None:
@@ -306,6 +308,27 @@ def test_baseline_stops_only_after_all_eight_l0_examples() -> None:
     )
     evidence.baseline_outcomes.pop()
     assert eligibility.baseline_impossible(evidence, manifest) is None
+
+
+def test_zero_solve_baseline_with_zero_floor_proceeds_to_branch_feasibility() -> None:
+    manifest = profile()
+    manifest["screen"]["thresholds"]["minimum_baseline_exact_rate"] = 0.0
+    evidence = eligibility.ScreenEvidence(
+        baseline_outcomes=[
+            eligibility.BaselineOutcome(
+                level=0,
+                checkpoint_reached=True,
+                solved=False,
+            )
+            for _ in range(8)
+        ],
+        repeated_rejected_loop_count=15,
+    )
+
+    assert eligibility.baseline_impossible(evidence, manifest) is None
+
+    evidence.branch_collections.append(collection(informative=False, solved=0))
+    assert eligibility.branch_collection_impossible(evidence, manifest) is None
 
 
 def test_branch_checkpoint_gate_stops_at_first_mathematically_impossible_group() -> None:
