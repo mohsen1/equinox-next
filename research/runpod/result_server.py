@@ -6,6 +6,7 @@ import hmac
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from urllib.parse import urlsplit
 
 ROOT = Path(os.environ.get("EQUINOX_REMOTE_WORKDIR", "/tmp")).resolve()
@@ -59,6 +60,17 @@ class ResultHandler(BaseHTTPRequestHandler):
         return
 
 
+class ResultHTTPServer(ThreadingHTTPServer):
+    """Bind without the HTTPServer reverse-DNS lookup that can stall readiness."""
+
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
 if __name__ == "__main__":
+    host = os.environ.get("EQUINOX_RESULT_HOST", "0.0.0.0")
     port = int(os.environ.get("EQUINOX_RESULT_PORT", "8000"))
-    ThreadingHTTPServer(("0.0.0.0", port), ResultHandler).serve_forever()
+    ResultHTTPServer((host, port), ResultHandler).serve_forever()
