@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "amendment_id": "repository-repair-causal-factorial-study@2/amendment-3",
+  "study_id": "repository-repair-causal-factorial-study@2",
+  "recorded_at": "2026-07-29T03:12:00Z",
+  "applies_before_successful_condition_count": 0,
+  "triggering_attempt": {
+    "execution_id": "runpod-proof-20260729T025710Z",
+    "condition_id": "k1_scheduled_dynamic_seed137",
+    "accepted_as_study_result": false,
+    "gpu": "NVIDIA L40S",
+    "hourly_cost_usd": 0.79,
+    "stop_reason": "final_evaluation_reserve_ceiling",
+    "training_updates": 0,
+    "provider_worker_removed": true
+  },
+  "change": {
+    "maximum_hourly_cost_usd": {
+      "from": 0.8,
+      "to": 1.0
+    },
+    "hardware_preference": {
+      "from": "NVIDIA L40S on RunPod community cloud",
+      "to": "NVIDIA GeForce RTX 5090 on RunPod secure cloud"
+    }
+  },
+  "rationale": {
+    "measured_capacity": "The L40S exceeded the frozen 2,700-second maximum final-evaluation reserve during its update-0 calibration and could not enter training.",
+    "selected_offer": "RunPod had previously returned a secure RTX 5090 offer at $0.99/hour. Its substantially higher generation throughput is required to satisfy the unchanged runtime and reserve constraints.",
+    "study_integrity": "No revision-31 condition had produced an accepted result when this capacity amendment was recorded."
+  },
+  "unchanged": [
+    "trainer source and dependencies",
+    "model and revision",
+    "factorial cells",
+    "optimization seeds",
+    "validation and test splits",
+    "completion budget",
+    "target runtime and evaluation reserve",
+    "optimizer and objective",
+    "reward and policy-credit semantics",
+    "curriculum policies",
+    "tool contract",
+    "external task pack",
+    "graduation gates",
+    "larger-model gate"
+  ]
+}
