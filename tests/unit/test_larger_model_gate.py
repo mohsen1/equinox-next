@@ -140,6 +140,8 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     assert manifest["hardware"]["gpu_id"] == "NVIDIA L40"
     assert manifest["hardware"]["minimum_gpu_memory_gb"] == 48
     assert manifest["hardware"]["maximum_peak_reserved_vram_fraction"] == 0.85
+    assert manifest["screen"]["validation_examples"] == 8
+    assert manifest["screen"]["baseline_examples_per_level"] == 8
     assert manifest["artifact_readiness"] == {
         "cache_directory": "/workspace/equinox-state/huggingface",
         "require_complete_pinned_snapshot_before_screen": True,

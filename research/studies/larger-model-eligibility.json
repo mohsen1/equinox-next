@@ -52,7 +52,7 @@
     "workload": "repository-repair-larger-model-eligibility-screen",
     "workload_revision": "larger-model-eligibility-screen@1",
     "branch_width": 4,
-    "validation_examples": 16,
+    "validation_examples": 8,
     "training_tasks_per_update": 8,
     "training_microbatch_size": 1,
     "maximum_input_tokens": 1536,

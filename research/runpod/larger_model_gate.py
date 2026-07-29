@@ -103,7 +103,7 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "workload": SCREEN_WORKLOAD,
         "workload_revision": SCREEN_WORKLOAD_REVISION,
         "branch_width": 4,
-        "validation_examples": 16,
+        "validation_examples": 8,
         "training_tasks_per_update": 8,
         "training_microbatch_size": 1,
         "maximum_input_tokens": 1_536,
