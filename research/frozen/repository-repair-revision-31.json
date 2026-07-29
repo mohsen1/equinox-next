@@ -1,13 +1,14 @@
 {
   "schema_version": 1,
   "freeze_id": "repository-repair-revision-31",
-  "source_commit": "433bb7ff8acc5261f5b504043974c3f2d2482f28",
+  "source_commit": "ac2f59ae37e0829cfd8c63c6b21cc807bf18a810",
   "study_id": "repository-repair-causal-factorial-study@2",
   "workload_revision": "runpod-repository-repair-causal-credit@31",
   "objective_id": "verified-fix-coverage-retention-policy-gradient@15",
   "operational_amendments": [
     "research/studies/revision31-capacity-amendment-1.json",
-    "research/studies/revision31-operational-amendment-2.json"
+    "research/studies/revision31-operational-amendment-2.json",
+    "research/studies/revision31-capacity-amendment-3.json"
   ],
   "frozen_design": {
     "branch_widths": [
@@ -55,6 +56,10 @@
     {
       "path": "research/studies/revision31-operational-amendment-2.json",
       "sha256": "e3f97c7ebf7121bc9f856fb0d53a215f553b611cb874b694e067cf4cada4df36"
+    },
+    {
+      "path": "research/studies/revision31-capacity-amendment-3.json",
+      "sha256": "4216712f5e8a01a73f9519f4a963dc58981e365dc992827bdf066355a6666ab6"
     }
   ]
 }
