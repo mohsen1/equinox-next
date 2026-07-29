@@ -1,14 +1,15 @@
 {
   "schema_version": 1,
   "freeze_id": "repository-repair-revision-31",
-  "source_commit": "ac2f59ae37e0829cfd8c63c6b21cc807bf18a810",
+  "source_commit": "681763e7e033a966cbf21cfc6c1ff2c6418595ae",
   "study_id": "repository-repair-causal-factorial-study@2",
   "workload_revision": "runpod-repository-repair-causal-credit@31",
   "objective_id": "verified-fix-coverage-retention-policy-gradient@15",
   "operational_amendments": [
     "research/studies/revision31-capacity-amendment-1.json",
     "research/studies/revision31-operational-amendment-2.json",
-    "research/studies/revision31-capacity-amendment-3.json"
+    "research/studies/revision31-capacity-amendment-3.json",
+    "research/studies/revision31-runtime-amendment-4.json"
   ],
   "frozen_design": {
     "branch_widths": [
@@ -47,7 +48,7 @@
     },
     {
       "path": "research/studies/revision31-causal-study.json",
-      "sha256": "48a6a17cfcd40b68bf6f737cf07a1ad29a0393bc219dddcbbedb5e0e192582ae"
+      "sha256": "65e5cb66021db33b3bd3eb59b496219fda1ebe7402232778c5cd3c6d304c0802"
     },
     {
       "path": "research/studies/revision31-capacity-amendment-1.json",
@@ -60,6 +61,10 @@
     {
       "path": "research/studies/revision31-capacity-amendment-3.json",
       "sha256": "4216712f5e8a01a73f9519f4a963dc58981e365dc992827bdf066355a6666ab6"
+    },
+    {
+      "path": "research/studies/revision31-runtime-amendment-4.json",
+      "sha256": "f04520ef68e29fd3ec858e85ba57e5558b3abeeef727cda946eb237c3a641d88"
     }
   ]
 }

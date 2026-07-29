@@ -28,6 +28,7 @@ def test_revision31_trainer_is_byte_for_byte_frozen() -> None:
         "research/studies/revision31-capacity-amendment-1.json",
         "research/studies/revision31-operational-amendment-2.json",
         "research/studies/revision31-capacity-amendment-3.json",
+        "research/studies/revision31-runtime-amendment-4.json",
     ]
 
     for source in manifest["source_files"]:
