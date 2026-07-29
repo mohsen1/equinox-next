@@ -153,6 +153,7 @@ def passing_evidence() -> eligibility.ScreenEvidence:
 
 def test_passing_screen_result_matches_the_pilot_authorization_contract() -> None:
     manifest = gate.load_manifest()
+    workload_bundle_digest = "sha256:" + "a" * 64
     result = eligibility.build_screen_result(
         passing_evidence(),
         manifest,
@@ -221,6 +222,16 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
                 "image": manifest["runtime"]["image"],
                 "image_digest": manifest["runtime"]["image_digest"],
                 "network_volume_id": "volume-123",
+                "bundle_handoff_revision": gate.BUNDLE_HANDOFF_REVISION,
+                "workload_bundle_digest": workload_bundle_digest,
+                "workload_bundle_size_bytes": 80_000,
+                "workload_bundle_compression": "xz",
+                "workload_bundle_path": (
+                    "/workspace/equinox-state/workload-bundles/"
+                    f"{manifest['profile_id']}/{workload_bundle_digest[7:]}.tar.xz"
+                ),
+                "bundle_stage_receipt_digest": "sha256:" + "b" * 64,
+                "bootstrap_source_digest": "sha256:" + "c" * 64,
             },
         },
         now=datetime(2026, 7, 29, 13, 0, tzinfo=UTC),
