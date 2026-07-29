@@ -992,13 +992,9 @@ else
 fi
 bundle_size_bytes="$(wc -c <"$bundle_source_path" | tr -d ' ')"
 if ((bundle_size_bytes > 256 * 1024)); then
-  echo "The compressed workload bundle exceeds the 256 KiB inline transport limit." >&2
+  echo "The compressed workload bundle exceeds the 256 KiB bootstrap transport limit." >&2
   exit 1
 fi
-bundle_source_b64="$(
-  base64 <"$bundle_source_path" |
-    tr -d '\n'
-)"
 bootstrap_source_b64="$(
   base64 <"$bootstrap_server_path" |
     tr -d '\n'
@@ -1007,10 +1003,8 @@ transport_token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 pod_environment="$(
   jq -cn \
     --arg token "$transport_token" \
-    --arg bundle "$bundle_source_b64" \
     '{
-      EQUINOX_RESULT_TOKEN: $token,
-      EQUINOX_BUNDLE_B64: $bundle
+      EQUINOX_RESULT_TOKEN: $token
     }'
 )"
 model_cache_setup=":"
@@ -1802,22 +1796,131 @@ last_progress="$(
   jq -cn \
     --argjson maximum_updates "$maximum_updates" \
     '{
-      phase: "waiting_for_capacity",
-      message: "Pod created; waiting for a live container endpoint.",
+      phase: "waiting_for_bootstrap",
+      message: "Pod created; waiting for the authenticated bootstrap endpoint.",
       maximum_level: 3,
       maximum_updates: $maximum_updates
     }'
 )"
-failure_message="The RunPod worker never exposed structured workload progress."
+failure_message="The RunPod worker never exposed its authenticated bootstrap endpoint."
 publish_execution "PROVISIONING" "$last_progress" "" false "$readiness_deadline_epoch"
 
-echo "Worker $pod_id allocated at \$$hourly_cost/hour; waiting for container readiness." >&2
+echo "Worker $pod_id allocated at \$$hourly_cost/hour; waiting for authenticated bootstrap." >&2
 proxy_root="https://${pod_id}-8000.proxy.runpod.net"
+bootstrap_health_url="$proxy_root/bootstrap-health"
+bundle_upload_url="$proxy_root/bundle"
 progress_url="$proxy_root/progress.json"
 remote_authorization="Authorization: Bearer $transport_token"
 exit_code=""
+bootstrap_transport_ready=false
 workload_transport_ready=false
 preparation_started_epoch=""
+attempt=0
+while readiness_poll_timeout="$(
+  seconds_until_deadline "$readiness_deadline_epoch" 10
+)"; do
+  attempt=$((attempt + 1))
+  bootstrap_health="$(
+    curl --fail --silent --show-error --max-time "$readiness_poll_timeout" \
+      -H "$remote_authorization" "$bootstrap_health_url" 2>/dev/null || true
+  )"
+  if jq -e \
+    'type == "object" and .status == "awaiting_bundle"' \
+    >/dev/null 2>&1 <<<"$bootstrap_health"; then
+    bootstrap_transport_ready=true
+    break
+  fi
+  if ((attempt == 1 || attempt % 3 == 0)); then
+    elapsed_wait=$(($(date +%s) - boot_started_epoch))
+    last_progress="$(
+      jq -cn \
+        --arg message "Pod created; waiting for the authenticated bootstrap endpoint." \
+        --argjson elapsed_seconds "$elapsed_wait" \
+        --argjson maximum_updates "$maximum_updates" \
+        '{
+          phase: "waiting_for_bootstrap",
+          message: $message,
+          elapsed_seconds: $elapsed_seconds,
+          maximum_level: 3,
+          maximum_updates: $maximum_updates
+        }'
+    )"
+    publish_execution "PROVISIONING" "$last_progress" "" false "$readiness_deadline_epoch"
+  fi
+  if ! readiness_sleep_seconds="$(
+    seconds_until_deadline "$readiness_deadline_epoch" 5
+  )"; then
+    break
+  fi
+  sleep "$readiness_sleep_seconds"
+done
+if [[ "$bootstrap_transport_ready" != true ]]; then
+  echo "The worker did not expose authenticated bootstrap health before timeout." >&2
+  exit 1
+fi
+
+last_progress="$(
+  jq -cn \
+    --argjson previous "$last_progress" \
+    --argjson bundle_size_bytes "$bundle_size_bytes" \
+    '$previous + {
+      phase: "uploading_workload",
+      message: "Container is ready; uploading the authenticated workload bundle.",
+      bundle_size_bytes: $bundle_size_bytes
+    }'
+)"
+failure_message="The authenticated workload bundle upload failed before handoff."
+publish_execution "RUNNING" "$last_progress" "" false "$readiness_deadline_epoch"
+
+if ! bundle_upload_timeout="$(
+  seconds_until_deadline "$readiness_deadline_epoch" 30
+)"; then
+  echo "The bootstrap readiness deadline expired before bundle upload." >&2
+  exit 1
+fi
+set +e
+bundle_upload_response="$(
+  curl --silent --show-error --http1.1 --max-time "$bundle_upload_timeout" \
+    -X POST \
+    -H "$remote_authorization" \
+    -H "Content-Type: application/gzip" \
+    -H "Expect:" \
+    --data-binary "@$bundle_source_path" \
+    --write-out $'\n%{http_code}' \
+    "$bundle_upload_url"
+)"
+bundle_upload_exit_code="$?"
+set -e
+bundle_upload_status=""
+bundle_upload_body=""
+if [[ "$bundle_upload_response" == *$'\n'* ]]; then
+  bundle_upload_status="${bundle_upload_response##*$'\n'}"
+  bundle_upload_body="${bundle_upload_response%$'\n'*}"
+fi
+bundle_upload_acknowledged=false
+if [[ "$bundle_upload_exit_code" == "0" &&
+  "$bundle_upload_status" =~ ^2[0-9][0-9]$ ]] &&
+  jq -e \
+    'type == "object" and .status == "bundle_installed"' \
+    >/dev/null 2>&1 <<<"$bundle_upload_body"; then
+  bundle_upload_acknowledged=true
+elif [[ "$bundle_upload_status" =~ ^[45][0-9][0-9]$ ]]; then
+  failure_message="The bootstrap endpoint rejected the authenticated workload bundle."
+  echo "The bootstrap endpoint rejected the workload bundle with HTTP $bundle_upload_status." >&2
+  exit 1
+else
+  last_progress="$(
+    jq -cn \
+      --argjson previous "$last_progress" \
+      '$previous + {
+        phase: "confirming_workload_handoff",
+        message: "The upload response was interrupted; checking authenticated workload progress."
+      }'
+  )"
+  failure_message="The workload bundle upload was not acknowledged and no authenticated progress handoff appeared."
+  publish_execution "RUNNING" "$last_progress" "" false "$readiness_deadline_epoch"
+fi
+
 attempt=0
 while readiness_poll_timeout="$(
   seconds_until_deadline "$readiness_deadline_epoch" 10
@@ -1845,20 +1948,23 @@ while readiness_poll_timeout="$(
   fi
   if ((attempt == 1 || attempt % 3 == 0)); then
     elapsed_wait=$(($(date +%s) - boot_started_epoch))
+    if [[ "$bundle_upload_acknowledged" == true ]]; then
+      handoff_message="Workload bundle accepted; waiting for structured progress."
+    else
+      handoff_message="Upload response interrupted; checking for structured progress handoff."
+    fi
     last_progress="$(
       jq -cn \
-        --arg message "Pod created; waiting for a live container endpoint." \
+        --argjson previous "$last_progress" \
+        --arg message "$handoff_message" \
         --argjson elapsed_seconds "$elapsed_wait" \
-        --argjson maximum_updates "$maximum_updates" \
-        '{
-          phase: "waiting_for_capacity",
+        '$previous + {
+          phase: "starting_workload",
           message: $message,
-          elapsed_seconds: $elapsed_seconds,
-          maximum_level: 3,
-          maximum_updates: $maximum_updates
+          elapsed_seconds: $elapsed_seconds
         }'
     )"
-    publish_execution "PROVISIONING" "$last_progress" "" false "$readiness_deadline_epoch"
+    publish_execution "RUNNING" "$last_progress" "" false "$readiness_deadline_epoch"
   fi
   if ! readiness_sleep_seconds="$(
     seconds_until_deadline "$readiness_deadline_epoch" 5
@@ -1870,7 +1976,12 @@ done
 rm -f -- "$bundle_source_path"
 bundle_source_path=""
 if [[ "$workload_transport_ready" != true ]]; then
-  echo "The inline workload did not expose structured progress before timeout." >&2
+  if [[ "$bundle_upload_acknowledged" == true ]]; then
+    failure_message="The uploaded workload did not expose structured progress before the readiness deadline."
+    echo "The uploaded workload did not expose structured progress before timeout." >&2
+  else
+    echo "The upload response was interrupted and no authenticated progress handoff appeared before timeout." >&2
+  fi
   exit 1
 fi
 

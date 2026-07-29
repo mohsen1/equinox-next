@@ -122,9 +122,36 @@ else:
     _write_executable(
         binary_directory / "curl",
         """#!/usr/bin/env python3
+import json
+import os
+import pathlib
 import sys
 
-if "--fail" not in sys.argv:
+arguments = sys.argv[1:]
+with open(os.environ["FAKE_RUNPOD_LOG"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(["curl", *arguments], separators=(",", ":")) + "\\n")
+scenario = json.loads(os.environ["FAKE_RUNPOD_SCENARIO"])
+transport = scenario.get("transport")
+url = arguments[-1]
+if transport and url.endswith("/bootstrap-health"):
+    print(json.dumps({"status": "awaiting_bundle"}, separators=(",", ":")))
+elif transport and url.endswith("/bundle"):
+    source = pathlib.Path(arguments[arguments.index("--data-binary") + 1].removeprefix("@"))
+    if not source.is_file() or source.stat().st_size <= 0:
+        raise SystemExit(95)
+    if transport == "reject":
+        print(json.dumps({"error": "INVALID_BUNDLE"}, separators=(",", ":")))
+        print("400")
+    elif transport == "drop":
+        raise SystemExit(52)
+    else:
+        print(json.dumps({"status": "bundle_installed"}, separators=(",", ":")))
+        print("202")
+elif transport and url.endswith("/progress.json"):
+    print(json.dumps({"phase": "running"}, separators=(",", ":")))
+elif transport and url.endswith("/exit_code"):
+    print("1")
+elif "--fail" not in arguments:
     raise SystemExit(96)
 """,
     )
@@ -611,6 +638,155 @@ def test_larger_model_launch_allows_only_the_pinned_storage_baseline(
     assert "@" not in paid_creates[0][paid_creates[0].index("--image") + 1]
 
 
+def test_paid_create_carries_only_token_then_uploads_after_image_postcheck(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "transport": "accept",
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+            ],
+        },
+    )
+
+    assert result.returncode != 0
+    assert "Container is live; streaming structured progress" in result.stderr
+    paid_create_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
+    ]
+    assert len(paid_create_indexes) == 1
+    create = commands[paid_create_indexes[0]]
+    create_environment = json.loads(create[create.index("--env") + 1])
+    assert set(create_environment) == {"EQUINOX_RESULT_TOKEN"}
+    assert len(create_environment["EQUINOX_RESULT_TOKEN"]) == 64
+    assert "EQUINOX_BUNDLE_B64" not in create[create.index("--env") + 1]
+
+    image_postcheck_index = max(
+        index for index, command in enumerate(commands) if command[:1] == ["docker"]
+    )
+    health_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:1] == ["curl"] and command[-1].endswith("/bootstrap-health")
+    ]
+    upload_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:1] == ["curl"] and command[-1].endswith("/bundle")
+    ]
+    progress_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command[:1] == ["curl"] and command[-1].endswith("/progress.json")
+    ]
+    assert len(upload_indexes) == 1
+    assert image_postcheck_index < health_indexes[0] < upload_indexes[0] < progress_indexes[0]
+    upload = commands[upload_indexes[0]]
+    token = create_environment["EQUINOX_RESULT_TOKEN"]
+    assert upload[upload.index("-X") + 1] == "POST"
+    assert f"Authorization: Bearer {token}" in upload
+    assert "Content-Type: application/gzip" in upload
+    assert "Expect:" in upload
+    assert upload[upload.index("--data-binary") + 1].startswith("@")
+
+    delete_indexes = [
+        index for index, command in enumerate(commands) if command[:2] == ["pod", "delete"]
+    ]
+    assert delete_indexes
+    assert all(commands[index] == ["pod", "delete", "fake-paid-pod"] for index in delete_indexes)
+    assert upload_indexes[0] < min(delete_indexes)
+
+
+def test_rejected_bundle_upload_deletes_the_exact_pod_without_retry(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "transport": "reject",
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+            ],
+        },
+    )
+
+    assert result.returncode != 0
+    assert "rejected the workload bundle with HTTP 400" in result.stderr
+    creates = [
+        command
+        for command in commands
+        if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
+    ]
+    uploads = [
+        command
+        for command in commands
+        if command[:1] == ["curl"] and command[-1].endswith("/bundle")
+    ]
+    deletes = [command for command in commands if command[:2] == ["pod", "delete"]]
+    progress = [
+        command
+        for command in commands
+        if command[:1] == ["curl"] and command[-1].endswith("/progress.json")
+    ]
+    assert len(creates) == 1
+    assert len(uploads) == 1
+    assert not progress
+    assert deletes
+    assert all(command == ["pod", "delete", "fake-paid-pod"] for command in deletes)
+
+
+def test_dropped_bundle_response_is_resolved_by_progress_without_reupload(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_launch(
+        tmp_path,
+        scenario={
+            "spend": 0.005,
+            "pod_create_succeeds": True,
+            "transport": "drop",
+            "image_indexes": [
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+                _image_index(IMAGE_DIGEST),
+            ],
+        },
+    )
+
+    assert result.returncode != 0
+    assert "Container is live; streaming structured progress" in result.stderr
+    assert "no authenticated progress handoff appeared" not in result.stderr
+    uploads = [
+        command
+        for command in commands
+        if command[:1] == ["curl"] and command[-1].endswith("/bundle")
+    ]
+    progress = [
+        command
+        for command in commands
+        if command[:1] == ["curl"] and command[-1].endswith("/progress.json")
+    ]
+    creates = [
+        command
+        for command in commands
+        if command[:2] == ["pod", "create"] and command != ["pod", "create", "--help"]
+    ]
+    assert len(uploads) == 1
+    assert progress
+    assert len(creates) == 1
+
+
 @pytest.mark.parametrize("prepared_layout", ("root", "hub"))
 def test_larger_model_launch_normalizes_both_verified_cache_layouts(
     tmp_path: Path,
@@ -730,8 +906,8 @@ def test_larger_model_launch_refuses_non_storage_idle_provider_states(
 
 def test_readiness_polling_obeys_one_wall_clock_deadline(tmp_path: Path) -> None:
     source = LAUNCHER.read_text(encoding="utf-8")
-    start = source.index('exit_code=""\n') + len('exit_code=""\n')
-    end = source.index('rm -f -- "$bundle_source_path"', start)
+    start = source.index("bootstrap_transport_ready=false\n")
+    end = source.index('if [[ "$bootstrap_transport_ready" != true ]]', start)
     readiness_block = source[start:end]
 
     assert "readiness_deadline_epoch" in readiness_block
@@ -785,7 +961,7 @@ readiness_deadline_epoch=1012
 boot_timeout_seconds=12
 last_progress='{{}}'
 maximum_updates=1
-progress_url=https://worker.invalid/progress.json
+bootstrap_health_url=https://worker.invalid/bootstrap-health
 remote_authorization='Authorization: Bearer test'
 publish_execution() {{ :; }}
 {readiness_block}
