@@ -10,6 +10,7 @@ import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -26,6 +27,12 @@ READ_ROUTES = {
     "/progress.json": ("progress.json", "application/json"),
     "/result.json": ("result.json", "application/json"),
 }
+
+
+def configured_result_host() -> str:
+    """Return the explicit bind host, preserving wildcard exposure by default."""
+
+    return os.environ.get("EQUINOX_RESULT_HOST", "0.0.0.0")
 
 
 def canonical_json(value: Any) -> bytes:
@@ -230,6 +237,17 @@ class ExternalEvalTransportHandler(BaseHTTPRequestHandler):
         return
 
 
+class ExternalEvalHTTPServer(ThreadingHTTPServer):
+    """Bind without the HTTPServer reverse-DNS lookup that can stall readiness."""
+
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
 if __name__ == "__main__":
+    host = configured_result_host()
     port = int(os.environ.get("EQUINOX_RESULT_PORT", "8000"))
-    ThreadingHTTPServer(("0.0.0.0", port), ExternalEvalTransportHandler).serve_forever()
+    ExternalEvalHTTPServer((host, port), ExternalEvalTransportHandler).serve_forever()
