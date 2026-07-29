@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from research.runpod import larger_model_gate as gate
+from research.runpod import repository_repair_large_model_pilot as pilot
+
+
+def test_authorization_digest_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST", raising=False)
+    with pytest.raises(RuntimeError, match="authorization digest"):
+        pilot.require_authorization_digest()
+
+    digest = "sha256:" + "a" * 64
+    monkeypatch.setenv("EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST", digest)
+    assert pilot.require_authorization_digest() == digest
+
+
+def test_offline_snapshot_requires_exact_shards(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest = gate.load_manifest()
+    manifest["artifact_readiness"]["cache_directory"] = str(tmp_path)
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+
+    with pytest.raises(RuntimeError, match="complete pinned 7B snapshot"):
+        pilot.require_offline_snapshot(manifest)
+
+
+def test_actual_cuda_profile_is_rejected_before_snapshot_hash() -> None:
+    class WrongCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def get_device_name(_index: int) -> str:
+            return "NVIDIA L40"
+
+        @staticmethod
+        def get_device_properties(_index: int) -> object:
+            return SimpleNamespace(total_memory=46_999_999_999)
+
+        @staticmethod
+        def is_bf16_supported() -> bool:
+            return True
+
+    snapshot_hash_started = False
+
+    def snapshot_verifier(_manifest: dict[str, object]) -> tuple[Path, str]:
+        nonlocal snapshot_hash_started
+        snapshot_hash_started = True
+        return Path("/workspace/model"), "sha256:unreachable"
+
+    with pytest.raises(gate.GateError, match="does not match"):
+        pilot.require_pre_model_readiness(
+            gate.load_manifest(),
+            torch_module=SimpleNamespace(cuda=WrongCuda()),
+            snapshot_verifier=snapshot_verifier,
+        )
+    assert snapshot_hash_started is False
+
+
+def test_v32_pilot_constants_do_not_modify_frozen_sources() -> None:
+    assert pilot.MODEL_REVISION == gate.MODEL_REVISION
+    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@1"
+    assert pilot.OBJECTIVE_ID == "verified-fix-coverage-retention-policy-gradient@15"
+    assert Path(pilot.__file__).name == "repository_repair_large_model_pilot.py"
+    assert os.path.basename(pilot.frozen.__file__) == "repository_repair_rl.py"
+
+
+def test_paid_dependency_setup_fails_closed_instead_of_running_pip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = gate.load_manifest()
+    monkeypatch.setattr(
+        pilot.importlib.metadata,
+        "version",
+        lambda _package: "unexpected",
+    )
+    monkeypatch.setattr(
+        pilot.frozen,
+        "ensure_dependencies",
+        lambda: (_ for _ in ()).throw(AssertionError("network installer called")),
+    )
+
+    pilot.install_memory_profile(manifest)
+
+    with pytest.raises(RuntimeError, match="manifest-pinned dependencies"):
+        pilot.frozen.ensure_dependencies()

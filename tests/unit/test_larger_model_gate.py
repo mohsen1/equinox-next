@@ -28,6 +28,7 @@ from research.runpod.larger_model_gate import (
     load_manifest,
     matching_runpod_gpus,
     parse_runpod_inventory,
+    require_cuda_hardware,
     require_runpod_gpu,
     result_digest,
     verify_huggingface_metadata,
@@ -345,6 +346,52 @@ def test_runpod_inventory_rejects_malformed_or_duplicate_rows() -> None:
         parse_runpod_inventory([inventory_row(memoryInGb="48")])
     with pytest.raises(GateError, match="duplicate"):
         parse_runpod_inventory([inventory_row(), inventory_row()])
+
+
+def test_actual_cuda_hardware_requires_exact_identity_byte_floor_and_bf16() -> None:
+    class FakeCuda:
+        def __init__(
+            self,
+            *,
+            name: str = "NVIDIA L40",
+            total_memory: int = 47_000_000_000,
+            bf16: bool = True,
+        ) -> None:
+            self.name = name
+            self.total_memory = total_memory
+            self.bf16 = bf16
+
+        def is_available(self) -> bool:
+            return True
+
+        def get_device_name(self, _index: int) -> str:
+            return self.name
+
+        def get_device_properties(self, _index: int) -> object:
+            return type("Properties", (), {"total_memory": self.total_memory})()
+
+        def is_bf16_supported(self) -> bool:
+            return self.bf16
+
+    manifest = load_manifest()
+    observed = require_cuda_hardware(
+        manifest,
+        type("Torch", (), {"cuda": FakeCuda()})(),
+    )
+    assert observed.gpu_name == "NVIDIA L40"
+    assert observed.total_memory_bytes == 47_000_000_000
+    assert observed.bf16_supported is True
+
+    for cuda in (
+        FakeCuda(name="NVIDIA A40"),
+        FakeCuda(total_memory=46_999_999_999),
+        FakeCuda(bf16=False),
+    ):
+        with pytest.raises(GateError, match="does not match"):
+            require_cuda_hardware(
+                manifest,
+                type("Torch", (), {"cuda": cuda})(),
+            )
 
 
 def test_huggingface_metadata_verifies_revision_parameters_and_bytes() -> None:

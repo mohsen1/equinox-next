@@ -226,6 +226,15 @@ class RunPodGPU:
     stock_status: str
 
 
+@dataclass(frozen=True)
+class CUDAHardware:
+    """Actual CUDA device facts checked before paid artifact verification."""
+
+    gpu_name: str
+    total_memory_bytes: int
+    bf16_supported: bool
+
+
 MetadataFetcher = Callable[[str], Mapping[str, Any] | str | bytes]
 
 
@@ -411,6 +420,44 @@ def require_runpod_gpu(manifest: Mapping[str, Any], inventory: Any) -> RunPodGPU
     if len(matches) != 1:
         raise GateError("RunPod returned an ambiguous pinned GPU inventory")
     return matches[0]
+
+
+def require_cuda_hardware(
+    manifest: Mapping[str, Any],
+    torch_module: Any,
+) -> CUDAHardware:
+    """Require the exact paid CUDA profile before hashing or loading model bytes."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    cuda = getattr(torch_module, "cuda", None)
+    if cuda is None or not cuda.is_available():
+        raise GateError("the paid larger-model worker has no available CUDA device")
+    try:
+        gpu_name = str(cuda.get_device_name(0))
+        total_memory_bytes = int(cuda.get_device_properties(0).total_memory)
+        bf16_supported = bool(cuda.is_bf16_supported())
+    except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+        raise GateError("the paid larger-model worker CUDA profile could not be read") from error
+
+    hardware = manifest["hardware"]
+    failures: list[str] = []
+    if gpu_name != hardware["gpu_id"]:
+        failures.append(f"gpu_name={gpu_name!r}")
+    if total_memory_bytes < hardware["minimum_cuda_memory_bytes"]:
+        failures.append(f"total_memory_bytes={total_memory_bytes}")
+    if not bf16_supported:
+        failures.append("bf16_supported=false")
+    if failures:
+        raise GateError(
+            "the actual paid CUDA device does not match the immutable profile ("
+            + ", ".join(failures)
+            + ")"
+        )
+    return CUDAHardware(
+        gpu_name=gpu_name,
+        total_memory_bytes=total_memory_bytes,
+        bf16_supported=bf16_supported,
+    )
 
 
 def _default_metadata_fetcher(url: str) -> Mapping[str, Any]:

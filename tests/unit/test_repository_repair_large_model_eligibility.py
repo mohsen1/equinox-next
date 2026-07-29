@@ -202,6 +202,45 @@ def test_hardware_gate_uses_the_exact_cuda_byte_floor() -> None:
     assert result["eligible"] is False
 
 
+def test_actual_cuda_profile_is_rejected_before_snapshot_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class WrongCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def get_device_name(_index: int) -> str:
+            return "NVIDIA A40"
+
+        @staticmethod
+        def get_device_properties(_index: int) -> object:
+            return SimpleNamespace(total_memory=48_000_000_000)
+
+        @staticmethod
+        def is_bf16_supported() -> bool:
+            return True
+
+    snapshot_hash_started = False
+
+    def snapshot_verifier(_manifest: dict[str, object]) -> tuple[bool, None, None]:
+        nonlocal snapshot_hash_started
+        snapshot_hash_started = True
+        return False, None, None
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    with pytest.raises(gate.GateError, match="does not match"):
+        eligibility.verify_pre_model_readiness(
+            eligibility.ScreenEvidence(),
+            gate.load_manifest(),
+            torch_module=SimpleNamespace(cuda=WrongCuda()),
+            snapshot_verifier=snapshot_verifier,
+        )
+    assert snapshot_hash_started is False
+
+
 def test_baseline_stops_only_after_twelve_when_a_level_gate_is_impossible() -> None:
     manifest = gate.load_manifest()
     evidence = eligibility.ScreenEvidence(
@@ -231,6 +270,52 @@ def test_baseline_stops_only_after_twelve_when_a_level_gate_is_impossible() -> N
     )
     evidence.baseline_outcomes.pop()
     assert eligibility.baseline_impossible(evidence, manifest) is None
+
+
+def test_branch_checkpoint_gate_stops_at_first_mathematically_impossible_group() -> None:
+    manifest = gate.load_manifest()
+    evidence = eligibility.ScreenEvidence(
+        branch_collections=[collection(checkpointed=False) for _ in range(2)],
+    )
+    assert eligibility.branch_collection_impossible(evidence, manifest) is None
+
+    evidence.branch_collections.append(collection(checkpointed=False))
+    assert (
+        eligibility.branch_collection_impossible(evidence, manifest)
+        == "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
+    )
+
+
+def test_branch_fail_fast_covers_informative_rate_and_action_gates() -> None:
+    manifest = gate.load_manifest()
+    no_signal = eligibility.ScreenEvidence(
+        branch_collections=[collection(informative=False) for _ in range(7)],
+    )
+    assert (
+        eligibility.branch_collection_impossible(no_signal, manifest)
+        == "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"
+    )
+
+    too_many_rejections = passing_evidence()
+    too_many_rejections.branch_collections.pop()
+    too_many_rejections.total_actions = 1_000
+    too_many_rejections.accepted_actions = 900
+    assert (
+        eligibility.branch_collection_impossible(too_many_rejections, manifest)
+        == "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE"
+    )
+
+
+def test_branch_fail_fast_accounts_for_joint_sibling_rate_headroom() -> None:
+    manifest = gate.load_manifest()
+    evidence = eligibility.ScreenEvidence(
+        branch_collections=[collection(informative=index < 2, solved=4) for index in range(7)],
+    )
+
+    assert (
+        eligibility.branch_collection_impossible(evidence, manifest)
+        == "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE"
+    )
 
 
 def test_incomplete_branch_collection_is_not_counted_as_a_checkpoint() -> None:

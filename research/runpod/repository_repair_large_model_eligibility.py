@@ -26,26 +26,17 @@ try:
     import repository_repair_env as frozen_environment
     import repository_repair_env_v32 as revision32
     import repository_repair_rl as frozen
+    import repository_repair_study as study
 except ModuleNotFoundError:
     from . import larger_model_gate as gate
     from . import repository_repair_env as frozen_environment
     from . import repository_repair_env_v32 as revision32
     from . import repository_repair_rl as frozen
+    from . import repository_repair_study as study
 
 
 SCREEN_SCHEMA_VERSION = 1
 SCREEN_LEVELS = ("0", "1", "2", "3")
-REQUIRED_SNAPSHOT_FILES = frozenset(
-    {
-        "config.json",
-        "generation_config.json",
-        "merges.txt",
-        "model.safetensors.index.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "vocab.json",
-    }
-)
 
 
 class EligibilityScreenComplete(BaseException):
@@ -82,6 +73,7 @@ class ScreenEvidence:
     gradient_checkpointing_enabled: bool = False
     pinned_snapshot_ready: bool = False
     pinned_snapshot_path: str | None = None
+    pinned_snapshot_digest: str | None = None
     cache_free_bytes: int = 0
     offline_mode_active: bool = False
     test_split_accessed: bool = False
@@ -95,6 +87,8 @@ class ScreenEvidence:
     base_bf16_parameter_count: int = 0
     trainable_parameter_count: int = 0
     model_parameter_count_with_adapter: int = 0
+    capacity_smoke_completed_at: float | None = None
+    baseline_completed_at: float | None = None
     runtime_configuration: Any | None = None
 
 
@@ -124,38 +118,18 @@ def _snapshot_candidates(manifest: dict[str, Any]) -> tuple[Path, ...]:
     )
 
 
-def verify_pinned_snapshot(manifest: dict[str, Any]) -> tuple[bool, str | None]:
-    """Verify the exact four local weight shards without contacting the hub."""
+def verify_pinned_snapshot(
+    manifest: dict[str, Any],
+) -> tuple[bool, str | None, str | None]:
+    """Hash the complete pinned snapshot without contacting the hub."""
 
-    expected_bytes = manifest["model"]["safetensors_bytes"]
-    expected_names = {f"model-{index:05d}-of-00004.safetensors" for index in range(1, 5)}
     for snapshot in _snapshot_candidates(manifest):
-        if not snapshot.is_dir():
-            continue
-        shards = sorted(snapshot.glob("*.safetensors"))
-        if {item.name for item in shards} != expected_names:
-            continue
-        if not all((snapshot / name).is_file() for name in REQUIRED_SNAPSHOT_FILES):
-            continue
         try:
-            observed_bytes = sum(item.stat().st_size for item in shards)
-            index = json.loads(
-                (snapshot / "model.safetensors.index.json").read_text(encoding="utf-8")
-            )
-        except OSError:
+            verification = gate.verify_local_snapshot(manifest, snapshot)
+        except gate.GateError:
             continue
-        except json.JSONDecodeError:
-            continue
-        weight_map = index.get("weight_map") if isinstance(index, dict) else None
-        if (
-            not isinstance(weight_map, dict)
-            or not weight_map
-            or set(weight_map.values()) != expected_names
-        ):
-            continue
-        if observed_bytes == expected_bytes:
-            return True, str(snapshot)
-    return False, None
+        return True, str(snapshot), verification["snapshot_digest"]
+    return False, None, None
 
 
 def offline_mode_active() -> bool:
@@ -196,6 +170,41 @@ def capture_cuda_evidence(evidence: ScreenEvidence, torch_module: Any) -> None:
     evidence.reserved_vram_bytes = int(torch_module.cuda.memory_reserved(0))
     evidence.peak_reserved_vram_bytes = int(torch_module.cuda.max_memory_reserved(0))
     evidence.bf16_supported = bool(torch_module.cuda.is_bf16_supported())
+
+
+def verify_pre_model_readiness(
+    evidence: ScreenEvidence,
+    manifest: dict[str, Any],
+    *,
+    torch_module: Any | None = None,
+    snapshot_verifier: Any | None = None,
+) -> bool:
+    """Check cheap runtime invariants before hashing the pinned 15 GB snapshot."""
+
+    if torch_module is None:
+        import torch
+
+        torch_module = torch
+    hardware = gate.require_cuda_hardware(manifest, torch_module)
+    evidence.gpu_name = hardware.gpu_name
+    evidence.gpu_total_memory_bytes = hardware.total_memory_bytes
+    evidence.bf16_supported = hardware.bf16_supported
+    evidence.offline_mode_active = offline_mode_active()
+    if not evidence.offline_mode_active:
+        return False
+
+    (
+        evidence.pinned_snapshot_ready,
+        evidence.pinned_snapshot_path,
+        evidence.pinned_snapshot_digest,
+    ) = (snapshot_verifier or verify_pinned_snapshot)(manifest)
+    if evidence.pinned_snapshot_path is not None:
+        evidence.cache_free_bytes = shutil.disk_usage(evidence.pinned_snapshot_path).free
+        evidence.pinned_snapshot_ready = (
+            evidence.pinned_snapshot_ready
+            and evidence.cache_free_bytes >= manifest["hardware"]["minimum_free_cache_bytes"]
+        )
+    return evidence.pinned_snapshot_ready
 
 
 def _nested_equal(left: Any, right: Any, torch_module: Any) -> bool:
@@ -380,8 +389,99 @@ def baseline_impossible(evidence: ScreenEvidence, manifest: dict[str, Any]) -> s
     return None
 
 
+def branch_collection_impossible(
+    evidence: ScreenEvidence,
+    manifest: dict[str, Any],
+) -> str | None:
+    """Return why no completion of the remaining K=4 budget can pass."""
+
+    screen = manifest["screen"]
+    thresholds = screen["thresholds"]
+    expected_groups = screen["branch_groups"]
+    completed_groups = len(evidence.branch_collections)
+    if completed_groups > expected_groups:
+        raise ValueError("branch collection evidence exceeds the screen budget")
+    remaining_groups = expected_groups - completed_groups
+    if evidence.repeated_rejected_loop_count:
+        return "REPEATED_REJECTED_ACTION_LOOP"
+
+    checkpointed_groups = [
+        collection
+        for collection in evidence.branch_collections
+        if collection.snapshot is not None
+        and collection.exclusion_reason is None
+        and not collection.prefix.terminal
+    ]
+    checkpoint_count = len(checkpointed_groups)
+    required_checkpoints = _minimum_successes(
+        thresholds["minimum_branch_checkpoint_rate"],
+        expected_groups,
+    )
+    if checkpoint_count + remaining_groups < required_checkpoints:
+        return "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE"
+
+    informative_groups = sum(collection.informative for collection in evidence.branch_collections)
+    required_informative_groups = max(
+        thresholds["minimum_informative_groups"],
+        _minimum_successes(
+            thresholds["minimum_informative_group_rate"],
+            expected_groups,
+        ),
+    )
+    if informative_groups + remaining_groups < required_informative_groups:
+        return "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE"
+
+    branch_width = screen["branch_width"]
+    solved_siblings = sum(collection.solved_siblings for collection in checkpointed_groups)
+    completed_siblings = sum(len(collection.siblings) for collection in checkpointed_groups)
+    failed_siblings = completed_siblings - solved_siblings
+    maximum_future_siblings = remaining_groups * branch_width
+    if solved_siblings + maximum_future_siblings < thresholds["minimum_solved_siblings"]:
+        return "SOLVED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+    if failed_siblings + maximum_future_siblings < thresholds["minimum_failed_siblings"]:
+        return "FAILED_SIBLING_GATE_MATHEMATICALLY_IMPOSSIBLE"
+
+    maximum_actions_per_group = branch_width * max(
+        complexity.repair_horizon for complexity in frozen.COMPLEXITY_LEVELS
+    )
+    maximum_future_actions = remaining_groups * maximum_actions_per_group
+    best_possible_action_validity = _safe_rate(
+        evidence.accepted_actions + maximum_future_actions,
+        evidence.total_actions + maximum_future_actions,
+    )
+    if (
+        evidence.total_actions + maximum_future_actions == 0
+        or best_possible_action_validity < thresholds["minimum_action_protocol_validity"]
+    ):
+        return "ACTION_PROTOCOL_GATE_MATHEMATICALLY_IMPOSSIBLE"
+
+    for future_checkpointed_groups in range(remaining_groups + 1):
+        final_checkpoint_count = checkpoint_count + future_checkpointed_groups
+        if final_checkpoint_count < required_checkpoints:
+            continue
+        if informative_groups + future_checkpointed_groups < required_informative_groups:
+            continue
+        future_sibling_count = future_checkpointed_groups * branch_width
+        for future_solved_siblings in range(future_sibling_count + 1):
+            final_solved = solved_siblings + future_solved_siblings
+            final_failed = failed_siblings + future_sibling_count - future_solved_siblings
+            if (
+                final_solved < thresholds["minimum_solved_siblings"]
+                or final_failed < thresholds["minimum_failed_siblings"]
+            ):
+                continue
+            solved_rate = _safe_rate(final_solved, final_solved + final_failed)
+            if (
+                thresholds["minimum_solved_sibling_rate"]
+                <= solved_rate
+                <= thresholds["maximum_solved_sibling_rate"]
+            ):
+                return None
+    return "SOLVED_SIBLING_RATE_GATE_MATHEMATICALLY_IMPOSSIBLE"
+
+
 def _hardware_verified(evidence: ScreenEvidence, manifest: dict[str, Any]) -> bool:
-    minimum_bytes = manifest["hardware"]["minimum_gpu_memory_gb"] * 1024**3
+    minimum_bytes = manifest["hardware"]["minimum_cuda_memory_bytes"]
     return (
         evidence.gpu_name == manifest["hardware"]["gpu_id"]
         and evidence.gpu_total_memory_bytes >= minimum_bytes
@@ -438,6 +538,23 @@ def build_screen_result(
         evidence.peak_reserved_vram_bytes,
         evidence.gpu_total_memory_bytes,
     )
+    baseline_runtime_seconds = (
+        max(0.0, evidence.baseline_completed_at - evidence.capacity_smoke_completed_at)
+        if evidence.baseline_completed_at is not None
+        and evidence.capacity_smoke_completed_at is not None
+        else 0.0
+    )
+    pilot = manifest["pilot"]
+    predicted_final_evaluation_seconds = (
+        baseline_runtime_seconds
+        / expected_baseline
+        * pilot["test_examples"]
+        * len(SCREEN_LEVELS)
+        * 2
+        * pilot["final_evaluation_safety_factor"]
+        if expected_baseline
+        else math.inf
+    )
 
     baseline_gate = (
         completed_baseline == expected_baseline
@@ -478,6 +595,11 @@ def build_screen_result(
         and evidence.gpu_total_memory_bytes > 0
         and peak_fraction <= manifest["hardware"]["maximum_peak_reserved_vram_fraction"]
     )
+    pilot_runtime_gate = (
+        baseline_runtime_seconds > 0
+        and predicted_final_evaluation_seconds
+        <= thresholds["maximum_predicted_final_evaluation_seconds"]
+    )
     policy_unchanged = (
         evidence.capacity_smoke_completed
         and evidence.optimizer_step_calls >= 1
@@ -494,6 +616,7 @@ def build_screen_result(
         "pinned_snapshot_ready": evidence.pinned_snapshot_ready,
         "offline_mode_active": evidence.offline_mode_active,
         "hardware_verified": _hardware_verified(evidence, manifest),
+        "pilot_runtime_feasible": pilot_runtime_gate,
         "policy_unchanged": policy_unchanged,
         "optimizer_state_restored": evidence.optimizer_state_restored,
         "test_split_isolated": not evidence.test_split_accessed,
@@ -551,8 +674,10 @@ def build_screen_result(
         "gpu_name": evidence.gpu_name,
         "gpu_id": evidence.gpu_name,
         "gpu_total_memory_bytes": evidence.gpu_total_memory_bytes,
-        "gpu_total_memory_gb": round(evidence.gpu_total_memory_bytes / 1024**3, 3),
-        "gpu_memory_gb": round(evidence.gpu_total_memory_bytes / 1024**3, 3),
+        "gpu_total_memory_gb": round(evidence.gpu_total_memory_bytes / 1_000_000_000, 3),
+        "gpu_total_memory_gib": round(evidence.gpu_total_memory_bytes / 1024**3, 3),
+        "gpu_memory_gb": round(evidence.gpu_total_memory_bytes / 1_000_000_000, 3),
+        "gpu_memory_gib": round(evidence.gpu_total_memory_bytes / 1024**3, 3),
         "reserved_vram_bytes": evidence.reserved_vram_bytes,
         "reserved_vram_gb": round(evidence.reserved_vram_bytes / 1024**3, 3),
         "peak_reserved_vram_bytes": evidence.peak_reserved_vram_bytes,
@@ -561,11 +686,17 @@ def build_screen_result(
         "bf16_supported": evidence.bf16_supported,
         "pinned_snapshot_ready": evidence.pinned_snapshot_ready,
         "pinned_snapshot_path": evidence.pinned_snapshot_path,
+        "pinned_snapshot_digest": evidence.pinned_snapshot_digest,
         "cache_free_bytes": evidence.cache_free_bytes,
         "offline_mode_active": evidence.offline_mode_active,
         "training_microbatch_size": screen["training_microbatch_size"],
         "maximum_input_tokens": screen["maximum_input_tokens"],
         "capacity_smoke_sequence_tokens": (screen["maximum_input_tokens"] + frozen.MAX_NEW_TOKENS),
+        "baseline_runtime_seconds": round(baseline_runtime_seconds, 3),
+        "predicted_final_evaluation_seconds": round(
+            predicted_final_evaluation_seconds,
+            3,
+        ),
         "validation_examples": (
             runtime.validation_examples if runtime is not None else screen["validation_examples"]
         ),
@@ -625,6 +756,8 @@ def install_environment_hooks(
     frozen.SYSTEM_PROMPT = revision32.SYSTEM_PROMPT
     frozen.ENVIRONMENT_REVISION = revision32.ENVIRONMENT_REVISION
     frozen.ACTION_PROTOCOL_REVISION = revision32.ACTION_PROTOCOL_REVISION
+    frozen_environment.ENVIRONMENT_REVISION = revision32.ENVIRONMENT_REVISION
+    frozen_environment.ACTION_PROTOCOL_REVISION = revision32.ACTION_PROTOCOL_REVISION
     frozen.BRANCH_WIDTH = screen["branch_width"]
     frozen_environment.BRANCH_WIDTH = screen["branch_width"]
     frozen.TRAINING_MICROBATCH_SIZE = screen["training_microbatch_size"]
@@ -717,6 +850,8 @@ def install_environment_hooks(
                 )
             )
             reason = baseline_impossible(evidence, manifest)
+            if len(evidence.baseline_outcomes) == expected_baseline:
+                evidence.baseline_completed_at = time.monotonic()
             if reason is not None:
                 evidence.early_stop_reason = reason
                 raise EligibilityScreenComplete(build_screen_result(evidence, manifest))
@@ -730,6 +865,10 @@ def install_environment_hooks(
             raise RuntimeError("eligibility screen exceeded its branch-group budget")
         collection = original_collect(task, *args, **kwargs)
         evidence.branch_collections.append(collection)
+        reason = branch_collection_impossible(evidence, manifest)
+        if reason is not None:
+            evidence.early_stop_reason = reason
+            raise EligibilityScreenComplete(build_screen_result(evidence, manifest))
         return collection
 
     frozen.collect_branch_group = observed_collection
@@ -827,6 +966,7 @@ def install_model_hooks(evidence: ScreenEvidence, manifest: dict[str, Any]) -> N
                 torch_module=torch,
             )
             evidence.capacity_smoke_completed = True
+            evidence.capacity_smoke_completed_at = time.monotonic()
             capture_cuda_evidence(evidence, torch)
 
         torch.optim.AdamW.__init__ = smoke_after_adam_init
@@ -904,29 +1044,13 @@ def main() -> None:
     if "--self-test" in sys.argv:
         self_test(manifest)
         return
+    study.verify_frozen_sources()
     evidence = ScreenEvidence()
     runtime = prepare_runtime(evidence, manifest)
     if "--validate-configuration" in sys.argv:
         return
 
-    evidence.offline_mode_active = offline_mode_active()
-    try:
-        import torch
-
-        capture_cuda_evidence(evidence, torch)
-    except ImportError:
-        pass
-    (
-        evidence.pinned_snapshot_ready,
-        evidence.pinned_snapshot_path,
-    ) = verify_pinned_snapshot(manifest)
-    if evidence.pinned_snapshot_path is not None:
-        evidence.cache_free_bytes = shutil.disk_usage(evidence.pinned_snapshot_path).free
-        evidence.pinned_snapshot_ready = (
-            evidence.pinned_snapshot_ready
-            and evidence.cache_free_bytes >= manifest["hardware"]["minimum_free_cache_bytes"]
-        )
-    if not evidence.offline_mode_active or not evidence.pinned_snapshot_ready:
+    if not verify_pre_model_readiness(evidence, manifest):
         print(json.dumps(build_screen_result(evidence, manifest), sort_keys=True), flush=True)
         return
 
