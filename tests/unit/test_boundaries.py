@@ -121,6 +121,16 @@ def test_proof_receipt_recovers_only_the_exact_post_contract_failure() -> None:
         research_proof_can_recover_execution(
             {
                 **execution,
+                "progress": {"error": "A verified local proof receipt is pending ingestion."},
+            },
+            request,
+        )
+        is True
+    )
+    assert (
+        research_proof_can_recover_execution(
+            {
+                **execution,
                 "progress": {"error": "The remote workload failed with exit code 1."},
             },
             request,

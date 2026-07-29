@@ -130,8 +130,10 @@ def test_snapshot_restore_reconstructs_path_ledger_and_read_freshness() -> None:
     environment.step(action({"tool": "list", "path": ""}))
     environment.step(action({"tool": "read", "path": fault.path}))
     snapshot = environment.capture_snapshot()
+    snapshot_payload = json.loads(snapshot.payload)
 
     restored = RepositoryRepairEnvironment.restore(repair_task, snapshot)
+    restored_payload = json.loads(restored.capture_snapshot().payload)
     applied = restored.step(
         action(
             {
@@ -144,6 +146,8 @@ def test_snapshot_restore_reconstructs_path_ledger_and_read_freshness() -> None:
     )
 
     assert isinstance(restored, RepositoryRepairEnvironment)
+    assert snapshot_payload["environment_revision"] == ENVIRONMENT_REVISION
+    assert restored_payload["environment_revision"] == ENVIRONMENT_REVISION
     assert applied.accepted is True
 
 

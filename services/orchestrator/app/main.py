@@ -150,6 +150,7 @@ class ResearchComputeExecutionRequest(StrictModel):
 
 
 RECOVERABLE_PROOF_CONTRACT_ERROR = "The remote result did not satisfy the declared proof contract."
+RECOVERABLE_PROOF_INGESTION_ERROR = "A verified local proof receipt is pending ingestion."
 
 
 def research_proof_can_recover_execution(
@@ -164,7 +165,11 @@ def research_proof_can_recover_execution(
         execution.get("status") == "FAILED"
         and execution.get("teardown_confirmed") is True
         and isinstance(progress, dict)
-        and progress.get("error") == RECOVERABLE_PROOF_CONTRACT_ERROR
+        and progress.get("error")
+        in {
+            RECOVERABLE_PROOF_CONTRACT_ERROR,
+            RECOVERABLE_PROOF_INGESTION_ERROR,
+        }
         and execution.get("provider_handle") == request.provider_handle
         and execution.get("workload_id") == workload_id
         and workload_id == result_workload_id

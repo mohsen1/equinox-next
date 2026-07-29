@@ -7,6 +7,7 @@ evidence-bound and turns rejected actions into explicit recovery decisions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, Literal
 
@@ -82,6 +83,35 @@ def _json_object(value: str) -> dict[str, Any] | None:
 
 class RepositoryRepairEnvironment(revision31.RepositoryRepairEnvironment):
     """Require observed paths and a fresh read before every edit."""
+
+    def _state_material(self, *, include_steps: bool) -> dict[str, Any]:
+        material = super()._state_material(include_steps=include_steps)
+        material["environment_revision"] = ENVIRONMENT_REVISION
+        return material
+
+    @classmethod
+    def restore(
+        cls,
+        task: Any,
+        snapshot: Any,
+    ) -> RepositoryRepairEnvironment:
+        observed_digest = "sha256:" + hashlib.sha256(snapshot.payload.encode()).hexdigest()
+        if observed_digest != snapshot.payload_digest:
+            raise ValueError("snapshot payload digest mismatch")
+        material = json.loads(snapshot.payload)
+        if snapshot.task_id != task.task_id or material.get("task_id") != task.task_id:
+            raise ValueError("snapshot task mismatch")
+        if material.get("environment_revision") != ENVIRONMENT_REVISION:
+            raise ValueError("snapshot environment revision mismatch")
+        environment = cls(task)
+        environment.files = dict(material["files"])
+        environment.terminal = bool(material["terminal"])
+        environment.terminal_reason = material["terminal_reason"]
+        environment.terminal_reward = float(material["terminal_reward"])
+        environment.steps = [frozen_environment.StepResult(**step) for step in material["steps"]]
+        if environment.capture_snapshot().payload_digest != snapshot.payload_digest:
+            raise ValueError("snapshot did not restore exactly")
+        return environment
 
     def policy_prompt(self, phase: Literal["shared_prefix", "continuation"]) -> str:
         phase_instruction = (
