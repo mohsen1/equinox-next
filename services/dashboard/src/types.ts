@@ -462,10 +462,22 @@ export interface ResearchBranchSibling {
   steps?: ResearchBranchStep[];
 }
 
+export interface ResearchComparisonCondition {
+  schema_version: 1;
+  condition_id: string;
+  short_label: string;
+  prefix_topology: "shared" | "independent";
+  branch_width: 1 | 4;
+  group_credit: string;
+  shared_prefix: boolean;
+}
+
 export interface ResearchBranchSnapshot {
   schema_version?: 1 | 2;
   snapshot_id: string;
   update: number;
+  collection_index?: number;
+  collection_count?: number;
   level: number;
   domain: string;
   task_id?: string;
@@ -492,9 +504,25 @@ export interface ResearchBranchSnapshot {
   } | null;
   shared_prefix?: {
     policy_generated: boolean;
+    completion_tokens?: number;
     accepted_diagnostic_actions: number;
     steps: ResearchBranchStep[];
+  } | null;
+  initial_state?: {
+    state_id: string;
+    payload_digest: string;
+    fidelity: string;
+    role: "matched_task_initial_state_not_decision_checkpoint";
+  } | null;
+  rollout_topology?: {
+    revision: string;
+    static_group_width: 1 | 4;
+    independent_model_generated_prefixes: boolean;
+    shared_model_generated_prefix: boolean;
+    sibling_group_relative_credit: boolean;
+    initial_state_matching: string;
   };
+  comparison_condition?: ResearchComparisonCondition;
   prompt?: string;
   expected_action?: string;
   best_sibling_index: number | null;
@@ -503,7 +531,9 @@ export interface ResearchBranchSnapshot {
   exclusion_reason?: string | null;
   replay?: boolean;
   curriculum_role?: string;
+  sampled_completion_tokens?: number;
   optimizer_update?: {
+    update?: number;
     applied: boolean;
     policy_signal_applied?: boolean;
     reference_anchor_applied?: boolean;
@@ -518,6 +548,12 @@ export interface ResearchBranchSnapshot {
       | null;
     retention_resolution_update?: number;
     retention_resolution_reason?: string;
+    attempted_policy_update_index?: number | null;
+    effective_policy_update_count_after_apply?: number | null;
+    retained_policy_update_count_before_validation?: number | null;
+    effective_policy_update_count_after_resolution?: number;
+    retained_policy_update_count_after_resolution?: number;
+    retention_rollback_count_after_resolution?: number;
     learning_rate?: number;
     policy_loss?: number;
     reinforce_loss?: number;
@@ -525,7 +561,7 @@ export interface ResearchBranchSnapshot {
     reference_kl_coefficient?: number;
     reference_anchor_scope?: string;
     policy_credit_scope?: string;
-    failed_sibling_policy_weight?: number;
+    failed_sibling_policy_weight?: number | "signed_trajectory_advantage";
     gradient_norm?: number;
     training_examples?: number;
     reference_examples?: number;
@@ -534,14 +570,52 @@ export interface ResearchBranchSnapshot {
     minimum_informative_groups?: number;
     policy_signal_group_count?: number;
     policy_signal_group_ids?: string[];
+    optimizer_input_group_count?: number;
+    optimizer_input_group_ids?: string[];
     pending_informative_group_count?: number;
     pending_informative_group_ids?: string[];
+    pending_optimizer_input_group_count?: number;
+    pending_optimizer_input_group_ids?: string[];
     pending_policy_examples?: number;
     pending_training_examples?: number;
+    optimizer_input_consumed_by_update?: number;
     policy_signal_consumed_by_update?: number;
     policy_signal_suppressed_reason?: string | null;
   } | null;
   siblings: ResearchBranchSibling[];
+}
+
+export interface ResearchPolicyUpdateLineage {
+  schema_version: 1 | 2;
+  attempted_policy_update_index: number;
+  update: number;
+  adapter_revision?: string;
+  objective_id?: string;
+  retention_transaction_revision?: string | null;
+  retention_lineage_status: "pending" | "retained" | "rolled_back" | null;
+  retention_transaction_disposition?:
+    | "retain"
+    | "provisional"
+    | "rollback"
+    | null;
+  retention_resolution_update?: number;
+  retention_resolution_reason?: string;
+  effective_policy_update_count_after_apply: number;
+  retained_policy_update_count_before_validation: number;
+  effective_policy_update_count_after_resolution?: number;
+  retained_policy_update_count_after_resolution?: number;
+  retention_rollback_count_after_resolution?: number;
+  policy_signal_group_count: number;
+  policy_signal_group_ids: string[];
+  optimizer_input_group_count?: number;
+  optimizer_input_group_ids: string[];
+  branch_snapshot_ids: string[];
+  training_examples?: number;
+  reference_examples?: number;
+  policy_loss?: number;
+  reinforce_loss?: number;
+  reference_kl?: number;
+  gradient_norm?: number;
 }
 
 export interface ResearchTrajectory {
@@ -550,6 +624,8 @@ export interface ResearchTrajectory {
   complexity_strategy: "adaptive";
   multi_step?: boolean;
   restored_continuations?: boolean;
+  comparison_condition?: ResearchComparisonCondition;
+  rollout_topology?: string;
   prefix_gradient?: boolean | null;
   replay_enabled?: boolean | null;
   environment_revision?: string | null;
@@ -570,6 +646,12 @@ export interface ResearchTrajectory {
   checkpoints: ResearchTrajectoryCheckpoint[];
   promotions: ResearchTrajectoryPromotion[];
   branch_snapshots: ResearchBranchSnapshot[];
+  branch_evidence_complete?: boolean;
+  branch_evidence_group_count?: number;
+  branch_evidence_limit?: number;
+  branch_evidence_payload_bytes?: number;
+  branch_evidence_payload_limit_bytes?: number;
+  policy_update_lineage?: ResearchPolicyUpdateLineage[];
   initial_by_level: Record<string, ResearchLevelObservation>;
   final_by_level: Record<string, ResearchLevelObservation>;
   policy_update_count?: number;
@@ -582,13 +664,17 @@ export interface ResearchTrajectory {
   optimizer_update_count?: number;
   pending_informative_group_count?: number;
   pending_informative_group_ids?: string[];
+  pending_optimizer_input_group_count?: number;
+  pending_optimizer_input_group_ids?: string[];
   pending_policy_example_count?: number;
   pending_training_example_count?: number;
   frontier_probe_task_groups?: number;
   informative_group_rate?: number;
   total_sampled_completions?: number;
   total_sampled_actions?: number;
+  total_sampled_completion_tokens?: number;
   total_post_branch_actions?: number;
+  discarded_sampled_completion_tokens?: number;
 }
 
 export interface ResearchTrajectoryResponse {

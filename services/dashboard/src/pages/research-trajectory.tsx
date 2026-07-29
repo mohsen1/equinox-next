@@ -27,6 +27,7 @@ import {
 } from "../components";
 import { Link, useParams, useSearchParams } from "../router";
 import type {
+  ResearchBranchSnapshot,
   ResearchLevelObservation,
   ResearchTrajectory,
   ResearchTrajectoryCheckpoint,
@@ -133,12 +134,10 @@ export function ResearchTrajectoryPage() {
   const selectedStep =
     steps[selectedIndex] ?? steps.at(-1) ?? steps.at(0) ?? null;
   const branchSnapshots = trajectory?.branch_snapshots ?? [];
-  const selectedSnapshot =
-    branchSnapshots.find(
-      (snapshot) => snapshot.snapshot_id === params.get("branch"),
-    ) ??
-    branchSnapshots.at(-1) ??
-    null;
+  const selectedSnapshot = resolveBranchSnapshot(
+    branchSnapshots,
+    params.get("branch"),
+  );
   const siblingParam = params.get("sibling");
   const requestedSibling =
     siblingParam === null ? undefined : Number(siblingParam);
@@ -433,6 +432,7 @@ export function ResearchTrajectoryPage() {
                 selectedSibling={selectedSibling}
                 selectedActionId={selectedActionId}
                 view={view}
+                policyUpdateLineage={trajectory.policy_update_lineage}
                 selectSibling={selectSibling}
                 selectAction={selectBranchAction}
               />
@@ -447,6 +447,19 @@ export function ResearchTrajectoryPage() {
         ) : null}
       </AsyncState>
     </>
+  );
+}
+
+export function resolveBranchSnapshot(
+  branchSnapshots: ResearchBranchSnapshot[],
+  requestedSnapshotId: string | null,
+): ResearchBranchSnapshot | null {
+  return (
+    branchSnapshots.find(
+      (snapshot) => snapshot.snapshot_id === requestedSnapshotId,
+    ) ??
+    branchSnapshots.at(-1) ??
+    null
   );
 }
 

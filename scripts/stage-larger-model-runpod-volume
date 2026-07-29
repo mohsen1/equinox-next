@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -x "$repository_root/.venv/bin/python3" ]]; then
+  PATH="$repository_root/.venv/bin:$PATH"
+fi
+export PYTHONPATH="$repository_root${PYTHONPATH:+:$PYTHONPATH}"
+
+exec python3 -m research.runpod.volume_stage_operator "$@"

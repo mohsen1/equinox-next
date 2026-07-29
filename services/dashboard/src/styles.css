@@ -1480,6 +1480,28 @@ h3 {
   font-size: 0.9375rem;
 }
 
+.research-branch-initial-node {
+  display: grid;
+  width: 156px;
+  min-height: 72px;
+  align-content: center;
+  gap: 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.research-branch-initial-node strong {
+  font-size: 0.8125rem;
+}
+
+.research-branch-initial-node small {
+  color: var(--ink-muted);
+  font-size: 0.6875rem;
+}
+
 .research-branch-sibling-node {
   display: grid;
   width: 194px;
@@ -1542,6 +1564,7 @@ h3 {
 }
 
 .research-branch-task-node .react-flow__handle,
+.research-branch-initial-node .react-flow__handle,
 .research-branch-sibling-node .react-flow__handle,
 .research-branch-checkpoint-node .react-flow__handle,
 .research-branch-action-node .react-flow__handle {
@@ -1881,6 +1904,53 @@ h3 {
   overflow-wrap: anywhere;
   font-size: 0.75rem;
   font-weight: 650;
+}
+
+.optimizer-lineage-table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.6875rem;
+}
+
+.optimizer-lineage-table caption {
+  color: var(--ink-muted);
+  padding-bottom: 5px;
+  text-align: left;
+}
+
+.optimizer-lineage-table th,
+.optimizer-lineage-table td {
+  border-top: 1px solid var(--rule);
+  padding: 6px 8px 6px 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.optimizer-lineage-table thead th {
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+
+.optimizer-lineage-table tbody th {
+  width: 42%;
+  font-weight: 400;
+}
+
+.optimizer-lineage-table td:nth-child(2) {
+  width: 18%;
+  color: var(--ink-muted);
+}
+
+.optimizer-lineage-table tr.policy-signal td:nth-child(2) {
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.optimizer-lineage-table code {
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .branch-failure-list {

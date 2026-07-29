@@ -611,6 +611,22 @@ retained, and rolled-back policy updates. The pilot uses learning rate `1e-5` an
 reference-KL coefficient `1.0`; static branch width, curriculum controller, credit
 scope, verifier, and final-test isolation do not change.
 
+Profile `qwen2.5-coder-7b-runpod-h100@8` adopts the complete-evidence trainer under
+screen `larger-model-eligibility-screen@8` and pilot
+`runpod-repository-repair-large-model-pilot@6`. Objective
+`verified-repair-chain-transactional-retention-policy-gradient@18` and transaction
+`adapter-optimizer-policy-lineage@1` remain unchanged. Every active, adjacent-probe, and
+replay branch group completed by an update is now retained. Every group that actually
+contributes an optimizer input is bound to that attempted update; resume and completion
+reconstruct the update lineage from those groups and reject missing, duplicate,
+oversized, or unresolved evidence. The bounded contract
+permits at most 1,024 branch groups and a 16 MiB serialized payload, while the pinned
+pilot can collect at most 280 groups. The trainer also persists total sampled completion
+tokens and reconciles that counter against the complete branch evidence, allowing a
+future independent-prefix run to match realized sampling cost. This revision changes
+evidence completeness, not the learning rule, static `K=4`, adaptive curriculum, or
+held-out acceptance criteria.
+
 Failed provider executions produce a separate immutable `operational_failure@1`
 receipt after cleanup. It preserves the last structured progress, separates remote
 workload failure from operator or teardown failure, and binds the provider and staged

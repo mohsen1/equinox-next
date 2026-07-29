@@ -364,9 +364,17 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "retained_checkpoint_update": result.get("retained_checkpoint_update"),
         "retention_rollback_count": result.get("retention_rollback_count"),
         "retention_transaction_revision": result.get("retention_transaction_revision"),
+        "branch_evidence_complete": result.get("branch_evidence_complete"),
+        "branch_evidence_group_count": result.get("branch_evidence_group_count"),
+        "branch_evidence_limit": result.get("branch_evidence_limit"),
+        "branch_evidence_payload_bytes": result.get("branch_evidence_payload_bytes"),
+        "branch_evidence_payload_limit_bytes": result.get("branch_evidence_payload_limit_bytes"),
+        "policy_update_lineage": result.get("policy_update_lineage"),
         "optimizer_update_count": result.get("optimizer_update_count"),
         "pending_informative_group_count": result.get("pending_informative_group_count"),
         "pending_informative_group_ids": result.get("pending_informative_group_ids"),
+        "pending_optimizer_input_group_count": result.get("pending_optimizer_input_group_count"),
+        "pending_optimizer_input_group_ids": result.get("pending_optimizer_input_group_ids"),
         "pending_policy_example_count": result.get("pending_policy_example_count"),
         "pending_training_example_count": result.get("pending_training_example_count"),
         "action_protocol_validity_rate": result.get("action_protocol_validity_rate"),
@@ -427,9 +435,11 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
             "maximum_measured_final_evaluation_reserve_seconds"
         ),
         "total_sampled_actions": result.get("total_sampled_actions"),
+        "total_sampled_completion_tokens": result.get("total_sampled_completion_tokens"),
         "discarded_task_groups": result.get("discarded_task_groups"),
         "discarded_sampled_actions": result.get("discarded_sampled_actions"),
         "discarded_post_branch_actions": result.get("discarded_post_branch_actions"),
+        "discarded_sampled_completion_tokens": result.get("discarded_sampled_completion_tokens"),
         "multi_step": result.get("multi_step"),
         "restored_continuations": result.get("restored_continuations"),
         "restored_branching_observed": result.get("restored_branching_observed"),
@@ -493,6 +503,16 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
             else []
         ),
         "branch_snapshots": persisted_branch_snapshots,
+        "branch_evidence_complete": result.get("branch_evidence_complete"),
+        "branch_evidence_group_count": result.get("branch_evidence_group_count"),
+        "branch_evidence_limit": result.get("branch_evidence_limit"),
+        "branch_evidence_payload_bytes": result.get("branch_evidence_payload_bytes"),
+        "branch_evidence_payload_limit_bytes": result.get("branch_evidence_payload_limit_bytes"),
+        "policy_update_lineage": (
+            [item for item in result.get("policy_update_lineage", []) if isinstance(item, dict)]
+            if isinstance(result.get("policy_update_lineage"), list)
+            else []
+        ),
         "initial_by_level": initial_by_level if isinstance(initial_by_level, dict) else {},
         "final_by_level": final_by_level if isinstance(final_by_level, dict) else {},
         "policy_update_count": result.get("policy_update_count"),
@@ -506,15 +526,19 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         "frontier_probe_task_groups": result.get("frontier_probe_task_groups"),
         "pending_informative_group_count": result.get("pending_informative_group_count"),
         "pending_informative_group_ids": result.get("pending_informative_group_ids"),
+        "pending_optimizer_input_group_count": result.get("pending_optimizer_input_group_count"),
+        "pending_optimizer_input_group_ids": result.get("pending_optimizer_input_group_ids"),
         "pending_policy_example_count": result.get("pending_policy_example_count"),
         "pending_training_example_count": result.get("pending_training_example_count"),
         "informative_group_rate": result.get("informative_group_rate"),
         "total_sampled_completions": result.get("total_sampled_completions"),
         "total_sampled_actions": result.get("total_sampled_actions"),
+        "total_sampled_completion_tokens": result.get("total_sampled_completion_tokens"),
         "total_post_branch_actions": result.get("total_post_branch_actions"),
         "discarded_task_groups": result.get("discarded_task_groups"),
         "discarded_sampled_actions": result.get("discarded_sampled_actions"),
         "discarded_post_branch_actions": result.get("discarded_post_branch_actions"),
+        "discarded_sampled_completion_tokens": result.get("discarded_sampled_completion_tokens"),
     }
 
 

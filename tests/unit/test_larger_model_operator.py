@@ -286,7 +286,7 @@ def test_larger_model_direct_launch_caps_are_manifest_pinned() -> None:
     assert ".optimizer_contract.reference_kl_coefficient == 0.2" not in launcher
 
 
-def test_larger_model_launcher_binds_profile_seven_interface_and_transport_chain() -> None:
+def test_larger_model_launcher_binds_profile_eight_interface_and_transport_chain() -> None:
     manifest = load_manifest()
     launcher = LAUNCHER.read_text(encoding="utf-8")
     larger_model_case = launcher[
@@ -295,9 +295,9 @@ def test_larger_model_launcher_binds_profile_seven_interface_and_transport_chain
         )
     ]
 
-    assert manifest["profile_id"] == "qwen2.5-coder-7b-runpod-h100@7"
-    assert manifest["screen"]["workload_revision"] == "larger-model-eligibility-screen@7"
-    assert manifest["pilot"]["workload_revision"] == "runpod-repository-repair-large-model-pilot@5"
+    assert manifest["profile_id"] == "qwen2.5-coder-7b-runpod-h100@8"
+    assert manifest["screen"]["workload_revision"] == "larger-model-eligibility-screen@8"
+    assert manifest["pilot"]["workload_revision"] == "runpod-repository-repair-large-model-pilot@6"
     assert (
         manifest["pilot"]["objective_id"]
         == "verified-repair-chain-transactional-retention-policy-gradient@18"

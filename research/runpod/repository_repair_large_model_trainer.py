@@ -129,6 +129,8 @@ MAXIMUM_RECENT_MALFORMED_ACTION_RATE = 0.05
 MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS = 2
 TRANSACTIONAL_RETENTION_REVISION = "adapter-optimizer-policy-lineage@1"
 ACTIVE_RETENTION_TRANSACTION_REVISION: str | None = None
+MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS = 1_024
+MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES = 16 * 1_024 * 1_024
 PROGRESS_PATH = os.environ.get("EQUINOX_PROGRESS_PATH")
 
 
@@ -168,6 +170,19 @@ def positive_environment_integer(
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return value
+
+
+def maximum_branch_groups_for_configuration(
+    *,
+    maximum_updates: int,
+    training_tasks_per_update: int,
+    replay_tasks_per_level: int,
+) -> int:
+    if maximum_updates < 1 or training_tasks_per_update < 1 or replay_tasks_per_level < 0:
+        raise ValueError("branch evidence configuration is invalid")
+    return maximum_updates * (
+        training_tasks_per_update + MAXIMUM_COMPLEXITY_LEVEL * replay_tasks_per_level
+    )
 
 
 @dataclass(frozen=True)
@@ -264,6 +279,16 @@ def configure_from_environment() -> RuntimeConfiguration:
         DEFAULT_MAX_UPDATES,
         maximum=500,
     )
+    maximum_branch_groups = maximum_branch_groups_for_configuration(
+        maximum_updates=maximum_updates,
+        training_tasks_per_update=training_tasks_per_update,
+        replay_tasks_per_level=replay_tasks_per_level,
+    )
+    if maximum_branch_groups > MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS:
+        raise ValueError(
+            "the configured run can exceed the bounded branch-evidence capacity "
+            f"({maximum_branch_groups} > {MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS})"
+        )
     mastery_windows = positive_environment_integer(
         "EQUINOX_RL_MASTERY_WINDOWS",
         DEFAULT_MASTERY_WINDOWS,
@@ -319,6 +344,7 @@ class GeneratedAction:
 class WeightedAction:
     generated: GeneratedAction
     weight: float
+    optimizer_input_group_id: str | None = None
 
 
 @dataclass
@@ -391,6 +417,27 @@ def sampled_action_count(collections: list[BranchCollection]) -> int:
     return sum(
         len(collection.prefix.steps)
         + sum(len(sibling.steps) - len(collection.prefix.steps) for sibling in collection.siblings)
+        for collection in collections
+    )
+
+
+def generated_action_completion_tokens(generated: GeneratedAction) -> int:
+    if any(type(value) is not int or value not in {0, 1} for value in generated.completion_mask):
+        raise RuntimeError("generated action completion mask is invalid")
+    return sum(generated.completion_mask)
+
+
+def sampled_completion_token_count(collections: list[BranchCollection]) -> int:
+    return sum(
+        sum(
+            generated_action_completion_tokens(generated)
+            for generated in collection.generated_prefix
+        )
+        + sum(
+            generated_action_completion_tokens(generated)
+            for generated_actions in collection.generated_by_sibling
+            for generated in generated_actions
+        )
         for collection in collections
     )
 
@@ -548,11 +595,12 @@ def lightweight_validation_history(history: list[dict[str, Any]]) -> list[dict[s
 
 def discarded_collection_accounting(
     collections: list[BranchCollection],
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     return (
         len(collections),
         sampled_action_count(collections),
         post_branch_action_count(collections),
+        sampled_completion_token_count(collections),
     )
 
 
@@ -1112,6 +1160,24 @@ def policy_lineage_counters_from_resume(
     return attempted, effective, retained, rollback_count
 
 
+def completion_token_counters_from_resume(
+    state: dict[str, Any] | None,
+) -> tuple[int, int]:
+    if state is None:
+        return 0, 0
+    total = state.get("total_sampled_completion_tokens")
+    discarded = state.get("discarded_sampled_completion_tokens")
+    if (
+        type(total) is not int
+        or total < 0
+        or type(discarded) is not int
+        or discarded < 0
+        or discarded > total
+    ):
+        raise RuntimeError("training checkpoint completion-token counters are invalid")
+    return total, discarded
+
+
 def validate_retained_transaction_state(
     transaction: object,
     *,
@@ -1157,7 +1223,7 @@ def restore_retention_transaction(
     *,
     restore_trainable_state: Callable[[dict[str, Any]], None],
     optimizer: Any,
-) -> tuple[int, list[WeightedAction], int, list[str], dict[str, Any]]:
+) -> tuple[int, list[WeightedAction], int, list[str], list[str], dict[str, Any]]:
     retained_update = transaction.get("update")
     retained_effective_count = transaction.get("effective_policy_update_count")
     trainable_state = transaction.get("trainable_state")
@@ -1175,7 +1241,7 @@ def restore_retention_transaction(
         raise RuntimeError("retained transaction state is invalid")
     restore_trainable_state(trainable_state)
     optimizer.load_state_dict(copy.deepcopy(optimizer_state))
-    return retained_effective_count, [], 0, [], copy.deepcopy(retained_observation)
+    return retained_effective_count, [], 0, [], [], copy.deepcopy(retained_observation)
 
 
 def annotate_retention_window_disposition(
@@ -1187,10 +1253,15 @@ def annotate_retention_window_disposition(
     if disposition not in {"retain", "provisional", "rollback"}:
         raise ValueError("unknown retention-window disposition")
     for snapshot in branch_snapshots:
-        if snapshot.get("update") != update:
-            continue
         optimizer_update = snapshot.get("optimizer_update")
-        if isinstance(optimizer_update, dict):
+        if (
+            isinstance(optimizer_update, dict)
+            and optimizer_update.get(
+                "update",
+                snapshot.get("update"),
+            )
+            == update
+        ):
             optimizer_update["retention_transaction_disposition"] = disposition
 
 
@@ -1200,11 +1271,24 @@ def resolve_pending_branch_snapshot_lineage(
     status: str,
     resolution_update: int,
     reason: str,
+    effective_policy_update_count: int | None = None,
+    retained_policy_update_count: int | None = None,
+    retention_rollback_count: int | None = None,
 ) -> int:
     if status not in {"retained", "rolled_back"}:
         raise ValueError("retention lineage can only resolve as retained or rolled back")
     if resolution_update < 0 or not reason:
         raise ValueError("retention lineage resolution metadata is invalid")
+    resolution_counters = (
+        effective_policy_update_count,
+        retained_policy_update_count,
+        retention_rollback_count,
+    )
+    if any(value is not None for value in resolution_counters) and (
+        any(type(value) is not int or value < 0 for value in resolution_counters)
+        or not retained_policy_update_count <= effective_policy_update_count
+    ):
+        raise ValueError("retention lineage resolution counters are invalid")
     resolved = 0
     for snapshot in branch_snapshots:
         optimizer_update = snapshot.get("optimizer_update")
@@ -1215,6 +1299,14 @@ def resolve_pending_branch_snapshot_lineage(
         optimizer_update["retention_lineage_status"] = status
         optimizer_update["retention_resolution_update"] = resolution_update
         optimizer_update["retention_resolution_reason"] = reason
+        if effective_policy_update_count is not None:
+            optimizer_update["effective_policy_update_count_after_resolution"] = (
+                effective_policy_update_count
+            )
+            optimizer_update["retained_policy_update_count_after_resolution"] = (
+                retained_policy_update_count
+            )
+            optimizer_update["retention_rollback_count_after_resolution"] = retention_rollback_count
         resolved += 1
     return resolved
 
@@ -1667,7 +1759,11 @@ def policy_examples(collection: BranchCollection) -> list[WeightedAction]:
             continue
         per_action_weight = per_solved_trajectory_weight / len(fault_fixing_edits)
         examples.extend(
-            WeightedAction(generated=generated, weight=per_action_weight)
+            WeightedAction(
+                generated=generated,
+                weight=per_action_weight,
+                optimizer_input_group_id=collection.task.task_id,
+            )
             for generated in fault_fixing_edits
         )
     return examples
@@ -1714,17 +1810,18 @@ def reference_anchored_examples(
     for example in policy_training_examples:
         policy_weights_by_identity.setdefault(id(example.generated), []).append(example.weight)
     reference_actions = [
-        generated
+        (collection.task.task_id, generated)
         for collection in collections
         for generated in accepted_reference_actions(collection)
     ]
     anchored: list[WeightedAction] = []
-    for generated in reference_actions:
+    for group_id, generated in reference_actions:
         weights = policy_weights_by_identity.get(id(generated), [])
         anchored.append(
             WeightedAction(
                 generated=generated,
                 weight=weights.pop(0) if weights else 0.0,
+                optimizer_input_group_id=group_id,
             )
         )
     if any(weights for weights in policy_weights_by_identity.values()):
@@ -1732,11 +1829,99 @@ def reference_anchored_examples(
     return anchored, len(policy_training_examples)
 
 
+def optimizer_input_group_ids_from_examples(
+    training_examples: list[WeightedAction],
+) -> list[str]:
+    group_ids: list[str] = []
+    for example in training_examples:
+        group_id = example.optimizer_input_group_id
+        if not isinstance(group_id, str) or not group_id:
+            raise ValueError("optimizer input example is missing its task group identity")
+        if not group_ids or group_ids[-1] != group_id:
+            if group_id in group_ids:
+                raise ValueError("optimizer input examples are not grouped by task identity")
+            group_ids.append(group_id)
+    return group_ids
+
+
+def validate_pending_optimizer_batch(
+    pending_training_examples: list[WeightedAction],
+    pending_policy_example_count: int,
+    pending_informative_group_ids: list[str],
+    pending_optimizer_input_group_ids: list[str],
+    *,
+    minimum_informative_groups: int,
+) -> None:
+    if minimum_informative_groups < 1:
+        raise ValueError("minimum informative groups must be positive")
+    if (
+        type(pending_policy_example_count) is not int
+        or pending_policy_example_count < 0
+        or pending_policy_example_count > len(pending_training_examples)
+    ):
+        raise ValueError("pending policy example count is invalid")
+    if not all(isinstance(example, WeightedAction) for example in pending_training_examples):
+        raise ValueError("pending training examples are invalid")
+    if bool(pending_training_examples) != bool(pending_optimizer_input_group_ids):
+        raise ValueError("pending training examples and optimizer input identities must agree")
+    if (
+        optimizer_input_group_ids_from_examples(pending_training_examples)
+        != pending_optimizer_input_group_ids
+    ):
+        raise ValueError("pending optimizer input identities do not match the pending examples")
+    if bool(pending_policy_example_count) != bool(pending_informative_group_ids):
+        raise ValueError("pending policy example count and signal group identities must agree")
+    if len(pending_informative_group_ids) >= minimum_informative_groups:
+        raise ValueError("a complete pending policy batch should already have been applied")
+    if len(set(pending_informative_group_ids)) != len(pending_informative_group_ids) or not all(
+        isinstance(group_id, str) and group_id for group_id in pending_informative_group_ids
+    ):
+        raise ValueError("pending informative group identities must be unique non-empty strings")
+    if len(set(pending_optimizer_input_group_ids)) != len(
+        pending_optimizer_input_group_ids
+    ) or not all(
+        isinstance(group_id, str) and group_id for group_id in pending_optimizer_input_group_ids
+    ):
+        raise ValueError("pending optimizer input identities must be unique non-empty strings")
+    if not set(pending_informative_group_ids).issubset(pending_optimizer_input_group_ids):
+        raise ValueError("pending policy signal groups must be pending optimizer inputs")
+
+
+def pending_optimizer_batch_from_resume(
+    state: dict[str, Any] | None,
+    *,
+    minimum_informative_groups: int,
+) -> tuple[list[WeightedAction], int, list[str], list[str]]:
+    if state is None:
+        return [], 0, [], []
+    try:
+        pending_training_examples = list(state.get("pending_training_examples", []))
+        pending_policy_example_count = state.get("pending_policy_example_count", 0)
+        pending_informative_group_ids = list(state.get("pending_informative_group_ids", []))
+        pending_optimizer_input_group_ids = list(state.get("pending_optimizer_input_group_ids", []))
+        validate_pending_optimizer_batch(
+            pending_training_examples,
+            pending_policy_example_count,
+            pending_informative_group_ids,
+            pending_optimizer_input_group_ids,
+            minimum_informative_groups=minimum_informative_groups,
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("training checkpoint pending optimizer batch is invalid") from exc
+    return (
+        pending_training_examples,
+        pending_policy_example_count,
+        pending_informative_group_ids,
+        pending_optimizer_input_group_ids,
+    )
+
+
 def accumulated_reference_anchored_examples(
     collections: list[BranchCollection],
     pending_training_examples: list[WeightedAction],
     pending_policy_example_count: int,
     pending_informative_group_ids: list[str],
+    pending_optimizer_input_group_ids: list[str],
     *,
     minimum_informative_groups: int,
 ) -> tuple[
@@ -1746,19 +1931,16 @@ def accumulated_reference_anchored_examples(
     int,
     list[str],
     list[str],
+    list[str],
+    list[str],
 ]:
-    if minimum_informative_groups < 1:
-        raise ValueError("minimum informative groups must be positive")
-    if pending_policy_example_count < 0:
-        raise ValueError("pending policy example count cannot be negative")
-    if bool(pending_training_examples) != bool(pending_informative_group_ids):
-        raise ValueError("pending training examples and group identities must agree")
-    if bool(pending_policy_example_count) != bool(pending_informative_group_ids):
-        raise ValueError("pending policy example count and group identities must agree")
-    if len(pending_informative_group_ids) >= minimum_informative_groups:
-        raise ValueError("a complete pending policy batch should already have been applied")
-    if len(set(pending_informative_group_ids)) != len(pending_informative_group_ids):
-        raise ValueError("pending informative group identities must be unique")
+    validate_pending_optimizer_batch(
+        pending_training_examples,
+        pending_policy_example_count,
+        pending_informative_group_ids,
+        pending_optimizer_input_group_ids,
+        minimum_informative_groups=minimum_informative_groups,
+    )
 
     current_policy_groups = [
         (collection.task.task_id, examples)
@@ -1772,6 +1954,17 @@ def accumulated_reference_anchored_examples(
     current_anchored, current_policy_example_count = reference_anchored_examples(
         collections,
     )
+    current_optimizer_input_group_ids = optimizer_input_group_ids_from_examples(current_anchored)
+    accumulated_optimizer_input_group_ids = [
+        *pending_optimizer_input_group_ids,
+        *current_optimizer_input_group_ids,
+    ]
+    if len(set(accumulated_optimizer_input_group_ids)) != len(
+        accumulated_optimizer_input_group_ids
+    ):
+        raise RuntimeError("an optimizer input task group was sampled more than once")
+    if not set(accumulated_group_ids).issubset(accumulated_optimizer_input_group_ids):
+        raise RuntimeError("a policy signal group is missing accepted reference actions")
     accumulated_examples = [*pending_training_examples, *current_anchored]
     accumulated_policy_example_count = pending_policy_example_count + current_policy_example_count
     if not accumulated_group_ids:
@@ -1782,6 +1975,8 @@ def accumulated_reference_anchored_examples(
             0,
             [],
             [],
+            [],
+            current_optimizer_input_group_ids,
         )
     if len(accumulated_group_ids) < minimum_informative_groups:
         return (
@@ -1790,6 +1985,8 @@ def accumulated_reference_anchored_examples(
             accumulated_examples,
             accumulated_policy_example_count,
             accumulated_group_ids,
+            [],
+            accumulated_optimizer_input_group_ids,
             [],
         )
 
@@ -1800,6 +1997,8 @@ def accumulated_reference_anchored_examples(
         0,
         [],
         accumulated_group_ids,
+        [],
+        accumulated_optimizer_input_group_ids,
     )
 
 
@@ -1949,6 +2148,10 @@ def serialize_branch_group(
         ),
         "shared_prefix": {
             "policy_generated": True,
+            "completion_tokens": sum(
+                generated_action_completion_tokens(generated)
+                for generated in collection.generated_prefix
+            ),
             "checkpoint_strategy": SHARED_PREFIX_CHECKPOINT_STRATEGY,
             "required_diagnostic_actions": branch_checkpoint_diagnostic_actions(collection.task),
             "required_fault_source_reads": len(collection.task.faults),
@@ -1967,11 +2170,303 @@ def serialize_branch_group(
         "exclusion_reason": collection.exclusion_reason,
         "replay": collection.replay,
         "curriculum_role": collection.curriculum_role,
+        "sampled_completion_tokens": sampled_completion_token_count([collection]),
         "optimizer_update": optimizer_update,
         "siblings": [
             serialized_sibling(index, sibling) for index, sibling in enumerate(collection.siblings)
         ],
     }
+
+
+def append_complete_branch_evidence(
+    branch_snapshots: list[dict[str, Any]],
+    snapshots: list[dict[str, Any]],
+    *,
+    maximum_snapshots: int = MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS,
+    maximum_payload_bytes: int = MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES,
+) -> None:
+    if maximum_snapshots < 1 or maximum_payload_bytes < 2:
+        raise ValueError("branch evidence capacity must be positive")
+    existing_ids = {
+        snapshot.get("snapshot_id")
+        for snapshot in branch_snapshots
+        if isinstance(snapshot.get("snapshot_id"), str)
+    }
+    incoming_ids = [snapshot.get("snapshot_id") for snapshot in snapshots]
+    if (
+        any(not isinstance(snapshot_id, str) or not snapshot_id for snapshot_id in incoming_ids)
+        or len(set(incoming_ids)) != len(incoming_ids)
+        or existing_ids.intersection(incoming_ids)
+    ):
+        raise RuntimeError("branch evidence snapshot identities must be unique")
+    if len(branch_snapshots) + len(snapshots) > maximum_snapshots:
+        raise RuntimeError("BRANCH_EVIDENCE_CAPACITY_EXCEEDED")
+    candidate_snapshots = [*branch_snapshots, *snapshots]
+    if branch_evidence_payload_size_bytes(candidate_snapshots) > maximum_payload_bytes:
+        raise RuntimeError("BRANCH_EVIDENCE_PAYLOAD_CAPACITY_EXCEEDED")
+    branch_snapshots.extend(snapshots)
+
+
+def branch_evidence_payload_size_bytes(
+    branch_snapshots: list[dict[str, Any]],
+) -> int:
+    return len(
+        json.dumps(
+            branch_snapshots,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    )
+
+
+def branch_evidence_completion_token_count(
+    branch_snapshots: list[dict[str, Any]],
+) -> int:
+    total = 0
+    for snapshot in branch_snapshots:
+        sampled_tokens = snapshot.get("sampled_completion_tokens")
+        shared_prefix = snapshot.get("shared_prefix")
+        siblings = snapshot.get("siblings")
+        if (
+            type(sampled_tokens) is not int
+            or sampled_tokens < 0
+            or not isinstance(shared_prefix, dict)
+            or type(shared_prefix.get("completion_tokens")) is not int
+            or shared_prefix["completion_tokens"] < 0
+            or not isinstance(siblings, list)
+        ):
+            raise RuntimeError("branch evidence completion-token accounting is invalid")
+        reconstructed_tokens = shared_prefix["completion_tokens"]
+        for sibling in siblings:
+            if (
+                not isinstance(sibling, dict)
+                or type(sibling.get("completion_tokens")) is not int
+                or sibling["completion_tokens"] < 0
+            ):
+                raise RuntimeError("branch evidence sibling token accounting is invalid")
+            reconstructed_tokens += sibling["completion_tokens"]
+        if reconstructed_tokens != sampled_tokens:
+            raise RuntimeError("branch evidence completion-token total is inconsistent")
+        total += sampled_tokens
+    return total
+
+
+def validate_sampled_completion_token_accounting(
+    branch_snapshots: list[dict[str, Any]],
+    *,
+    total_sampled_completion_tokens: int,
+    discarded_sampled_completion_tokens: int,
+) -> int:
+    if (
+        total_sampled_completion_tokens < 0
+        or discarded_sampled_completion_tokens < 0
+        or discarded_sampled_completion_tokens > total_sampled_completion_tokens
+    ):
+        raise RuntimeError("sampled completion-token counters are invalid")
+    persisted_tokens = branch_evidence_completion_token_count(branch_snapshots)
+    if persisted_tokens + discarded_sampled_completion_tokens != total_sampled_completion_tokens:
+        raise RuntimeError("sampled completion tokens do not reconcile with branch evidence")
+    return persisted_tokens
+
+
+def bind_optimizer_input_groups_to_update(
+    branch_snapshots: list[dict[str, Any]],
+    *,
+    optimizer_input_group_ids: list[str],
+    optimizer_update: dict[str, Any],
+) -> None:
+    declared_optimizer_input_group_ids = optimizer_update.get("optimizer_input_group_ids")
+    declared_optimizer_input_group_count = optimizer_update.get("optimizer_input_group_count")
+    policy_signal_group_ids = optimizer_update.get("policy_signal_group_ids")
+    if (
+        not isinstance(declared_optimizer_input_group_ids, list)
+        or declared_optimizer_input_group_ids != optimizer_input_group_ids
+        or declared_optimizer_input_group_count != len(optimizer_input_group_ids)
+        or len(set(optimizer_input_group_ids)) != len(optimizer_input_group_ids)
+        or not all(isinstance(group_id, str) and group_id for group_id in optimizer_input_group_ids)
+    ):
+        raise RuntimeError("optimizer input group identities are invalid")
+    if (
+        not isinstance(policy_signal_group_ids, list)
+        or len(set(policy_signal_group_ids)) != len(policy_signal_group_ids)
+        or not all(isinstance(group_id, str) and group_id for group_id in policy_signal_group_ids)
+        or not set(policy_signal_group_ids).issubset(optimizer_input_group_ids)
+    ):
+        raise RuntimeError("policy signal group identities are invalid")
+    if not optimizer_input_group_ids:
+        return
+    update = optimizer_update.get("update")
+    attempted_index = optimizer_update.get("attempted_policy_update_index")
+    if (
+        type(update) is not int
+        or update < 1
+        or (
+            attempted_index is not None
+            and (type(attempted_index) is not int or attempted_index < 1)
+        )
+        or (policy_signal_group_ids and attempted_index is None)
+    ):
+        raise RuntimeError("optimizer input lineage is incomplete")
+    snapshots_by_group_id = {
+        snapshot.get("task_id"): snapshot
+        for snapshot in branch_snapshots
+        if snapshot.get("task_id") in optimizer_input_group_ids
+    }
+    if set(snapshots_by_group_id) != set(optimizer_input_group_ids):
+        raise RuntimeError("optimizer input group is missing full branch evidence")
+    for group_id in optimizer_input_group_ids:
+        snapshot = snapshots_by_group_id[group_id]
+        previous_optimizer_update = snapshot.get("optimizer_update")
+        previous_consumed_update = (
+            previous_optimizer_update.get("optimizer_input_consumed_by_update")
+            if isinstance(previous_optimizer_update, dict)
+            else None
+        )
+        if previous_consumed_update not in {None, update}:
+            raise RuntimeError("optimizer input group was consumed by more than one update")
+        snapshot["optimizer_update"] = {
+            **copy.deepcopy(optimizer_update),
+            "optimizer_input_consumed_by_update": update,
+            **(
+                {"policy_signal_consumed_by_update": update}
+                if group_id in policy_signal_group_ids
+                else {}
+            ),
+        }
+
+
+def policy_update_lineage_from_branch_evidence(
+    branch_snapshots: list[dict[str, Any]],
+    *,
+    attempted_policy_update_count: int,
+    effective_policy_update_count: int,
+    retained_policy_update_count: int,
+) -> list[dict[str, Any]]:
+    if not 0 <= retained_policy_update_count <= effective_policy_update_count:
+        raise RuntimeError("policy update lineage counters are invalid")
+    if not effective_policy_update_count <= attempted_policy_update_count:
+        raise RuntimeError("policy update lineage counters are invalid")
+    records: dict[int, dict[str, Any]] = {}
+    stable_keys = (
+        "update",
+        "adapter_revision",
+        "objective_id",
+        "retention_transaction_revision",
+        "retention_lineage_status",
+        "retention_transaction_disposition",
+        "retention_resolution_update",
+        "retention_resolution_reason",
+        "effective_policy_update_count_after_apply",
+        "retained_policy_update_count_before_validation",
+        "effective_policy_update_count_after_resolution",
+        "retained_policy_update_count_after_resolution",
+        "retention_rollback_count_after_resolution",
+        "policy_signal_group_count",
+        "policy_signal_group_ids",
+        "optimizer_input_group_count",
+        "optimizer_input_group_ids",
+        "training_examples",
+        "reference_examples",
+        "policy_loss",
+        "reinforce_loss",
+        "reference_kl",
+        "gradient_norm",
+    )
+    for snapshot in branch_snapshots:
+        optimizer_update = snapshot.get("optimizer_update")
+        if not isinstance(optimizer_update, dict):
+            continue
+        attempted_index = optimizer_update.get("attempted_policy_update_index")
+        if attempted_index is None:
+            continue
+        if type(attempted_index) is not int or attempted_index < 1:
+            raise RuntimeError("policy update attempt identity is invalid")
+        task_id = snapshot.get("task_id")
+        snapshot_id = snapshot.get("snapshot_id")
+        if not isinstance(task_id, str) or not isinstance(snapshot_id, str):
+            raise RuntimeError("policy update input is missing branch identity")
+        if optimizer_update.get("optimizer_input_consumed_by_update") != optimizer_update.get(
+            "update"
+        ):
+            raise RuntimeError("optimizer input consumption is missing exact update identity")
+        material = {key: copy.deepcopy(optimizer_update.get(key)) for key in stable_keys}
+        existing = records.get(attempted_index)
+        if existing is None:
+            records[attempted_index] = {
+                "schema_version": 2,
+                "attempted_policy_update_index": attempted_index,
+                **material,
+                "_reconstructed_optimizer_input_group_ids": [task_id],
+                "branch_snapshot_ids": [snapshot_id],
+            }
+            continue
+        if any(existing.get(key) != material[key] for key in stable_keys):
+            raise RuntimeError("policy update input groups disagree on optimizer lineage")
+        existing["_reconstructed_optimizer_input_group_ids"].append(task_id)
+        existing["branch_snapshot_ids"].append(snapshot_id)
+
+    expected_attempts = set(range(1, attempted_policy_update_count + 1))
+    if set(records) != expected_attempts:
+        raise RuntimeError("attempted policy update is missing full branch evidence")
+    lineage = [records[index] for index in sorted(records)]
+    branch_task_ids = {
+        snapshot.get("task_id")
+        for snapshot in branch_snapshots
+        if isinstance(snapshot.get("task_id"), str)
+    }
+    for record in lineage:
+        policy_signal_group_ids = record.get("policy_signal_group_ids")
+        optimizer_input_group_ids = record.get("optimizer_input_group_ids")
+        reconstructed_optimizer_input_group_ids = record.pop(
+            "_reconstructed_optimizer_input_group_ids"
+        )
+        if (
+            not isinstance(policy_signal_group_ids, list)
+            or not policy_signal_group_ids
+            or len(set(policy_signal_group_ids)) != len(policy_signal_group_ids)
+            or not all(isinstance(group_id, str) for group_id in policy_signal_group_ids)
+            or record.get("policy_signal_group_count") != len(policy_signal_group_ids)
+            or not isinstance(optimizer_input_group_ids, list)
+            or not optimizer_input_group_ids
+            or len(set(optimizer_input_group_ids)) != len(optimizer_input_group_ids)
+            or not all(isinstance(group_id, str) for group_id in optimizer_input_group_ids)
+            or record.get("optimizer_input_group_count") != len(optimizer_input_group_ids)
+            or reconstructed_optimizer_input_group_ids != optimizer_input_group_ids
+            or not set(optimizer_input_group_ids).issubset(branch_task_ids)
+            or not set(policy_signal_group_ids).issubset(optimizer_input_group_ids)
+        ):
+            raise RuntimeError(
+                "optimizer input groups are not exactly reconstructable from branch evidence"
+            )
+        signal_group_ids = set(policy_signal_group_ids)
+        for snapshot in branch_snapshots:
+            optimizer_update = snapshot.get("optimizer_update")
+            if (
+                not isinstance(optimizer_update, dict)
+                or optimizer_update.get("attempted_policy_update_index")
+                != record["attempted_policy_update_index"]
+            ):
+                continue
+            task_id = snapshot.get("task_id")
+            signal_consumed_by_update = optimizer_update.get("policy_signal_consumed_by_update")
+            if (task_id in signal_group_ids) != (signal_consumed_by_update == record.get("update")):
+                raise RuntimeError("policy signal subset is not exactly bound to optimizer inputs")
+
+    if transactional_retention_enabled():
+        status_counts = {
+            status: sum(record.get("retention_lineage_status") == status for record in lineage)
+            for status in ("pending", "retained", "rolled_back")
+        }
+        if (
+            status_counts["retained"] != retained_policy_update_count
+            or status_counts["pending"]
+            != effective_policy_update_count - retained_policy_update_count
+            or status_counts["rolled_back"]
+            != attempted_policy_update_count - effective_policy_update_count
+        ):
+            raise RuntimeError("transactional policy update dispositions disagree with counters")
+    return lineage
 
 
 def observation_mastered(observation: dict[str, Any]) -> bool:
@@ -2010,7 +2505,11 @@ def validate_resume_state(
     model_revision: str,
 ) -> tuple[float, int, float, float]:
     if (
-        state.get("seed") != experiment_seed
+        state.get("schema_version") != 4
+        or state.get("branch_evidence_complete") is not True
+        or state.get("branch_evidence_limit") != MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS
+        or state.get("branch_evidence_payload_limit_bytes") != MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES
+        or state.get("seed") != experiment_seed
         or state.get("workload_revision") != WORKLOAD_REVISION
         or state.get("model_revision") != model_revision
         or state.get("objective_id") != OBJECTIVE_ID
@@ -2775,6 +3274,22 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     )
     promotions = list(resume_state["promotions"]) if resume_state else []
     branch_snapshots = list(resume_state["branch_snapshots"]) if resume_state else []
+    branch_snapshot_ids = [snapshot.get("snapshot_id") for snapshot in branch_snapshots]
+    branch_task_ids = [snapshot.get("task_id") for snapshot in branch_snapshots]
+    branch_evidence_payload_bytes = branch_evidence_payload_size_bytes(branch_snapshots)
+    if (
+        len(branch_snapshots) > MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS
+        or branch_evidence_payload_bytes > MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES
+        or (
+            resume_state
+            and resume_state.get("branch_evidence_payload_bytes") != branch_evidence_payload_bytes
+        )
+        or any(not isinstance(snapshot_id, str) for snapshot_id in branch_snapshot_ids)
+        or len(set(branch_snapshot_ids)) != len(branch_snapshot_ids)
+        or any(not isinstance(task_id, str) for task_id in branch_task_ids)
+        or len(set(branch_task_ids)) != len(branch_task_ids)
+    ):
+        raise RuntimeError("training checkpoint branch evidence is invalid")
     mastery_streak = int(resume_state["mastery_streak"]) if resume_state else 0
     updates_completed = int(resume_state["updates_completed"]) if resume_state else 0
     optimizer_update_count = int(resume_state["optimizer_update_count"]) if resume_state else 0
@@ -2788,26 +3303,24 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         resume_state,
         policy_update_count=policy_update_count,
     )
-    pending_training_examples = (
-        list(resume_state.get("pending_training_examples", [])) if resume_state else []
+    policy_update_lineage_from_branch_evidence(
+        branch_snapshots,
+        attempted_policy_update_count=attempted_policy_update_count,
+        effective_policy_update_count=effective_policy_update_count,
+        retained_policy_update_count=retained_policy_update_count,
     )
-    pending_policy_example_count = (
-        int(resume_state.get("pending_policy_example_count", 0)) if resume_state else 0
+    (
+        pending_training_examples,
+        pending_policy_example_count,
+        pending_informative_group_ids,
+        pending_optimizer_input_group_ids,
+    ) = pending_optimizer_batch_from_resume(
+        resume_state,
+        minimum_informative_groups=MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE,
     )
-    pending_informative_group_ids = (
-        list(resume_state.get("pending_informative_group_ids", [])) if resume_state else []
-    )
-    if (
-        bool(pending_training_examples) != bool(pending_informative_group_ids)
-        or bool(pending_policy_example_count) != bool(pending_informative_group_ids)
-        or pending_policy_example_count < 0
-        or pending_policy_example_count > len(pending_training_examples)
-        or len(pending_informative_group_ids) >= MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE
-        or len(set(pending_informative_group_ids)) != len(pending_informative_group_ids)
-        or not all(isinstance(group_id, str) for group_id in pending_informative_group_ids)
-    ):
-        raise RuntimeError("training checkpoint pending policy batch is invalid")
     total_task_groups = int(resume_state["total_task_groups"]) if resume_state else 0
+    if total_task_groups != len(branch_snapshots):
+        raise RuntimeError("training checkpoint omitted collected branch evidence")
     replay_task_groups = int(resume_state["replay_task_groups"]) if resume_state else 0
     frontier_probe_task_groups = (
         int(resume_state.get("frontier_probe_task_groups", 0)) if resume_state else 0
@@ -2855,6 +3368,23 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     total_post_branch_actions = (
         int(resume_state["total_post_branch_actions"]) if resume_state else 0
     )
+    (
+        total_sampled_completion_tokens,
+        discarded_sampled_completion_tokens,
+    ) = completion_token_counters_from_resume(
+        resume_state,
+    )
+    persisted_branch_completion_tokens = validate_sampled_completion_token_accounting(
+        branch_snapshots,
+        total_sampled_completion_tokens=total_sampled_completion_tokens,
+        discarded_sampled_completion_tokens=discarded_sampled_completion_tokens,
+    )
+    if (
+        resume_state
+        and resume_state.get("persisted_branch_completion_tokens")
+        != persisted_branch_completion_tokens
+    ):
+        raise RuntimeError("training checkpoint completion-token evidence is invalid")
     recent_action_protocol_groups = (
         [tuple(item) for item in resume_state.get("recent_action_protocol_groups", [])]
         if resume_state
@@ -2954,9 +3484,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
     def persist_training_checkpoint(update: int) -> None:
         if not checkpoints_root or not latest_checkpoint_path:
             return
+        persisted_branch_completion_tokens = validate_sampled_completion_token_accounting(
+            branch_snapshots,
+            total_sampled_completion_tokens=total_sampled_completion_tokens,
+            discarded_sampled_completion_tokens=discarded_sampled_completion_tokens,
+        )
         checkpoint_name = f"update-{update:04d}"
         state = {
-            "schema_version": 1,
+            "schema_version": 4,
             "workload_revision": WORKLOAD_REVISION,
             "model_revision": runtime.model_revision,
             "objective_id": OBJECTIVE_ID,
@@ -2982,6 +3517,10 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "previous_validation_semantic_task_ids": sorted(previous_validation_semantic_task_ids),
             "promotions": promotions,
             "branch_snapshots": branch_snapshots,
+            "branch_evidence_complete": len(branch_snapshots) == total_task_groups,
+            "branch_evidence_limit": MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS,
+            "branch_evidence_payload_bytes": branch_evidence_payload_size_bytes(branch_snapshots),
+            "branch_evidence_payload_limit_bytes": MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES,
             "mastery_streak": mastery_streak,
             "optimizer_update_count": optimizer_update_count,
             "policy_update_count": policy_update_count,
@@ -2992,6 +3531,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "pending_training_examples": pending_training_examples,
             "pending_policy_example_count": pending_policy_example_count,
             "pending_informative_group_ids": pending_informative_group_ids,
+            "pending_optimizer_input_group_ids": pending_optimizer_input_group_ids,
             "total_task_groups": total_task_groups,
             "replay_task_groups": replay_task_groups,
             "frontier_probe_task_groups": frontier_probe_task_groups,
@@ -3007,8 +3547,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "discarded_task_groups": discarded_task_groups,
             "discarded_sampled_actions": discarded_sampled_actions,
             "discarded_post_branch_actions": discarded_post_branch_actions,
+            "discarded_sampled_completion_tokens": (discarded_sampled_completion_tokens),
             "total_sampled_actions": total_sampled_actions,
             "total_post_branch_actions": total_post_branch_actions,
+            "total_sampled_completion_tokens": total_sampled_completion_tokens,
+            "persisted_branch_completion_tokens": (persisted_branch_completion_tokens),
             "recent_action_protocol_groups": recent_action_protocol_groups,
             "total_malformed_actions": total_malformed_actions,
             "consecutive_uninformative_groups": consecutive_uninformative_groups,
@@ -3042,6 +3585,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         nonlocal pending_training_examples
         nonlocal pending_policy_example_count
         nonlocal pending_informative_group_ids
+        nonlocal pending_optimizer_input_group_ids
         nonlocal retention_rollback_count
         nonlocal rollback_applied
         nonlocal last_observation
@@ -3065,6 +3609,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             pending_training_examples,
             pending_policy_example_count,
             pending_informative_group_ids,
+            pending_optimizer_input_group_ids,
             last_observation,
         ) = restore_retention_transaction(
             retained_transaction,
@@ -3076,6 +3621,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             status="rolled_back",
             resolution_update=update,
             reason=reason,
+            effective_policy_update_count=effective_policy_update_count,
+            retained_policy_update_count=retained_policy_update_count,
+            retention_rollback_count=retention_rollback_count + 1,
         )
         retention_rollback_count += 1
         rollback_applied = True
@@ -3161,12 +3709,15 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 discarded_groups,
                 discarded_actions,
                 discarded_post_branch_action_count,
+                discarded_completion_tokens,
             ) = discarded_collection_accounting(collections)
             discarded_task_groups += discarded_groups
             discarded_sampled_actions += discarded_actions
             discarded_post_branch_actions += discarded_post_branch_action_count
+            discarded_sampled_completion_tokens += discarded_completion_tokens
             total_sampled_actions += discarded_actions
             total_post_branch_actions += discarded_post_branch_action_count
+            total_sampled_completion_tokens += discarded_completion_tokens
             stop_reason = "final_evaluation_reserve"
             training_complete = True
             persist_training_checkpoint(updates_completed)
@@ -3190,11 +3741,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             pending_policy_example_count,
             pending_informative_group_ids,
             policy_signal_group_ids,
+            pending_optimizer_input_group_ids,
+            optimizer_input_group_ids,
         ) = accumulated_reference_anchored_examples(
             collections,
             pending_training_examples,
             pending_policy_example_count,
             pending_informative_group_ids,
+            pending_optimizer_input_group_ids,
             minimum_informative_groups=MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE,
         )
         informative_collections = sum(collection.informative for collection in collections)
@@ -3270,11 +3824,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         )
         total_sampled_actions += sampled_action_count(collections)
         total_post_branch_actions += post_branch_action_count(collections)
+        total_sampled_completion_tokens += sampled_completion_token_count(collections)
         representative_collection = select_representative_collection(
             collections,
             current_level=level,
         )
         optimizer_evidence = {
+            "update": update,
             "applied": bool(anchored_training_examples),
             "policy_signal_applied": bool(policy_training_example_count),
             "reference_anchor_applied": bool(anchored_training_examples),
@@ -3285,6 +3841,15 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 "pending" if transactional_retention_enabled() and policy_update_applied else None
             ),
             "retention_transaction_disposition": None,
+            "attempted_policy_update_index": (
+                attempted_policy_update_count if policy_update_applied else None
+            ),
+            "effective_policy_update_count_after_apply": (
+                effective_policy_update_count if policy_update_applied else None
+            ),
+            "retained_policy_update_count_before_validation": (
+                retained_policy_update_count if policy_update_applied else None
+            ),
             "learning_rate": LEARNING_RATE,
             "policy_loss": round(policy_loss, 6),
             "reinforce_loss": round(reinforce_loss, 6),
@@ -3299,8 +3864,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "minimum_informative_groups": (MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE),
             "policy_signal_group_count": len(policy_signal_group_ids),
             "policy_signal_group_ids": policy_signal_group_ids,
+            "optimizer_input_group_count": len(optimizer_input_group_ids),
+            "optimizer_input_group_ids": optimizer_input_group_ids,
             "pending_informative_group_count": len(pending_informative_group_ids),
             "pending_informative_group_ids": pending_informative_group_ids,
+            "pending_optimizer_input_group_count": len(pending_optimizer_input_group_ids),
+            "pending_optimizer_input_group_ids": pending_optimizer_input_group_ids,
             "pending_policy_examples": pending_policy_example_count,
             "pending_training_examples": len(pending_training_examples),
             "policy_signal_suppressed_reason": (
@@ -3314,42 +3883,46 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             ),
             "informative_group_count": informative_collections,
         }
-        if policy_signal_group_ids:
-            for snapshot in branch_snapshots:
-                if snapshot.get("task_id") in policy_signal_group_ids:
-                    prior_optimizer = snapshot.get("optimizer_update")
-                    if isinstance(prior_optimizer, dict):
-                        prior_optimizer["policy_signal_consumed_by_update"] = update
-        latest_snapshot = serialize_branch_group(
-            representative_collection,
-            update=update,
+        snapshots_for_update = [
+            {
+                **serialize_branch_group(
+                    collection,
+                    update=update,
+                    optimizer_update=(
+                        copy.deepcopy(optimizer_evidence)
+                        if collection.task.task_id in optimizer_input_group_ids
+                        else (
+                            copy.deepcopy(optimizer_evidence)
+                            if not optimizer_input_group_ids
+                            else None
+                        )
+                    ),
+                ),
+                "collection_index": index,
+                "collection_count": len(collections),
+            }
+            for index, collection in enumerate(collections, start=1)
+        ]
+        append_complete_branch_evidence(
+            branch_snapshots,
+            snapshots_for_update,
+        )
+        bind_optimizer_input_groups_to_update(
+            branch_snapshots,
+            optimizer_input_group_ids=optimizer_input_group_ids,
             optimizer_update=optimizer_evidence,
         )
-        snapshots_for_update = [latest_snapshot]
-        probe_collections = [
-            collection
-            for collection in collections
-            if collection.curriculum_role == "adjacent_complexity_probe"
-        ]
-        if probe_collections:
-            representative_probe = min(
-                probe_collections,
-                key=lambda collection: (
-                    collection.exclusion_reason is not None,
-                    not collection.informative,
-                    -collection.task.level,
-                    collection.task.task_id,
-                ),
-            )
-            snapshots_for_update.append(
-                serialize_branch_group(
-                    representative_probe,
-                    update=update,
-                    optimizer_update=optimizer_evidence,
-                )
-            )
-        branch_snapshots.extend(snapshots_for_update)
-        branch_snapshots = branch_snapshots[-40:]
+        latest_snapshot = next(
+            snapshot
+            for snapshot in snapshots_for_update
+            if snapshot.get("task_id") == representative_collection.task.task_id
+        )
+        policy_update_lineage = policy_update_lineage_from_branch_evidence(
+            branch_snapshots,
+            attempted_policy_update_count=attempted_policy_update_count,
+            effective_policy_update_count=effective_policy_update_count,
+            retained_policy_update_count=retained_policy_update_count,
+        )
 
         emit_progress(
             "training",
@@ -3419,6 +3992,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             consecutive_malformed_windows=consecutive_malformed_windows,
             consecutive_uninformative_groups=consecutive_uninformative_groups,
             total_sampled_actions=total_sampled_actions,
+            total_sampled_completion_tokens=total_sampled_completion_tokens,
+            discarded_sampled_completion_tokens=(discarded_sampled_completion_tokens),
             policy_update_count=policy_update_count,
             attempted_policy_update_count=attempted_policy_update_count,
             effective_policy_update_count=effective_policy_update_count,
@@ -3426,6 +4001,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             retention_rollback_count=retention_rollback_count,
             optimizer_update_count=optimizer_update_count,
             pending_informative_group_count=len(pending_informative_group_ids),
+            pending_optimizer_input_group_count=len(pending_optimizer_input_group_ids),
+            pending_optimizer_input_group_ids=pending_optimizer_input_group_ids,
             pending_policy_example_count=pending_policy_example_count,
             pending_training_example_count=len(pending_training_examples),
             frontier_probe_task_groups=frontier_probe_task_groups,
@@ -3464,6 +4041,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             ),
             latest_branch_snapshot=latest_snapshot,
             branch_snapshots=branch_snapshots,
+            branch_evidence_complete=len(branch_snapshots) == total_task_groups,
+            branch_evidence_group_count=len(branch_snapshots),
+            branch_evidence_limit=MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS,
+            branch_evidence_payload_bytes=branch_evidence_payload_size_bytes(branch_snapshots),
+            branch_evidence_payload_limit_bytes=MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES,
+            policy_update_lineage=policy_update_lineage,
             elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
             evaluation_completed=None,
             evaluation_total=None,
@@ -3812,6 +4395,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         pending_training_examples,
                         pending_policy_example_count,
                         pending_informative_group_ids,
+                        pending_optimizer_input_group_ids,
                         restored_retained_observation,
                     ) = restore_retention_transaction(
                         retained_transaction,
@@ -3823,6 +4407,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         status="rolled_back",
                         resolution_update=update,
                         reason="retention_guard_regression",
+                        effective_policy_update_count=effective_policy_update_count,
+                        retained_policy_update_count=retained_policy_update_count,
+                        retention_rollback_count=retention_rollback_count + 1,
                     )
                     retention_rollback_count += 1
                     rollback_applied = True
@@ -3874,11 +4461,15 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                     "source": "paired_active_adjacent_and_rotating_retention_guard",
                 }
                 if transactional_retention_enabled():
+                    retained_policy_update_count = effective_policy_update_count
                     resolve_pending_branch_snapshot_lineage(
                         branch_snapshots,
                         status="retained",
                         resolution_update=update,
                         reason="retention_guard_improvement",
+                        effective_policy_update_count=effective_policy_update_count,
+                        retained_policy_update_count=retained_policy_update_count,
+                        retention_rollback_count=retention_rollback_count,
                     )
                     retained_transaction = capture_retention_transaction(
                         capture_trainable_state=capture_trainable_state,
@@ -3888,7 +4479,6 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                         retained_observation=checkpoint_observation,
                     )
                     best_trainable_state = retained_transaction["trainable_state"]
-                    retained_policy_update_count = effective_policy_update_count
                 else:
                     best_trainable_state = capture_trainable_state()
                 if checkpoints_root:
@@ -4067,6 +4657,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         ):
             retention_disposition = "rollback"
         if completed_retention_window:
+            policy_update_lineage = policy_update_lineage_from_branch_evidence(
+                branch_snapshots,
+                attempted_policy_update_count=attempted_policy_update_count,
+                effective_policy_update_count=effective_policy_update_count,
+                retained_policy_update_count=retained_policy_update_count,
+            )
             emit_progress(
                 "checkpointing",
                 "Persisting completed retention window.",
@@ -4085,12 +4681,22 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 policy_update_count=policy_update_count,
                 optimizer_update_count=optimizer_update_count,
                 pending_informative_group_count=len(pending_informative_group_ids),
+                pending_optimizer_input_group_count=len(pending_optimizer_input_group_ids),
+                pending_optimizer_input_group_ids=pending_optimizer_input_group_ids,
                 pending_policy_example_count=pending_policy_example_count,
                 pending_training_example_count=len(pending_training_examples),
+                total_sampled_completion_tokens=total_sampled_completion_tokens,
+                discarded_sampled_completion_tokens=(discarded_sampled_completion_tokens),
                 validation_history=lightweight_validation_history(history),
                 curriculum_history=promotions,
                 latest_branch_snapshot=branch_snapshots[-1] if branch_snapshots else None,
                 branch_snapshots=branch_snapshots,
+                branch_evidence_complete=len(branch_snapshots) == total_task_groups,
+                branch_evidence_group_count=len(branch_snapshots),
+                branch_evidence_limit=MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS,
+                branch_evidence_payload_bytes=branch_evidence_payload_size_bytes(branch_snapshots),
+                branch_evidence_payload_limit_bytes=MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES,
+                policy_update_lineage=policy_update_lineage,
                 elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
                 stop_reason=stop_reason,
             )
@@ -4108,6 +4714,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 pending_training_examples,
                 pending_policy_example_count,
                 pending_informative_group_ids,
+                pending_optimizer_input_group_ids,
                 last_observation,
             ) = restore_retention_transaction(
                 retained_transaction,
@@ -4119,6 +4726,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 status="rolled_back",
                 resolution_update=updates_completed,
                 reason="finalization_restore",
+                effective_policy_update_count=effective_policy_update_count,
+                retained_policy_update_count=retained_policy_update_count,
+                retention_rollback_count=retention_rollback_count + 1,
             )
             if finalization_rollbacks:
                 retention_rollback_count += 1
@@ -4126,6 +4736,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             restore_trainable_state(best_trainable_state)
         rollback_applied = True
 
+    policy_update_lineage = policy_update_lineage_from_branch_evidence(
+        branch_snapshots,
+        attempted_policy_update_count=attempted_policy_update_count,
+        effective_policy_update_count=effective_policy_update_count,
+        retained_policy_update_count=retained_policy_update_count,
+    )
     emit_progress(
         "finalizing",
         "Evaluating retained levels.",
@@ -4137,15 +4753,25 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         rollback_applied=rollback_applied,
         stop_reason=stop_reason,
         pending_informative_group_count=len(pending_informative_group_ids),
+        pending_optimizer_input_group_count=len(pending_optimizer_input_group_ids),
+        pending_optimizer_input_group_ids=pending_optimizer_input_group_ids,
         pending_policy_example_count=pending_policy_example_count,
         pending_training_example_count=len(pending_training_examples),
         attempted_policy_update_count=attempted_policy_update_count,
         effective_policy_update_count=effective_policy_update_count,
         retained_policy_update_count=retained_policy_update_count,
         retention_rollback_count=retention_rollback_count,
+        total_sampled_completion_tokens=total_sampled_completion_tokens,
+        discarded_sampled_completion_tokens=(discarded_sampled_completion_tokens),
         validation_history=lightweight_validation_history(history),
         curriculum_history=promotions,
         branch_snapshots=branch_snapshots,
+        branch_evidence_complete=len(branch_snapshots) == total_task_groups,
+        branch_evidence_group_count=len(branch_snapshots),
+        branch_evidence_limit=MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS,
+        branch_evidence_payload_bytes=branch_evidence_payload_size_bytes(branch_snapshots),
+        branch_evidence_payload_limit_bytes=MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES,
+        policy_update_lineage=policy_update_lineage,
         final_evaluation_reserve_seconds=final_evaluation_reserve_seconds,
         provider_remaining_seconds=round(
             max(
@@ -4338,6 +4964,23 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         with open(manifest_path, encoding="utf-8") as handle:
             if json.load(handle) != adapter_manifest:
                 raise RuntimeError("adapter manifest failed its read-after-write check")
+    if len(branch_snapshots) != total_task_groups:
+        raise RuntimeError("completed result omitted collected branch evidence")
+    persisted_branch_completion_tokens = validate_sampled_completion_token_accounting(
+        branch_snapshots,
+        total_sampled_completion_tokens=total_sampled_completion_tokens,
+        discarded_sampled_completion_tokens=discarded_sampled_completion_tokens,
+    )
+    policy_update_lineage = policy_update_lineage_from_branch_evidence(
+        branch_snapshots,
+        attempted_policy_update_count=attempted_policy_update_count,
+        effective_policy_update_count=effective_policy_update_count,
+        retained_policy_update_count=retained_policy_update_count,
+    )
+    if transactional_retention_enabled() and any(
+        item.get("retention_lineage_status") == "pending" for item in policy_update_lineage
+    ):
+        raise RuntimeError("completed result contains unresolved policy update lineage")
     result = {
         "schema_version": 2,
         "experiment_completed": True,
@@ -4439,6 +5082,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "paired_test_transitions": paired_test_transitions,
         "history": history,
         "branch_snapshots": branch_snapshots,
+        "branch_evidence_complete": True,
+        "branch_evidence_group_count": len(branch_snapshots),
+        "branch_evidence_limit": MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS,
+        "branch_evidence_payload_bytes": branch_evidence_payload_size_bytes(branch_snapshots),
+        "branch_evidence_payload_limit_bytes": MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES,
+        "policy_update_lineage": policy_update_lineage,
         "updates_completed": updates_completed,
         "optimizer_update_count": optimizer_update_count,
         "policy_update_count": policy_update_count,
@@ -4448,6 +5097,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "retained_checkpoint_update": best_validation["update"],
         "pending_informative_group_count": len(pending_informative_group_ids),
         "pending_informative_group_ids": pending_informative_group_ids,
+        "pending_optimizer_input_group_count": len(pending_optimizer_input_group_ids),
+        "pending_optimizer_input_group_ids": pending_optimizer_input_group_ids,
         "pending_policy_example_count": pending_policy_example_count,
         "pending_training_example_count": len(pending_training_examples),
         "total_task_groups": total_task_groups,
@@ -4460,11 +5111,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "discarded_task_groups": discarded_task_groups,
         "discarded_sampled_actions": discarded_sampled_actions,
         "discarded_post_branch_actions": discarded_post_branch_actions,
+        "discarded_sampled_completion_tokens": discarded_sampled_completion_tokens,
         "informative_group_rate": round(
             informative_task_groups / max(1, total_task_groups),
             6,
         ),
         "total_sampled_actions": total_sampled_actions,
+        "total_sampled_completion_tokens": total_sampled_completion_tokens,
+        "persisted_branch_completion_tokens": persisted_branch_completion_tokens,
         "total_malformed_actions": total_malformed_actions,
         "action_protocol_validity_rate": (
             round(
@@ -4505,6 +5159,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "raw_resume_gap_seconds": round(raw_resume_gap_seconds, 3),
         "applied_resume_gap_seconds": round(applied_resume_gap_seconds, 3),
         "crash_tail_actions_unaccounted": resumed_crash_tail_actions_unaccounted(resume_state),
+        "crash_tail_completion_tokens_unaccounted": (
+            resumed_crash_tail_actions_unaccounted(resume_state)
+        ),
         "crash_tail_cost_accounting": (
             "wall_clock_only" if resume_state is not None else "not_applicable"
         ),
@@ -4557,6 +5214,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         validation_history=lightweight_validation_history(history),
         curriculum_history=promotions,
         total_sampled_actions=total_sampled_actions,
+        total_sampled_completion_tokens=total_sampled_completion_tokens,
+        discarded_sampled_completion_tokens=(discarded_sampled_completion_tokens),
         optimizer_update_count=optimizer_update_count,
         policy_update_count=policy_update_count,
         attempted_policy_update_count=attempted_policy_update_count,
@@ -4564,6 +5223,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         retained_policy_update_count=retained_policy_update_count,
         retention_rollback_count=retention_rollback_count,
         pending_informative_group_count=len(pending_informative_group_ids),
+        pending_optimizer_input_group_count=len(pending_optimizer_input_group_ids),
+        pending_optimizer_input_group_ids=pending_optimizer_input_group_ids,
         pending_policy_example_count=pending_policy_example_count,
         pending_training_example_count=len(pending_training_examples),
         frontier_probe_task_groups=frontier_probe_task_groups,
@@ -4580,6 +5241,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         stop_reason=stop_reason,
         latest_branch_snapshot=branch_snapshots[-1] if branch_snapshots else None,
         branch_snapshots=branch_snapshots,
+        branch_evidence_complete=True,
+        branch_evidence_group_count=len(branch_snapshots),
+        branch_evidence_limit=MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS,
+        branch_evidence_payload_bytes=branch_evidence_payload_size_bytes(branch_snapshots),
+        branch_evidence_payload_limit_bytes=MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES,
+        policy_update_lineage=policy_update_lineage,
     )
     print(json.dumps(result, sort_keys=True), flush=True)
 

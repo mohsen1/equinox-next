@@ -316,7 +316,7 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
     }
     assert manifest["screen"]["thresholds"]["maximum_predicted_final_evaluation_seconds"] == 1_440
     assert manifest["pilot"] == {
-        "workload_revision": "runpod-repository-repair-large-model-pilot@5",
+        "workload_revision": "runpod-repository-repair-large-model-pilot@6",
         "objective_id": ("verified-repair-chain-transactional-retention-policy-gradient@18"),
         "reward_contract_revision": "correctness-gated-efficiency@1",
         "shared_prefix_checkpoint_strategy": "repository_root_observed@1",

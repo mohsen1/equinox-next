@@ -9,6 +9,13 @@ restores static `K=4` continuations from the same repository checkpoint, adapts 
 complexity, replays earlier levels, trains only on post-branch actions, and exposes the
 complete trajectory and update lineage before GPU launch.
 
+The next immutable larger-model candidate is
+`qwen2.5-coder-7b-runpod-h100@8`, with eligibility screen
+`larger-model-eligibility-screen@8`, pilot
+`runpod-repository-repair-large-model-pilot@6`, objective
+`verified-repair-chain-transactional-retention-policy-gradient@18`, and transactional
+retention `adapter-optimizer-policy-lineage@1`.
+
 ## Completed evidence
 
 - The Compose product passes the local CAD contract, recovery, cancellation, and
@@ -28,17 +35,11 @@ complete trajectory and update lineage before GPU launch.
 
 ## Active increments
 
-1. Define a safe structured repository action protocol and deterministic task/verifier
-   bundle.
-2. Implement multi-step collection, exact logical snapshot/restore, one shared checkpoint,
-   four isolated continuations, and post-branch-only loss.
-3. Add adaptive file/fault/dependency/horizon levels and replay from mastered levels.
-4. Persist full shared-prefix and sibling-step lineage through the research execution API.
-5. Render the prefix once and each continuation as a multi-step lane in the trajectory
-   explorer.
-6. Pass deterministic, type, browser, and accessibility checks; commit the observer.
-7. Launch one budget-capped RunPod proof, ingest progress and artifacts, confirm teardown,
-   and report learning and branch-signal quality.
+1. Commit the immutable `@8` source contract and stage its deterministic bundle on the
+   existing RunPod network volume with the bounded CPU-only operator.
+2. Run the budget-capped eligibility screen and expose its live evidence in the dashboard.
+3. If and only if the screen authorizes it, run one `@6` H100 pilot, ingest progress and
+   artifacts, confirm teardown, and report learning and branch-signal quality.
 
 ## Research follow-up
 

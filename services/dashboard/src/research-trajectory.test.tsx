@@ -2,12 +2,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   buildTrajectorySteps,
+  resolveBranchSnapshot,
   TrajectoryOutline,
 } from "./pages/research-trajectory";
 import {
   BranchOutline,
   buildBranchFlow,
   branchSnapshotLabel,
+  defaultBranchActionId,
+  isIndependentPrefixSnapshot,
   ResearchBranchWorkspace,
 } from "./pages/research-branches";
 import type {
@@ -243,6 +246,37 @@ const multiStepSnapshot: ResearchBranchSnapshot = {
   })),
 };
 
+const independentPrefixSnapshot: ResearchBranchSnapshot = {
+  ...multiStepSnapshot,
+  snapshot_id: "update-5-independent-repo",
+  checkpoint: null,
+  shared_prefix: null,
+  initial_state: {
+    state_id: "initial-repo",
+    payload_digest: "sha256:initial-repo",
+    fidelity: "logical_restore",
+    role: "matched_task_initial_state_not_decision_checkpoint",
+  },
+  rollout_topology: {
+    revision: "independent-prefix-k4@1",
+    static_group_width: 4,
+    independent_model_generated_prefixes: true,
+    shared_model_generated_prefix: false,
+    sibling_group_relative_credit: true,
+    initial_state_matching: "same_task_initial_state",
+  },
+  comparison_condition: {
+    schema_version: 1,
+    condition_id: "independent_prefix_grpo_k4",
+    short_label: "Independent · K=4",
+    prefix_topology: "independent",
+    branch_width: 4,
+    group_credit: "sibling_relative",
+    shared_prefix: false,
+  },
+  sampled_completion_tokens: 96,
+};
+
 describe("research trajectory", () => {
   it("builds a real checkpoint sequence with promotions", () => {
     const steps = buildTrajectorySteps(trajectory);
@@ -337,6 +371,108 @@ describe("research trajectory", () => {
     expect(html).not.toContain("Branch group 5 · Level 1");
   });
 
+  it("shows every optimizer input with its signal role and branch snapshot", () => {
+    const signalGroupIds = ["prior-signal", "current-signal"];
+    const optimizerInputGroupIds = [
+      "prior-signal",
+      "prior-reference-anchor",
+      "current-signal",
+      "current-reference-anchor",
+    ];
+    const optimizerSnapshot: ResearchBranchSnapshot = {
+      ...multiStepSnapshot,
+      task_id: "current-signal",
+      optimizer_update: {
+        ...multiStepSnapshot.optimizer_update!,
+        update: 5,
+        attempted_policy_update_index: 1,
+        policy_signal_group_count: signalGroupIds.length,
+        policy_signal_group_ids: signalGroupIds,
+        optimizer_input_group_count: optimizerInputGroupIds.length,
+        optimizer_input_group_ids: optimizerInputGroupIds,
+        optimizer_input_consumed_by_update: 5,
+        policy_signal_consumed_by_update: 5,
+      },
+    };
+    const html = renderToStaticMarkup(
+      <ResearchBranchWorkspace
+        snapshot={optimizerSnapshot}
+        selectedSibling={optimizerSnapshot.siblings[0]}
+        selectedActionId="sibling-0-3"
+        view="outline"
+        policyUpdateLineage={[
+          {
+            schema_version: 2,
+            attempted_policy_update_index: 1,
+            update: 5,
+            retention_lineage_status: "pending",
+            effective_policy_update_count_after_apply: 1,
+            retained_policy_update_count_before_validation: 0,
+            policy_signal_group_count: signalGroupIds.length,
+            policy_signal_group_ids: signalGroupIds,
+            optimizer_input_group_count: optimizerInputGroupIds.length,
+            optimizer_input_group_ids: optimizerInputGroupIds,
+            branch_snapshot_ids: [
+              "snapshot-prior-signal",
+              "snapshot-prior-reference-anchor",
+              optimizerSnapshot.snapshot_id,
+              "snapshot-current-reference-anchor",
+            ],
+          },
+        ]}
+        selectSibling={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("<caption>Optimizer inputs</caption>");
+    expect(html).toContain("prior-reference-anchor");
+    expect(html).toContain("snapshot-prior-reference-anchor");
+    expect(html).toContain("Signal");
+    expect(html).toContain("Anchor only");
+  });
+
+  it("keeps every consumed branch URL-addressable beyond the old 40-item window", () => {
+    const snapshots = Array.from({ length: 64 }, (_, index) => ({
+      ...multiStepSnapshot,
+      snapshot_id: `update-${Math.floor(index / 4) + 1}-snapshot-${index}`,
+      task_id: `group-${index}`,
+      update: Math.floor(index / 4) + 1,
+      collection_index: (index % 4) + 1,
+      collection_count: 4,
+      replay: index === 3,
+      optimizer_update: {
+        ...multiStepSnapshot.optimizer_update!,
+        update: Math.floor(index / 4) + 1,
+        attempted_policy_update_index: Math.floor(index / 4) + 1,
+        policy_signal_group_ids: [`group-${index}`],
+      },
+    }));
+    const selected = resolveBranchSnapshot(snapshots, "update-1-snapshot-0");
+
+    expect(selected?.task_id).toBe("group-0");
+    expect(branchSnapshotLabel(snapshots[3]!)).toBe(
+      "Update 1 · Group 4/4 · Level 1 · Replay",
+    );
+    const graph = buildBranchFlow(selected!, 0, "sibling-0-3");
+    const outline = renderToStaticMarkup(
+      <BranchOutline
+        snapshot={selected!}
+        selectedIndex={0}
+        selectedActionId="sibling-0-3"
+        select={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+    expect(
+      graph.nodes.some((node) => node.data.actionId === "sibling-0-3"),
+    ).toBe(true);
+    expect(outline).toContain("Sibling 1");
+    expect(resolveBranchSnapshot(snapshots, "missing")?.task_id).toBe(
+      "group-63",
+    );
+  });
+
   it("renders an accessible K=4 branch outline", () => {
     const html = renderToStaticMarkup(
       <BranchOutline
@@ -383,6 +519,84 @@ describe("research trajectory", () => {
     expect(html.match(/>Shared</g)).toHaveLength(2);
     expect(html.match(/Sibling [1-4]/g)).toHaveLength(8);
     expect(html).toContain('class="selected"');
+  });
+
+  it("renders four full independent trajectories from one matched initial state", () => {
+    const flow = buildBranchFlow(independentPrefixSnapshot, 2, "sibling-2-3");
+    const html = renderToStaticMarkup(
+      <BranchOutline
+        snapshot={independentPrefixSnapshot}
+        selectedIndex={2}
+        selectedActionId="sibling-2-3"
+        select={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+
+    expect(isIndependentPrefixSnapshot(independentPrefixSnapshot)).toBe(true);
+    expect(flow.nodes).toHaveLength(9);
+    expect(flow.edges).toHaveLength(8);
+    expect(flow.nodes.some((node) => node.type === "checkpoint")).toBe(false);
+    expect(flow.nodes.find((node) => node.type === "initial")?.data.title).toBe(
+      "Matched initial state",
+    );
+    expect(
+      flow.nodes.filter((node) => node.data.siblingIndex === 2),
+    ).toHaveLength(2);
+    expect(
+      flow.nodes.find((node) => node.data.actionId === "sibling-2-3")?.selected,
+    ).toBe(true);
+    expect(html).toContain(
+      "<caption>K=4 independent trajectories from one matched initial state</caption>",
+    );
+    expect(html.match(/Trajectory [1-4]/g)).toHaveLength(8);
+    expect(html).not.toContain(">Shared<");
+  });
+
+  it("refuses to render an untyped independent rollout as legacy evidence", () => {
+    const untypedIndependentSnapshot: ResearchBranchSnapshot = {
+      ...independentPrefixSnapshot,
+      comparison_condition: undefined,
+    };
+
+    expect(() =>
+      buildBranchFlow(untypedIndependentSnapshot, 0, "sibling-0-2"),
+    ).toThrow("requires its typed comparison condition");
+    expect(() =>
+      renderToStaticMarkup(
+        <BranchOutline
+          snapshot={untypedIndependentSnapshot}
+          selectedIndex={0}
+          selectedActionId="sibling-0-2"
+          select={() => undefined}
+          selectAction={() => undefined}
+        />,
+      ),
+    ).toThrow("requires its typed comparison condition");
+  });
+
+  it("keeps independent lane selection URL-addressable at action granularity", () => {
+    const sibling = independentPrefixSnapshot.siblings[3]!;
+    expect(defaultBranchActionId(independentPrefixSnapshot, sibling)).toBe(
+      "sibling-3-2",
+    );
+
+    const html = renderToStaticMarkup(
+      <ResearchBranchWorkspace
+        snapshot={independentPrefixSnapshot}
+        selectedSibling={sibling}
+        selectedActionId="sibling-3-3"
+        view="outline"
+        selectSibling={() => undefined}
+        selectAction={() => undefined}
+      />,
+    );
+    expect(html).toContain(
+      'aria-label="Matched initial state and 4 independent trajectories"',
+    );
+    expect(html).toContain("Trajectory 4 · step 2");
+    expect(html).toContain('class="selected"');
+    expect(html).not.toContain("Checkpoint");
   });
 
   it("centers and labels the K=1 ablation as one continuation", () => {

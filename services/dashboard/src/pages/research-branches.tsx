@@ -14,6 +14,7 @@ import type {
   ResearchBranchSibling,
   ResearchBranchSnapshot,
   ResearchBranchStep,
+  ResearchPolicyUpdateLineage,
 } from "../types";
 
 type BranchView = "graph" | "outline";
@@ -42,6 +43,7 @@ type BranchFlowNode = Node<BranchNodeData>;
 
 const branchNodeTypes = {
   task: BranchTaskNode,
+  initial: BranchInitialStateNode,
   checkpoint: BranchCheckpointNode,
   action: BranchActionNode,
   sibling: BranchSiblingNode,
@@ -52,6 +54,7 @@ export function ResearchBranchWorkspace({
   selectedSibling,
   selectedActionId,
   view,
+  policyUpdateLineage,
   selectSibling,
   selectAction,
 }: {
@@ -59,6 +62,7 @@ export function ResearchBranchWorkspace({
   selectedSibling: ResearchBranchSibling | null;
   selectedActionId: string;
   view: BranchView;
+  policyUpdateLineage?: ResearchPolicyUpdateLineage[];
   selectSibling: (index: number) => void;
   selectAction: (actionId: string, siblingIndex?: number) => void;
 }) {
@@ -76,15 +80,18 @@ export function ResearchBranchWorkspace({
     ? navigation.findIndex((item) => item.actionId === selected.actionId)
     : -1;
   const continuationCount = snapshot.siblings.length;
-  const continuationLabel = `${continuationCount} restored continuation${
-    continuationCount === 1 ? "" : "s"
-  }`;
+  const independent = isIndependentPrefixSnapshot(snapshot);
+  const canvasLabel = independent
+    ? `Matched initial state and ${continuationCount} independent trajectories`
+    : `Shared prefix and ${continuationCount} restored continuation${
+        continuationCount === 1 ? "" : "s"
+      }`;
 
   return (
     <div className="research-trajectory-workspace branch-workspace">
       <section
         className="research-trajectory-canvas branch-canvas"
-        aria-label={`Shared prefix and ${continuationLabel}`}
+        aria-label={canvasLabel}
       >
         {view === "graph" ? (
           <ReactFlow
@@ -108,9 +115,13 @@ export function ResearchBranchWorkspace({
             nodesFocusable
             edgesFocusable={false}
             autoPanOnNodeFocus
-            aria-label={`One diagnostic prefix restored into ${continuationCount} multi-step continuation${
-              continuationCount === 1 ? "" : "s"
-            }.`}
+            aria-label={
+              independent
+                ? `One matched initial state sampled as ${continuationCount} independent multi-step trajectories.`
+                : `One diagnostic prefix restored into ${continuationCount} multi-step continuation${
+                    continuationCount === 1 ? "" : "s"
+                  }.`
+            }
             proOptions={{ hideAttribution: true }}
           >
             <Background color="var(--rule)" gap={32} size={1} />
@@ -131,6 +142,7 @@ export function ResearchBranchWorkspace({
         selection={selected}
         previous={navigation[selectedPosition - 1]}
         next={navigation[selectedPosition + 1]}
+        policyUpdateLineage={policyUpdateLineage}
         selectAction={selectAction}
       />
     </div>
@@ -142,6 +154,13 @@ export function buildBranchFlow(
   selectedIndex: number,
   selectedActionId = "",
 ): { nodes: BranchFlowNode[]; edges: Edge[] } {
+  if (isIndependentPrefixSnapshot(snapshot)) {
+    return buildIndependentBranchFlow(
+      snapshot,
+      selectedIndex,
+      selectedActionId,
+    );
+  }
   if (!snapshot.shared_prefix) {
     return buildLegacyBranchFlow(snapshot, selectedIndex);
   }
@@ -250,6 +269,74 @@ export function buildBranchFlow(
   return { nodes, edges };
 }
 
+function buildIndependentBranchFlow(
+  snapshot: ResearchBranchSnapshot,
+  selectedIndex: number,
+  selectedActionId: string,
+): { nodes: BranchFlowNode[]; edges: Edge[] } {
+  const nodes: BranchFlowNode[] = [];
+  const edges: Edge[] = [];
+  const initialStateId = `${snapshot.snapshot_id}-initial`;
+  const laneWidth = 190;
+  const centerX = Math.max(0, ((snapshot.siblings.length - 1) * laneWidth) / 2);
+  nodes.push({
+    id: initialStateId,
+    type: "initial",
+    position: { x: centerX + 4, y: 28 },
+    selectable: false,
+    focusable: false,
+    draggable: false,
+    data: {
+      title: "Matched initial state",
+      detail: friendlyStatus(
+        snapshot.initial_state?.fidelity ?? "Same task state",
+      ),
+      multiStep: true,
+    },
+  });
+
+  snapshot.siblings.forEach((sibling, lanePosition) => {
+    let previousId = initialStateId;
+    (sibling.steps ?? []).forEach((step, stepPosition) => {
+      const actionId = siblingActionId(sibling, step);
+      const nodeId = `${snapshot.snapshot_id}-${actionId}`;
+      nodes.push({
+        id: nodeId,
+        type: "action",
+        position: {
+          x: lanePosition * laneWidth,
+          y: 176 + stepPosition * 94,
+        },
+        selected: actionId === selectedActionId,
+        data: {
+          siblingIndex: sibling.index,
+          actionId,
+          title:
+            stepPosition === 0
+              ? `Trajectory ${sibling.index + 1} · 1`
+              : `Step ${stepPosition + 1}`,
+          detail: stepOutcome(step),
+          action: step.action,
+          reward: step.terminal ? siblingReturn(sibling) : undefined,
+          passed: step.accepted,
+          best:
+            stepPosition === 0 && sibling.index === snapshot.best_sibling_index,
+        },
+      });
+      edges.push(
+        branchEdge(
+          previousId,
+          nodeId,
+          sibling.index === selectedIndex,
+          sibling.passed,
+        ),
+      );
+      previousId = nodeId;
+    });
+  });
+  return { nodes, edges };
+}
+
 function buildLegacyBranchFlow(
   snapshot: ResearchBranchSnapshot,
   selectedIndex: number,
@@ -344,6 +431,16 @@ function BranchTaskNode({ data }: NodeProps<BranchFlowNode>) {
   );
 }
 
+function BranchInitialStateNode({ data }: NodeProps<BranchFlowNode>) {
+  return (
+    <div className="research-branch-initial-node">
+      <strong>{data.title}</strong>
+      <small>{data.detail}</small>
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  );
+}
+
 function BranchCheckpointNode({ data }: NodeProps<BranchFlowNode>) {
   return (
     <div
@@ -416,6 +513,16 @@ export function BranchOutline({
   select: (index: number) => void;
   selectAction?: (actionId: string, siblingIndex?: number) => void;
 }) {
+  if (isIndependentPrefixSnapshot(snapshot)) {
+    return (
+      <MultiStepBranchOutline
+        snapshot={snapshot}
+        selectedActionId={selectedActionId}
+        selectAction={selectAction}
+        independent
+      />
+    );
+  }
   if (snapshot.shared_prefix) {
     return (
       <MultiStepBranchOutline
@@ -476,16 +583,20 @@ function MultiStepBranchOutline({
   snapshot,
   selectedActionId,
   selectAction,
+  independent = false,
 }: {
   snapshot: ResearchBranchSnapshot;
   selectedActionId: string;
   selectAction: (actionId: string, siblingIndex?: number) => void;
+  independent?: boolean;
 }) {
   return (
     <div className="research-trajectory-outline branch-outline">
       <table>
         <caption>
-          Shared prefix and K={snapshot.siblings.length} continuation steps
+          {independent
+            ? `K=${snapshot.siblings.length} independent trajectories from one matched initial state`
+            : `Shared prefix and K=${snapshot.siblings.length} continuation steps`}
         </caption>
         <thead>
           <tr>
@@ -518,7 +629,9 @@ function MultiStepBranchOutline({
               return (
                 <BranchStepRow
                   key={actionId}
-                  lane={`Sibling ${sibling.index + 1}`}
+                  lane={`${independent ? "Trajectory" : "Sibling"} ${
+                    sibling.index + 1
+                  }`}
                   actionId={actionId}
                   step={step}
                   displayIndex={index + 1}
@@ -574,12 +687,14 @@ function BranchInspector({
   selection,
   previous,
   next,
+  policyUpdateLineage,
   selectAction,
 }: {
   snapshot: ResearchBranchSnapshot;
   selection: BranchSelection | null;
   previous?: BranchSelection;
   next?: BranchSelection;
+  policyUpdateLineage?: ResearchPolicyUpdateLineage[];
   selectAction: (actionId: string, siblingIndex?: number) => void;
 }) {
   if (!selection) {
@@ -602,6 +717,11 @@ function BranchInspector({
   }
 
   const { sibling, step } = selection;
+  const optimizerLineage = policyUpdateLineage?.find(
+    (item) =>
+      item.attempted_policy_update_index ===
+      snapshot.optimizer_update?.attempted_policy_update_index,
+  );
   const reward = sibling ? siblingReturn(sibling) : (step?.reward ?? 0);
   const status = step?.accepted
     ? step.terminal && !step.verifier_passed
@@ -878,6 +998,50 @@ function BranchInspector({
                     }
                   />
                 </dl>
+                {optimizerLineage ? (
+                  <table className="optimizer-lineage-table">
+                    <caption>Optimizer inputs</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Group</th>
+                        <th scope="col">Role</th>
+                        <th scope="col">Snapshot</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {optimizerLineage.optimizer_input_group_ids.map(
+                        (groupId, index) => {
+                          const isPolicySignal =
+                            optimizerLineage.policy_signal_group_ids.includes(
+                              groupId,
+                            );
+                          return (
+                            <tr
+                              key={groupId}
+                              className={
+                                isPolicySignal ? "policy-signal" : undefined
+                              }
+                            >
+                              <th scope="row">
+                                <code>{groupId}</code>
+                              </th>
+                              <td>
+                                {isPolicySignal ? "Signal" : "Anchor only"}
+                              </td>
+                              <td>
+                                <code>
+                                  {optimizerLineage.branch_snapshot_ids[
+                                    index
+                                  ] ?? "—"}
+                                </code>
+                              </td>
+                            </tr>
+                          );
+                        },
+                      )}
+                    </tbody>
+                  </table>
+                ) : null}
               </details>
             ) : null}
             {sibling?.failure_classification?.length ? (
@@ -952,7 +1116,8 @@ function branchNavigation(
   snapshot: ResearchBranchSnapshot,
   selectedSibling: ResearchBranchSibling | null,
 ): BranchSelection[] {
-  if (!snapshot.shared_prefix) {
+  const independent = isIndependentPrefixSnapshot(snapshot);
+  if (!snapshot.shared_prefix && !independent) {
     return snapshot.siblings.map((sibling) => ({
       actionId: legacyActionId(sibling),
       title: `Sibling ${sibling.index + 1}`,
@@ -960,19 +1125,20 @@ function branchNavigation(
       step: null,
     }));
   }
-  const items: BranchSelection[] = snapshot.shared_prefix.steps.map(
-    (step, index) => ({
+  const items: BranchSelection[] =
+    snapshot.shared_prefix?.steps.map((step, index) => ({
       actionId: prefixActionId(step),
       title: `Shared prefix · step ${index + 1}`,
       sibling: null,
       step,
-    }),
-  );
+    })) ?? [];
   if (selectedSibling) {
     items.push(
       ...(selectedSibling.steps ?? []).map((step, index) => ({
         actionId: siblingActionId(selectedSibling, step),
-        title: `Sibling ${selectedSibling.index + 1} · step ${index + 1}`,
+        title: `${
+          independent ? "Trajectory" : "Sibling"
+        } ${selectedSibling.index + 1} · step ${index + 1}`,
         sibling: selectedSibling,
         step,
       })),
@@ -985,15 +1151,53 @@ export function defaultBranchActionId(
   snapshot: ResearchBranchSnapshot,
   sibling: ResearchBranchSibling | null,
 ): string {
-  if (snapshot.shared_prefix) {
+  if (snapshot.shared_prefix || isIndependentPrefixSnapshot(snapshot)) {
     const firstSiblingStep = sibling?.steps?.[0];
     if (sibling && firstSiblingStep) {
       return siblingActionId(sibling, firstSiblingStep);
     }
-    const lastPrefixStep = snapshot.shared_prefix.steps.at(-1);
+    const lastPrefixStep = snapshot.shared_prefix?.steps.at(-1);
     return lastPrefixStep ? prefixActionId(lastPrefixStep) : "";
   }
   return sibling ? legacyActionId(sibling) : "";
+}
+
+export function isIndependentPrefixSnapshot(
+  snapshot: ResearchBranchSnapshot,
+): boolean {
+  const rollout = snapshot.rollout_topology;
+  const hasIndependentRolloutMarker =
+    rollout?.revision === "independent-prefix-k4@1";
+  const condition = snapshot.comparison_condition;
+  if (hasIndependentRolloutMarker && !condition) {
+    throw new Error(
+      "Independent trajectory evidence requires its typed comparison condition.",
+    );
+  }
+  if (condition?.prefix_topology !== "independent") {
+    if (hasIndependentRolloutMarker) {
+      throw new Error(
+        "Independent trajectory evidence does not match its comparison condition.",
+      );
+    }
+    return false;
+  }
+  if (
+    condition.shared_prefix !== false ||
+    snapshot.shared_prefix !== null ||
+    snapshot.checkpoint !== null ||
+    snapshot.initial_state?.role !==
+      "matched_task_initial_state_not_decision_checkpoint" ||
+    !hasIndependentRolloutMarker ||
+    rollout?.static_group_width !== 4 ||
+    rollout.independent_model_generated_prefixes !== true ||
+    rollout.shared_model_generated_prefix !== false ||
+    rollout.sibling_group_relative_credit !== true ||
+    rollout.initial_state_matching !== "same_task_initial_state"
+  ) {
+    throw new Error("Independent trajectory evidence is incomplete.");
+  }
+  return true;
 }
 
 function prefixActionId(step: ResearchBranchStep): string {
@@ -1021,18 +1225,24 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 export function branchSnapshotLabel(snapshot: ResearchBranchSnapshot): string {
+  const collection =
+    snapshot.collection_index !== undefined &&
+    snapshot.collection_count !== undefined
+      ? ` · Group ${snapshot.collection_index}/${snapshot.collection_count}`
+      : "";
   const replay = snapshot.replay ? " · Replay" : "";
   const probe =
     snapshot.curriculum_role === "adjacent_complexity_probe"
       ? " · Complexity probe"
       : "";
-  return `${branchSnapshotSequenceLabel(snapshot)} · Level ${snapshot.level}${replay}${probe}`;
+  return `${branchSnapshotSequenceLabel(snapshot)}${collection} · Level ${snapshot.level}${replay}${probe}`;
 }
 
 function branchSnapshotSequenceLabel(snapshot: ResearchBranchSnapshot): string {
-  return snapshot.optimizer_update === null
-    ? `Branch group ${snapshot.update}`
-    : `Update ${snapshot.update}`;
+  if (snapshot.optimizer_update === null) {
+    return `Branch group ${snapshot.update}`;
+  }
+  return `Update ${snapshot.optimizer_update?.update ?? snapshot.update}`;
 }
 
 function siblingReturn(sibling: ResearchBranchSibling): number {

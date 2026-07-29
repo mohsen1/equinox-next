@@ -5,7 +5,7 @@ stage below require an explicit operator command.
 
 The guarded larger-model flow targets the manifest-pinned
 `Qwen/Qwen2.5-Coder-7B-Instruct` revision under profile
-`qwen2.5-coder-7b-runpod-h100@7`. It has two paid stages:
+`qwen2.5-coder-7b-runpod-h100@8`. It has two paid stages:
 
 1. a bounded eligibility screen that does not update the policy; and
 2. a branch-aware training pilot authorized by the screen receipt.
@@ -13,11 +13,11 @@ The guarded larger-model flow targets the manifest-pinned
 A completed screen is not evidence of learning. It only decides whether the exact model,
 revision, profile, and hardware combination may enter the pilot.
 
-Profile `@7` binds simulator `repository-repair-simulator@9`, action protocol
+Profile `@8` binds simulator `repository-repair-simulator@9`, action protocol
 `repository-repair-json-tools@8`, and terminal submission contract
 `accepted-passing-test-or-finish@1`. An accepted passing test now completes a repair
 without a redundant finish action; an accepted finish remains terminal. The pilot is
-`runpod-repository-repair-large-model-pilot@5`, its objective is
+`runpod-repository-repair-large-model-pilot@6`, its objective is
 `verified-repair-chain-transactional-retention-policy-gradient@18`, and its reward
 contract remains `correctness-gated-efficiency@1`.
 
@@ -53,7 +53,7 @@ the pilot. The two paid GPU stages have a combined `$16.00` ceiling. Including t
 `$5.41` already spent, this leaves `$3.59` of the authorized `$25.00` for CPU prewarm,
 network-volume storage, and contingency. The 120-second reserve is not training time.
 
-This campaign permits exactly one ten-minute CPU staging allocation, one profile-`@7`
+This campaign permits exactly one ten-minute CPU staging allocation, one profile-`@8`
 screen, and at most one screen-authorized pilot. Record a fresh `runpodctl user` balance
 before each allocation; an ambiguous create or a changed spend envelope is a stop
 condition, not permission to retry. At the current settled spend, the worst-case
@@ -63,225 +63,142 @@ keeps the campaign below `$21.76` and leaves more than `$3.24` of authorization 
 
 ## Prepare the network volume and workload on CPU
 
-The launcher never creates or populates a network volume, and it never stages workload
-bytes during paid allocation. Both `--preflight-only` and paid launch are blocked unless
-the configured volume has:
+Use the repository operator to refresh the exact model-readiness and workload-stage
+receipts on an already populated network volume. It is the only supported profile-refresh
+procedure. It loads the current profile, model, runtime image, source contract, volume
+size, and bundle identity from
+`research/studies/larger-model-eligibility.json`; do not copy profile IDs or bundle
+digests into a manual provider command.
 
-- a seven-day model-readiness receipt for the pinned snapshot and dependencies; and
-- a 24-hour workload-stage receipt for the exact content-addressed bundle.
+This command does not create a network volume, install dependencies, or download a model.
+Before using it, the configured volume must already contain the manifest-pinned model
+snapshot and dependency directory. If the volume is new or either prerequisite is
+missing, stop and use a separately reviewed initial-volume provisioning procedure. A
+failed refresh is not authority to download during GPU allocation.
 
-Readiness receipts, stage receipts, and screen authorizations from the former L40 profile
-or the H100 `@1` through `@6` profiles do not match this profile and cannot be reused.
-
-Create a 50 GB volume in a data center that offers an `NVIDIA H100 80GB HBM3`:
-
-```bash
-runpodctl network-volume create \
-  --name equinox-qwen25-coder-7b \
-  --size 50 \
-  --data-center-id DATA_CENTER_ID
-
-export EQUINOX_RUNPOD_NETWORK_VOLUME_ID=VOLUME_ID_FROM_RESPONSE
-export EQUINOX_RUNPOD_DATA_CENTER_IDS=DATA_CENTER_ID
-```
-
-Attach it to one short-lived secure CPU pod. Before creation, record `runpodctl user`,
-require `runpodctl pod list --all` to contain no active pod, and choose a unique pod name.
-Set `--terminate-after` to no more than ten minutes in the future. This staging allocation
-has a `$0.25/hour` ceiling and is not retried when creation is ambiguous.
-
-```bash
-export PREWARM_POD_NAME="equinox-7b-prewarm-UNIQUE_SUFFIX"
-export PREWARM_DEADLINE_UTC="TEN_MINUTES_FROM_NOW_UTC"
-
-runpodctl pod create \
-  --name "$PREWARM_POD_NAME" \
-  --compute-type cpu \
-  --cloud-type SECURE \
-  --image runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404@sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851 \
-  --network-volume-id "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" \
-  --data-center-ids "$EQUINOX_RUNPOD_DATA_CENTER_IDS" \
-  --terminate-after "$PREWARM_DEADLINE_UTC"
-```
-
-If creation returns without one unambiguous pod ID, reconcile only
-`$PREWARM_POD_NAME` for five minutes. Do not issue a second create. After creation,
-inspect that exact pod with `runpodctl pod get --include-network-volume`; delete it
-immediately unless it is secure CPU compute, attaches exactly the configured volume in
-the configured data center, uses the pinned image, has the requested termination
-deadline, and reports `adjustedCostPerHr`, `costPerHr`, or `costPerHour` at or below
-`$0.25`. CPU capacity being unavailable is a stop condition, not authorization to stage
-on an H100.
-
-Use the connection shown by `runpodctl ssh info PREWARM_POD_ID`. On that CPU pod:
-
-```bash
-python3 -m pip install \
-  --no-deps \
-  --target /workspace/equinox-state/python \
-  accelerate==1.14.0 \
-  peft==0.19.1 \
-  transformers==5.14.1
-
-PYTHONPATH=/workspace/equinox-state/python python3 - <<'PY'
-from huggingface_hub import snapshot_download
-
-snapshot_download(
-    repo_id="Qwen/Qwen2.5-Coder-7B-Instruct",
-    revision="c03e6d358207e414f1eca0bb1891e29f1db0e242",
-    cache_dir="/workspace/equinox-state/huggingface",
-)
-PY
-```
-
-Copy the repository's `research/` directory and
-`scripts/stage-runpod-workload-bundle` under `/tmp/equinox-prewarm/` over the same SSH
-connection.
-
-Set the same volume and data-center values in the CPU shell. Then hash the snapshot and
-create its readiness receipt:
+Set exactly one volume and data center, then run the read-only preflight:
 
 ```bash
 export EQUINOX_RUNPOD_NETWORK_VOLUME_ID=VOLUME_ID
 export EQUINOX_RUNPOD_DATA_CENTER_IDS=DATA_CENTER_ID
 
-PYTHONPATH=/workspace/equinox-state/python \
-python3 /tmp/equinox-prewarm/research/runpod/larger_model_gate.py \
-  --manifest /tmp/equinox-prewarm/research/studies/larger-model-eligibility.json \
-  create-volume-receipt \
-  --volume-id "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" \
-  --data-center-id "$EQUINOX_RUNPOD_DATA_CENTER_IDS" \
-  --volume-size-gb 50 \
-  --snapshot /workspace/equinox-state/huggingface/hub/models--Qwen--Qwen2.5-Coder-7B-Instruct/snapshots/c03e6d358207e414f1eca0bb1891e29f1db0e242 \
-  >"/workspace/equinox-state/larger-model-volume-$EQUINOX_RUNPOD_NETWORK_VOLUME_ID.json"
+./scripts/stage-larger-model-runpod-volume --preflight-only
 ```
 
-Copy that JSON back over the same SSH connection. Its required local path is:
+Preflight creates no provider resource and writes no receipt. It must report
+`"outcome":"preflight_passed"` and `"allocation_attempted":false`. Review the emitted
+profile, manifest, source-contract, bundle, image, volume, `$0.25/hour` cost limit,
+600-second lifetime, 300-second ambiguity window, installed `runpodctl` version, and
+absolute-datetime termination contract. It builds both the deterministic allowlisted
+operator source archive and workload bundle from the same immutable Git `HEAD` snapshot;
+it never pairs live-worktree bundle bytes with a different archive. Any participating
+file that differs from `HEAD` is rejected. It fails if the shared operator lease exists
+or unless the account has no pod, exactly the configured manifest-sized volume, and no
+more than the manifest's storage-only hourly spend.
+
+After reviewing that output, run the operator once:
+
+```bash
+./scripts/stage-larger-model-runpod-volume
+```
+
+The operator takes the same persistent
+`~/.local/state/equinox/runpod/operator.lock/lease.json` lease as the GPU launchers,
+rechecks the complete idle provider state immediately before create, and issues at most
+one create request. It uses a unique name, secure CPU compute, the manifest's exact
+`tag@sha256` image, a 5 GB container disk, the exact volume and data center mounted at
+`/workspace`, SSH, and a provider auto-termination deadline ten minutes after the frozen
+start time. It has no GPU selection path and never falls back to H100.
+
+Creation has three distinct outcomes:
+
+- A successful response must contain one safe pod ID. The operator then attests the
+  unique name, documented CPU flavor and vCPU fields, absence of GPU allocation evidence,
+  Secure Cloud, pinned image, 5 GB container disk, exact volume and mount, and an hourly
+  rate no greater than `$0.25` before SSH. Missing initialization fields are polled for at
+  most 30 seconds; any contradictory field fails immediately. The installed CLI contract
+  and exact create arguments bind the absolute termination deadline; if the provider
+  response includes `computeType` or `terminateAfter`, either must match exactly.
+- The provider's explicit CPU-capacity rejection is classified as
+  `capacity_unavailable_confirmed_zero_allocation` with exit code `75` only after the
+  unique name remains absent through the full five-minute visibility window, every
+  reconciliation query succeeds, and three final zero-pod polls pass.
+- Every other missing, malformed, timed-out, or contradictory create result is
+  `ambiguous_create_*` with exit code `70`. A returned or later-visible pod ID is deleted
+  immediately. The operator never issues a second create.
+
+Exit `75` is a confirmed no-allocation capacity stop, not authority to retry or use a GPU.
+Exit `70` retains the shared lease even when the final polls are clean, so a sequential
+command cannot hide the ambiguity. Follow the lease-recovery procedure below before any
+later provider action.
+
+On an attested CPU pod, the operator verifies the mounted filesystem and rejects symlinked
+staging parents. It copies the deterministic, allowlisted, `HEAD`-bound source archive and
+canonical bundle, verifies both archive identities remotely, stages the bundle at its
+content-addressed read-only path, and creates fresh model and stage receipts. It also runs
+a real AdamW transactional-retention round trip with the image's Torch build and verifies
+the exact `torch.__version__`, CUDA build, profile, checkout commit, archive and source
+digests, checkpoint digest and size, restored and advanced weights, policy counters,
+retained observation, and optimizer state.
+
+Every paid remote step has a bounded timeout and may start only when the provider lifetime
+has enough time left for that full timeout plus the 180-second teardown reserve. When the
+reserve would be consumed, the step is not started and teardown begins. Provider
+auto-termination remains the independent ten-minute backstop.
+
+The receipts and Torch evidence are copied to pending local files and verified before
+installation. Receipt verification uses a fresh provider-volume response. The operator
+then deletes the exact pod and requires three consecutive successful polls with zero pods,
+the exact sole volume, and storage-only spend. Failed provider queries do not count as
+absence. Only after teardown is confirmed are the verified files installed with
+an fsynced set-publication journal, per-file atomic replacements, and rollback:
 
 ```text
 var/research-proofs/larger-model-volume-VOLUME_ID.json
-```
-
-Then verify it locally against the current provider volume:
-
-```bash
-mkdir -p var/research-proofs
-export EQUINOX_LARGER_MODEL_VOLUME_RECEIPT="$PWD/var/research-proofs/larger-model-volume-$EQUINOX_RUNPOD_NETWORK_VOLUME_ID.json"
-
-runpodctl network-volume get "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" |
-  python3 research/runpod/larger_model_gate.py \
-    verify-volume-receipt \
-    "$EQUINOX_LARGER_MODEL_VOLUME_RECEIPT" \
-    -
-```
-
-The receipt binds the profile, model revision, every required file digest, dependency
-versions and successful imports, volume ID, data center, and size. It expires after seven
-days. The base image supplies `torch==2.8.0+cu128`; do not install another torch build into
-the volume.
-
-### Stage the exact workload bundle
-
-Build the canonical screen-and-pilot bundle from the checkout that will launch the run.
-The builder creates a deterministic USTAR archive, compresses it with XZ, verifies the
-profile source contract, and rejects output larger than 2 MiB.
-
-```bash
-bundle_directory="$(mktemp -d)"
-bundle_file="$bundle_directory/workload-bundle.tar.xz"
-bundle_metadata="$bundle_directory/bundle-metadata.json"
-
-./scripts/stage-runpod-workload-bundle \
-  --manifest research/studies/larger-model-eligibility.json \
-  build \
-  --repository-root "$PWD" \
-  --output "$bundle_file" \
-  >"$bundle_metadata"
-
-jq . "$bundle_metadata"
-```
-
-Copy the bundle and metadata as `/tmp/equinox-prewarm/workload-bundle.tar.xz` and
-`/tmp/equinox-prewarm/bundle-metadata.json` on the attached CPU pod. Stage the bytes on
-the mounted volume using the exact identity emitted by the builder:
-
-```bash
-bundle_digest="$(jq -r '.bundle_digest' /tmp/equinox-prewarm/bundle-metadata.json)"
-bundle_size_bytes="$(jq -r '.bundle_size_bytes' /tmp/equinox-prewarm/bundle-metadata.json)"
-
-PYTHONPATH=/tmp/equinox-prewarm \
-bash /tmp/equinox-prewarm/scripts/stage-runpod-workload-bundle \
-  --manifest /tmp/equinox-prewarm/research/studies/larger-model-eligibility.json \
-  stage-mounted \
-  --bundle /tmp/equinox-prewarm/workload-bundle.tar.xz \
-  --bundle-digest "$bundle_digest" \
-  --bundle-size-bytes "$bundle_size_bytes" \
-  --mount-root /workspace \
-  --volume-id "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" \
-  --data-center-id "$EQUINOX_RUNPOD_DATA_CENTER_IDS" \
-  --volume-size-gb 50 \
-  --receipt-output \
-    "/workspace/equinox-state/larger-model-bundle-stage-$EQUINOX_RUNPOD_NETWORK_VOLUME_ID.json"
-```
-
-The staging helper writes the bundle read-only at:
-
-```text
-/workspace/equinox-state/workload-bundles/PROFILE_ID/BUNDLE_SHA256_HEX.tar.xz
-```
-
-It uses a content-addressed compare-and-set write and verifies the final regular file,
-size, and bytes. It refuses symlinks, non-regular files, or different bytes already
-present at the digest path.
-
-Copy the stage receipt back to:
-
-```text
 var/research-proofs/larger-model-bundle-stage-VOLUME_ID.json
+var/research-proofs/equinox-volume-stage-*.torch-retention.json
+var/research-proofs/equinox-volume-stage-*.torch-retention.sha256
+var/research-proofs/equinox-volume-stage-*.volume-stage-attempt.json
+var/research-proofs/equinox-volume-stage-*.volume-stage-recovery.json
 ```
 
-Delete the staging pod as soon as both refreshed receipts are copied back. Confirm its
-exact ID is absent in three successful provider queries before accepting either local
-receipt. The account's ongoing spend should then return to the recorded storage-only
-baseline, currently bounded by the manifest at `$0.01/hour`.
+Existing receipts survive remote, verification, teardown, and recoverable publication
+failures. An interrupted, incompletely rolled-back publication retains both its journal
+and the shared lease, which blocks both CPU and GPU operators until explicit recovery. No
+provider query runs after publication begins. When a receipt belongs to an older profile,
+the operator archives it under a profile-qualified name before installing the new
+verified receipt; an existing archive with different bytes is a fail-closed conflict, not
+permission to overwrite either receipt. A successful command reports
+`"outcome":"staged"`, both receipt digests, the Torch evidence digest, three idle polls,
+and `"gpu_fallback_used":false`.
 
-Then verify the receipt against the current provider volume and the locally built bundle:
+If the lease state is `publishing_artifacts`, `artifacts_published`,
+`artifact_publication_rolled_back`, or `artifact_publication_recovery_complete`, do not
+remove the lease or transaction directory manually. With the same exact volume and data
+center environment, first confirm that the `operator_pid` recorded in the lease has
+exited, then run:
 
 ```bash
-export EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT="$PWD/var/research-proofs/larger-model-bundle-stage-$EQUINOX_RUNPOD_NETWORK_VOLUME_ID.json"
-
-bundle_digest="$(jq -r '.bundle_digest' "$bundle_metadata")"
-bundle_size_bytes="$(jq -r '.bundle_size_bytes' "$bundle_metadata")"
-bundle_path="$(jq -r '.bundle_path' "$bundle_metadata")"
-
-runpodctl network-volume get "$EQUINOX_RUNPOD_NETWORK_VOLUME_ID" |
-  ./scripts/stage-runpod-workload-bundle \
-    --manifest research/studies/larger-model-eligibility.json \
-    verify-stage-receipt \
-    "$EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT" \
-    - \
-    --bundle-digest "$bundle_digest" \
-    --bundle-size-bytes "$bundle_size_bytes" \
-    --bundle-path "$bundle_path"
+./scripts/stage-larger-model-runpod-volume --recover-publication
 ```
 
-The stage receipt binds the profile and source-contract digests, handoff revision, bundle
-digest, size, compression, content-addressed path and allowlist, plus the provider volume
-ID, data center, and minimum size. It expires 24 hours after `staged_at`; bundle bytes
-remaining on the volume do not extend that deadline.
+This recovery mode issues no provider query and creates no resource. For an interrupted
+publication it compares every destination with the journal's old and new digests, restores
+the fsynced `old-*` set (or removes a destination that did not previously exist), verifies
+the restored set, and reports `"outcome":"artifact_publication_rolled_back"`. If the lease
+already records `artifacts_published`, it instead verifies every new digest, both receipt
+digests and identities, and the Torch evidence/hash pair before reporting
+`"outcome":"artifact_publication_completed"`. It fsyncs the result, removes the transaction
+journal, and only then releases the shared lease. Any missing backup, unknown bytes,
+changed identity, unsafe path, invalid receipt, live original operator process, or
+concurrent recovery attempt leaves the lease in place. Before lease release it atomically
+writes an idempotent `*.volume-stage-recovery.json` that retains the original pod, start,
+cost, and idle-poll evidence while recording `"recovery_allocation_attempted":false`. If
+the interrupted process already wrote a failed `*.volume-stage-attempt.json`, recovery
+preserves that record; the paid attempt never disappears from the audit trail.
 
-Copy both receipts back before deleting the CPU pod.
-
-```bash
-runpodctl pod delete PREWARM_POD_ID
-runpodctl pod list --all
-runpodctl user
-```
-
-Do not continue until the prewarm pod is absent, the provider lists exactly the verified
-configured volume and no other network volume, and ongoing hourly spend is no more than
-the manifest-pinned `$0.01/hour` storage-only baseline. The network volume remains for
-the screen and pilot.
+The model-readiness receipt expires after seven days. The stage receipt expires 24 hours
+after `staged_at`; bundle bytes remaining on the volume do not extend that deadline.
 
 ## Before either paid stage
 
@@ -372,10 +289,11 @@ silently discard the oldest prompt content. Before the screen, the reversible H1
 capacity smoke exercises 2,240 tokens: the larger screen/pilot input envelope plus the
 192-token generation cap.
 
-Both stages run the same `@7` terminal contract. A schema-valid, accepted test action
-that passes hidden verification ends the trajectory as solved immediately. A failing
-test remains nonterminal unless it consumes the repair horizon, and the existing finish
-action retains its prior solved or finished-with-failures behavior.
+Both stages run the same `accepted-passing-test-or-finish@1` terminal contract. A
+schema-valid, accepted test action that passes hidden verification ends the trajectory
+as solved immediately. A failing test remains nonterminal unless it consumes the repair
+horizon, and the existing finish action retains its prior solved or
+finished-with-failures behavior.
 
 The pilot-runtime gate extrapolates the observed level-0 baseline across every pilot
 level. It multiplies by `(8 + 10 + 14 + 18) / 8 = 6.25` for the four repair horizons,
@@ -489,11 +407,24 @@ completion removes it only after teardown is confirmed; unresolved cleanup leave
 place. This state is shared by local worktrees. It is not a distributed lock: operate the
 RunPod account from one designated host only.
 
-After an interruption, do not delete the lease to force another launch. Inspect it and
-reconcile the exact pod name:
+After an interruption, do not delete the lease to force another launch. Inspect its
+state first:
 
 ```bash
 jq . ~/.local/state/equinox/runpod/operator.lock/lease.json
+```
+
+For `publishing_artifacts`, `artifacts_published`,
+`artifact_publication_rolled_back`, or
+`artifact_publication_recovery_complete`, the CPU volume-stage operator's
+`--recover-publication` command is the only permitted lease-release path. Follow the
+procedure in “Prepare the network volume and workload on CPU” only after the recorded
+operator process has exited; do not run the provider reconciliation or the manual `rm`
+commands below for those states.
+
+For every non-publication lease state, reconcile the exact pod name and account spend:
+
+```bash
 runpodctl pod list --all
 runpodctl user
 ```
@@ -509,7 +440,8 @@ When pod creation returns without an ID, the launcher treats provider state as a
 It watches the unique pod name for five minutes and allows up to 330 seconds for
 reconciliation. A failed or malformed provider query is `unknown`, not proof of absence.
 If reconciliation cannot prove both pod absence and the verified storage-only hourly
-spend, the lease remains.
+spend, the lease remains. The following manual release applies only after that
+non-publication reconciliation:
 
 ```bash
 rm -- ~/.local/state/equinox/runpod/operator.lock/lease.json

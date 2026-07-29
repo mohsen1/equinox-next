@@ -87,7 +87,7 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash() -> None:
 
 def test_v33_pilot_constants_do_not_modify_frozen_sources() -> None:
     assert pilot.MODEL_REVISION == gate.MODEL_REVISION
-    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@5"
+    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@6"
     assert pilot.OBJECTIVE_ID == "verified-repair-chain-transactional-retention-policy-gradient@18"
     assert pilot.REWARD_CONTRACT_REVISION == "correctness-gated-efficiency@1"
     assert pilot.RETENTION_TRANSACTION_REVISION == "adapter-optimizer-policy-lineage@1"

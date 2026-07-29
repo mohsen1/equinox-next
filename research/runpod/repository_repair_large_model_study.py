@@ -21,7 +21,7 @@ BASE_OBJECTIVE_ID = "verified-repair-chain-transactional-retention-policy-gradie
 TRANSACTIONAL_RETENTION_REVISION = "adapter-optimizer-policy-lineage@1"
 SOURCE_SHA256 = {
     "repository_repair_large_model_trainer.py": (
-        "27ecb447306dae587089aab3eb6e0d9506b5f79468c4bf9d79bde1f942744689"
+        "f036790903caef7651f4c34f632372ff1fd97ab181093dc014a726a590bcc97d"
     ),
     "repository_repair_env.py": (
         "527050c5444a3731119773d4e0932840068fda9664654dce9bf0350edf56e40f"

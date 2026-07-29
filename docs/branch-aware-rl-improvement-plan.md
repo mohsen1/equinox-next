@@ -432,6 +432,22 @@ acceptance rule, static `K=4`, dynamic complexity, teacher-free optimization, an
 one-time test remain unchanged. The profile also lowers the learning rate to `1e-5` and
 raises reference KL to `1.0`.
 
+Profile `qwen2.5-coder-7b-runpod-h100@8` keeps the profile-`@7` scientific method,
+objective `verified-repair-chain-transactional-retention-policy-gradient@18`, and
+retention transaction unchanged. It advances the screen to
+`larger-model-eligibility-screen@8` and the pilot to
+`runpod-repository-repair-large-model-pilot@6` so the immutable source contract includes
+the complete-evidence trainer. That trainer persists every completed active, adjacent
+probe, and replay branch group instead of retaining only a 40-snapshot presentation
+window. It binds every optimizer input group to one attempted update, resolves its
+retained or rolled-back disposition, and reconstructs policy-update lineage from the
+branch evidence on resume and completion. The evidence is fail-closed at 1,024 groups
+and 16 MiB, both above the manifest's 40-update maximum. This is an observability and
+auditability correction. The result also reports a reconstructable total of sampled
+completion tokens so a later independent-prefix comparison can match realized sampling
+cost. Static `K=4`, dynamic complexity, the paired acceptance rule, learning rate, KL
+coefficient, and sealed test policy do not change.
+
 Operational failures now retain the complete last observed branch, validation, and
 curriculum progress. A failed execution writes an immutable
 `operational_failure@1` receipt after cleanup, records remote and operator errors
@@ -934,7 +950,9 @@ heuristic when inferred.
 
 - Freeze revisions and task splits.
 - Complete three seeds for the shared-prefix condition.
-- Run the independent matched-budget baseline.
+- Run the
+  [static-`K=4` independent-prefix GRPO comparison](independent-prefix-grpo-comparison.md)
+  under its exact realized action, token, completion, task, and seed contract.
 - Produce the aggregate study report.
 - Decide whether adaptive complexity and replay deserve separate ablations.
 

@@ -25,7 +25,7 @@ except ModuleNotFoundError:
     from . import repository_repair_large_model_trainer as frozen
 
 
-WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@5"
+WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@6"
 OBJECTIVE_ID = "verified-repair-chain-transactional-retention-policy-gradient@18"
 REWARD_CONTRACT_REVISION = "correctness-gated-efficiency@1"
 RETENTION_TRANSACTION_REVISION = "adapter-optimizer-policy-lineage@1"

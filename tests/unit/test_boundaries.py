@@ -899,6 +899,24 @@ def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
             "retained_checkpoint_update": 40,
             "retention_rollback_count": 2,
             "retention_transaction_revision": "adapter-optimizer-policy-lineage@1",
+            "pending_optimizer_input_group_count": 2,
+            "pending_optimizer_input_group_ids": ["group-pending", "anchor-pending"],
+            "branch_evidence_complete": True,
+            "branch_evidence_group_count": 1,
+            "branch_evidence_limit": 1024,
+            "branch_evidence_payload_bytes": 23884,
+            "branch_evidence_payload_limit_bytes": 16777216,
+            "total_sampled_completion_tokens": 128,
+            "discarded_sampled_completion_tokens": 8,
+            "policy_update_lineage": [
+                {
+                    "attempted_policy_update_index": 1,
+                    "update": 20,
+                    "policy_signal_group_ids": ["group-a", "group-b"],
+                    "retention_lineage_status": "retained",
+                },
+                "invalid",
+            ],
         }
     )
 
@@ -921,6 +939,26 @@ def test_research_trajectory_keeps_only_persisted_training_evidence() -> None:
     assert trajectory["retained_checkpoint_update"] == 40
     assert trajectory["retention_rollback_count"] == 2
     assert trajectory["retention_transaction_revision"] == "adapter-optimizer-policy-lineage@1"
+    assert trajectory["pending_optimizer_input_group_count"] == 2
+    assert trajectory["pending_optimizer_input_group_ids"] == [
+        "group-pending",
+        "anchor-pending",
+    ]
+    assert trajectory["branch_evidence_complete"] is True
+    assert trajectory["branch_evidence_group_count"] == 1
+    assert trajectory["branch_evidence_limit"] == 1024
+    assert trajectory["branch_evidence_payload_bytes"] == 23884
+    assert trajectory["branch_evidence_payload_limit_bytes"] == 16777216
+    assert trajectory["total_sampled_completion_tokens"] == 128
+    assert trajectory["discarded_sampled_completion_tokens"] == 8
+    assert trajectory["policy_update_lineage"] == [
+        {
+            "attempted_policy_update_index": 1,
+            "update": 20,
+            "policy_signal_group_ids": ["group-a", "group-b"],
+            "retention_lineage_status": "retained",
+        }
+    ]
 
 
 def test_research_trajectory_projects_live_multi_step_branch_lineage() -> None:
@@ -962,6 +1000,46 @@ def test_research_trajectory_projects_live_multi_step_branch_lineage() -> None:
     assert trajectory["restored_continuations"] is True
     assert trajectory["branch_snapshots"] == [latest_branch]
     assert trajectory["total_sampled_actions"] == 34
+
+
+def test_research_trajectory_never_retruncates_terminal_branch_evidence() -> None:
+    snapshots = [
+        {
+            "snapshot_id": f"update-{index // 4 + 1}-snapshot-{index}",
+            "task_id": f"group-{index}",
+            "siblings": [{"index": sibling} for sibling in range(4)],
+        }
+        for index in range(64)
+    ]
+    trajectory = research_trajectory(
+        {
+            "schema_version": 2,
+            "branch_width": 4,
+            "complexity_strategy": "adaptive",
+            "multi_step": True,
+            "branch_evidence_complete": True,
+            "branch_evidence_group_count": len(snapshots),
+            "branch_snapshots": snapshots,
+            "policy_update_lineage": [
+                {
+                    "attempted_policy_update_index": 1,
+                    "policy_signal_group_ids": ["group-0", "group-63"],
+                    "branch_snapshot_ids": [
+                        "update-1-snapshot-0",
+                        "update-16-snapshot-63",
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert len(trajectory["branch_snapshots"]) == 64
+    assert trajectory["branch_snapshots"][0]["task_id"] == "group-0"
+    assert trajectory["branch_snapshots"][-1]["task_id"] == "group-63"
+    assert trajectory["policy_update_lineage"][0]["policy_signal_group_ids"] == [
+        "group-0",
+        "group-63",
+    ]
 
 
 @pytest.mark.parametrize("branch_width", (1, 4))

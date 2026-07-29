@@ -217,7 +217,361 @@ export function decodeResearchTrajectoryResponse(
   }
   array(trajectory.checkpoints, "trajectory checkpoints");
   array(trajectory.promotions, "trajectory promotions");
-  array(trajectory.branch_snapshots, "trajectory branch snapshots");
+  const branchSnapshots = array(
+    trajectory.branch_snapshots,
+    "trajectory branch snapshots",
+  );
+  branchSnapshots.forEach(validateComparisonBranchSnapshot);
+  const branchTaskIds = new Set<string>();
+  const branchSnapshotIds = new Set<string>();
+  const branchSnapshotIdByTaskId = new Map<string, string>();
+  const optimizerBindingsByAttempt = new Map<
+    number,
+    {
+      groupIds: string[];
+      snapshotIds: string[];
+      declaredInputIds: string[];
+      signalIds: string[];
+      update: number;
+    }
+  >();
+  branchSnapshots.forEach((value, index) => {
+    const snapshot = record(value, `trajectory branch snapshot ${index}`);
+    const snapshotId = requiredString(
+      snapshot.snapshot_id,
+      `trajectory branch snapshot ${index}.snapshot_id`,
+    );
+    if (branchSnapshotIds.has(snapshotId)) {
+      throw new Error(
+        "Invalid API response: branch snapshot identities must be unique.",
+      );
+    }
+    branchSnapshotIds.add(snapshotId);
+    if (typeof snapshot.task_id !== "string") return;
+    const taskId = requiredString(
+      snapshot.task_id,
+      `trajectory branch snapshot ${index}.task_id`,
+    );
+    if (branchTaskIds.has(taskId)) {
+      throw new Error(
+        "Invalid API response: branch task identities must be unique.",
+      );
+    }
+    branchTaskIds.add(taskId);
+    branchSnapshotIdByTaskId.set(taskId, snapshotId);
+
+    if (
+      snapshot.optimizer_update === null ||
+      snapshot.optimizer_update === undefined
+    ) {
+      return;
+    }
+    const optimizerUpdate = record(
+      snapshot.optimizer_update,
+      `trajectory branch snapshot ${index}.optimizer update`,
+    );
+    if (
+      optimizerUpdate.attempted_policy_update_index === null ||
+      optimizerUpdate.attempted_policy_update_index === undefined
+    ) {
+      return;
+    }
+    const attempt = nonnegativeInteger(
+      optimizerUpdate.attempted_policy_update_index,
+      `trajectory branch snapshot ${index}.optimizer attempt`,
+    );
+    if (attempt < 1) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index}.optimizer attempt must be positive.`,
+      );
+    }
+    if (optimizerUpdate.optimizer_input_group_ids === undefined) return;
+    const declaredInputIds = array(
+      optimizerUpdate.optimizer_input_group_ids,
+      `trajectory branch snapshot ${index}.optimizer inputs`,
+    ).map((groupId, groupIndex) =>
+      requiredString(
+        groupId,
+        `trajectory branch snapshot ${index}.optimizer input ${groupIndex}`,
+      ),
+    );
+    if (
+      new Set(declaredInputIds).size !== declaredInputIds.length ||
+      nonnegativeInteger(
+        optimizerUpdate.optimizer_input_group_count,
+        `trajectory branch snapshot ${index}.optimizer input count`,
+      ) !== declaredInputIds.length ||
+      !declaredInputIds.includes(taskId)
+    ) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index} has invalid optimizer input identities.`,
+      );
+    }
+    const update = nonnegativeInteger(
+      optimizerUpdate.update,
+      `trajectory branch snapshot ${index}.optimizer update`,
+    );
+    if (
+      update < 1 ||
+      nonnegativeInteger(
+        optimizerUpdate.optimizer_input_consumed_by_update,
+        `trajectory branch snapshot ${index}.optimizer consumed update`,
+      ) !== update
+    ) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index} has invalid optimizer consumption evidence.`,
+      );
+    }
+    const signalIds = array(
+      optimizerUpdate.policy_signal_group_ids,
+      `trajectory branch snapshot ${index}.policy signal inputs`,
+    ).map((groupId, groupIndex) =>
+      requiredString(
+        groupId,
+        `trajectory branch snapshot ${index}.policy signal input ${groupIndex}`,
+      ),
+    );
+    const signalConsumed = optimizerUpdate.policy_signal_consumed_by_update;
+    if (
+      new Set(signalIds).size !== signalIds.length ||
+      nonnegativeInteger(
+        optimizerUpdate.policy_signal_group_count,
+        `trajectory branch snapshot ${index}.policy signal count`,
+      ) !== signalIds.length ||
+      signalIds.some((groupId) => !declaredInputIds.includes(groupId)) ||
+      (signalIds.includes(taskId)
+        ? nonnegativeInteger(
+            signalConsumed,
+            `trajectory branch snapshot ${index}.policy signal consumed update`,
+          ) !== update
+        : signalConsumed !== undefined)
+    ) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index} has invalid policy signal subset evidence.`,
+      );
+    }
+    const binding = optimizerBindingsByAttempt.get(attempt) ?? {
+      groupIds: [],
+      snapshotIds: [],
+      declaredInputIds,
+      signalIds,
+      update,
+    };
+    if (
+      binding.update !== update ||
+      binding.declaredInputIds.length !== declaredInputIds.length ||
+      binding.declaredInputIds.some(
+        (groupId, groupIndex) => groupId !== declaredInputIds[groupIndex],
+      ) ||
+      binding.signalIds.length !== signalIds.length ||
+      binding.signalIds.some(
+        (groupId, groupIndex) => groupId !== signalIds[groupIndex],
+      )
+    ) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index} disagrees with its optimizer attempt evidence.`,
+      );
+    }
+    binding.groupIds.push(taskId);
+    binding.snapshotIds.push(snapshotId);
+    optimizerBindingsByAttempt.set(attempt, binding);
+  });
+  if (trajectory.branch_evidence_complete !== undefined) {
+    if (typeof trajectory.branch_evidence_complete !== "boolean") {
+      throw new Error(
+        "Invalid API response: expected trajectory branch evidence completeness.",
+      );
+    }
+    const groupCount = nonnegativeInteger(
+      trajectory.branch_evidence_group_count,
+      "trajectory branch evidence group count",
+    );
+    if (
+      trajectory.branch_evidence_complete &&
+      groupCount !== branchSnapshots.length
+    ) {
+      throw new Error(
+        "Invalid API response: complete branch evidence count does not match snapshots.",
+      );
+    }
+  }
+  if (trajectory.total_sampled_completion_tokens !== undefined) {
+    const totalCompletionTokens = nonnegativeInteger(
+      trajectory.total_sampled_completion_tokens,
+      "trajectory total sampled completion tokens",
+    );
+    const discardedCompletionTokens = nonnegativeInteger(
+      trajectory.discarded_sampled_completion_tokens,
+      "trajectory discarded sampled completion tokens",
+    );
+    const persistedCompletionTokens = branchSnapshots.reduce<number>(
+      (total, value, index) => {
+        const snapshot = record(value, `trajectory branch snapshot ${index}`);
+        return (
+          total +
+          nonnegativeInteger(
+            snapshot.sampled_completion_tokens,
+            `trajectory branch snapshot ${index}.sampled completion tokens`,
+          )
+        );
+      },
+      0,
+    );
+    if (
+      persistedCompletionTokens + discardedCompletionTokens !==
+      totalCompletionTokens
+    ) {
+      throw new Error(
+        "Invalid API response: sampled completion tokens do not reconcile with branch evidence.",
+      );
+    }
+  }
+  if (trajectory.policy_update_lineage !== undefined) {
+    array(
+      trajectory.policy_update_lineage,
+      "trajectory policy update lineage",
+    ).forEach((value, index) => {
+      const item = record(value, `trajectory policy update ${index}`);
+      if (
+        item.schema_version !== undefined &&
+        item.schema_version !== 1 &&
+        item.schema_version !== 2
+      ) {
+        throw new Error(
+          `Invalid API response: policy update ${index} has an unsupported lineage schema.`,
+        );
+      }
+      const attempt = nonnegativeInteger(
+        item.attempted_policy_update_index,
+        `policy update ${index}.attempt`,
+      );
+      const update = nonnegativeInteger(
+        item.update,
+        `policy update ${index}.update`,
+      );
+      if (attempt < 1 || update < 1) {
+        throw new Error(
+          `Invalid API response: policy update ${index} identities must be positive.`,
+        );
+      }
+      const signalGroups = array(
+        item.policy_signal_group_ids,
+        `policy update ${index}.signal groups`,
+      ).map((groupId, groupIndex) =>
+        requiredString(
+          groupId,
+          `policy update ${index}.signal group ${groupIndex}`,
+        ),
+      );
+      const optimizerInputs = array(
+        item.optimizer_input_group_ids,
+        `policy update ${index}.optimizer inputs`,
+      ).map((groupId, groupIndex) =>
+        requiredString(
+          groupId,
+          `policy update ${index}.optimizer input ${groupIndex}`,
+        ),
+      );
+      const lineageBranchSnapshots = array(
+        item.branch_snapshot_ids,
+        `policy update ${index}.branch snapshots`,
+      ).map((snapshotId, snapshotIndex) =>
+        requiredString(
+          snapshotId,
+          `policy update ${index}.branch snapshot ${snapshotIndex}`,
+        ),
+      );
+      if (
+        new Set(signalGroups).size !== signalGroups.length ||
+        new Set(optimizerInputs).size !== optimizerInputs.length ||
+        new Set(lineageBranchSnapshots).size !== lineageBranchSnapshots.length
+      ) {
+        throw new Error(
+          `Invalid API response: policy update ${index} lineage identities must be unique.`,
+        );
+      }
+      signalGroups.forEach((id) => {
+        if (!branchTaskIds.has(id)) {
+          throw new Error(
+            `Invalid API response: policy update ${index} signal group has no branch evidence.`,
+          );
+        }
+      });
+      if (signalGroups.some((groupId) => !optimizerInputs.includes(groupId))) {
+        throw new Error(
+          `Invalid API response: policy update ${index} signal groups must be optimizer inputs.`,
+        );
+      }
+      const expectedSnapshotIds = optimizerInputs.map((groupId) => {
+        const snapshotId = branchSnapshotIdByTaskId.get(groupId);
+        if (!snapshotId) {
+          throw new Error(
+            `Invalid API response: policy update ${index} optimizer input has no branch evidence.`,
+          );
+        }
+        return snapshotId;
+      });
+      if (
+        expectedSnapshotIds.length !== lineageBranchSnapshots.length ||
+        expectedSnapshotIds.some(
+          (snapshotId, snapshotIndex) =>
+            snapshotId !== lineageBranchSnapshots[snapshotIndex],
+        )
+      ) {
+        throw new Error(
+          `Invalid API response: policy update ${index} optimizer inputs do not exactly match branch snapshots.`,
+        );
+      }
+      lineageBranchSnapshots.forEach((id) => {
+        if (!branchSnapshotIds.has(id)) {
+          throw new Error(
+            `Invalid API response: policy update ${index} references a missing branch snapshot.`,
+          );
+        }
+      });
+      if (item.schema_version === 2) {
+        if (
+          nonnegativeInteger(
+            item.policy_signal_group_count,
+            `policy update ${index}.signal group count`,
+          ) !== signalGroups.length ||
+          nonnegativeInteger(
+            item.optimizer_input_group_count,
+            `policy update ${index}.optimizer input count`,
+          ) !== optimizerInputs.length
+        ) {
+          throw new Error(
+            `Invalid API response: policy update ${index} lineage counts are inconsistent.`,
+          );
+        }
+        const binding = optimizerBindingsByAttempt.get(attempt);
+        if (
+          !binding ||
+          binding.groupIds.length !== optimizerInputs.length ||
+          binding.groupIds.some(
+            (groupId, groupIndex) => groupId !== optimizerInputs[groupIndex],
+          ) ||
+          binding.declaredInputIds.length !== optimizerInputs.length ||
+          binding.declaredInputIds.some(
+            (groupId, groupIndex) => groupId !== optimizerInputs[groupIndex],
+          ) ||
+          binding.signalIds.length !== signalGroups.length ||
+          binding.signalIds.some(
+            (groupId, groupIndex) => groupId !== signalGroups[groupIndex],
+          ) ||
+          binding.update !== update ||
+          binding.snapshotIds.some(
+            (snapshotId, snapshotIndex) =>
+              snapshotId !== lineageBranchSnapshots[snapshotIndex],
+          )
+        ) {
+          throw new Error(
+            `Invalid API response: policy update ${index} optimizer evidence is not exactly bound to branch snapshots.`,
+          );
+        }
+      }
+    });
+  }
   record(trajectory.initial_by_level, "initial level results");
   record(trajectory.final_by_level, "final level results");
   return {
@@ -225,6 +579,176 @@ export function decodeResearchTrajectoryResponse(
     trajectory:
       trajectory as unknown as ResearchTrajectoryResponse["trajectory"],
   };
+}
+
+function validateComparisonBranchSnapshot(value: unknown, index: number): void {
+  const snapshot = record(value, `trajectory branch snapshot ${index}`);
+  const rolloutTopologyValue =
+    snapshot.rollout_topology &&
+    typeof snapshot.rollout_topology === "object" &&
+    !Array.isArray(snapshot.rollout_topology)
+      ? (snapshot.rollout_topology as Record<string, unknown>)
+      : null;
+  const hasIndependentRolloutMarker =
+    rolloutTopologyValue?.revision === "independent-prefix-k4@1";
+  if (snapshot.comparison_condition === undefined) {
+    if (hasIndependentRolloutMarker) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index} independent rollout requires a typed comparison condition.`,
+      );
+    }
+    return;
+  }
+
+  const condition = record(
+    snapshot.comparison_condition,
+    `trajectory branch snapshot ${index}.comparison condition`,
+  );
+  requiredString(
+    condition.condition_id,
+    `trajectory branch snapshot ${index}.comparison condition id`,
+  );
+  requiredString(
+    condition.short_label,
+    `trajectory branch snapshot ${index}.comparison condition label`,
+  );
+  requiredString(
+    condition.group_credit,
+    `trajectory branch snapshot ${index}.comparison group credit`,
+  );
+  const topology = condition.prefix_topology;
+  if (topology !== "shared" && topology !== "independent") {
+    throw new Error(
+      `Invalid API response: trajectory branch snapshot ${index} has an unknown prefix topology.`,
+    );
+  }
+  if (topology !== "independent" && hasIndependentRolloutMarker) {
+    throw new Error(
+      `Invalid API response: trajectory branch snapshot ${index} rollout topology does not match its comparison condition.`,
+    );
+  }
+  const branchWidth = nonnegativeInteger(
+    condition.branch_width,
+    `trajectory branch snapshot ${index}.comparison branch width`,
+  );
+  if (branchWidth !== 1 && branchWidth !== 4) {
+    throw new Error(
+      `Invalid API response: trajectory branch snapshot ${index} comparison branch width must be 1 or 4.`,
+    );
+  }
+  if (typeof condition.shared_prefix !== "boolean") {
+    throw new Error(
+      `Invalid API response: trajectory branch snapshot ${index} comparison shared-prefix flag is invalid.`,
+    );
+  }
+
+  const siblings = array(
+    snapshot.siblings,
+    `trajectory branch snapshot ${index}.siblings`,
+  );
+  if (siblings.length !== branchWidth) {
+    throw new Error(
+      `Invalid API response: trajectory branch snapshot ${index} does not match its comparison branch width.`,
+    );
+  }
+  let siblingCompletionTokens = 0;
+  siblings.forEach((value, siblingIndex) => {
+    const sibling = record(
+      value,
+      `trajectory branch snapshot ${index}.sibling ${siblingIndex}`,
+    );
+    if (sibling.index !== siblingIndex) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index} sibling order is invalid.`,
+      );
+    }
+    array(
+      sibling.steps,
+      `trajectory branch snapshot ${index}.sibling ${siblingIndex}.steps`,
+    );
+    siblingCompletionTokens += nonnegativeInteger(
+      sibling.completion_tokens,
+      `trajectory branch snapshot ${index}.sibling ${siblingIndex}.completion tokens`,
+    );
+  });
+
+  const sampledCompletionTokens = nonnegativeInteger(
+    snapshot.sampled_completion_tokens,
+    `trajectory branch snapshot ${index}.sampled completion tokens`,
+  );
+  if (topology === "independent") {
+    const rolloutTopology = record(
+      snapshot.rollout_topology,
+      `trajectory branch snapshot ${index}.rollout topology`,
+    );
+    const initialState = record(
+      snapshot.initial_state,
+      `trajectory branch snapshot ${index}.initial state`,
+    );
+    requiredString(
+      initialState.state_id,
+      `trajectory branch snapshot ${index}.initial state id`,
+    );
+    requiredString(
+      initialState.payload_digest,
+      `trajectory branch snapshot ${index}.initial state payload digest`,
+    );
+    requiredString(
+      initialState.fidelity,
+      `trajectory branch snapshot ${index}.initial state fidelity`,
+    );
+    const initialStateRole = requiredString(
+      initialState.role,
+      `trajectory branch snapshot ${index}.initial state role`,
+    );
+    if (
+      branchWidth !== 4 ||
+      condition.schema_version !== 1 ||
+      condition.condition_id !== "independent_prefix_grpo_k4" ||
+      condition.group_credit !== "sibling_relative" ||
+      condition.shared_prefix !== false ||
+      snapshot.shared_prefix !== null ||
+      snapshot.checkpoint !== null ||
+      rolloutTopology.revision !== "independent-prefix-k4@1" ||
+      rolloutTopology.static_group_width !== 4 ||
+      rolloutTopology.independent_model_generated_prefixes !== true ||
+      rolloutTopology.shared_model_generated_prefix !== false ||
+      rolloutTopology.sibling_group_relative_credit !== true ||
+      rolloutTopology.initial_state_matching !== "same_task_initial_state" ||
+      initialStateRole !== "matched_task_initial_state_not_decision_checkpoint"
+    ) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index} is not a faithful independent-prefix K=4 snapshot.`,
+      );
+    }
+    if (siblingCompletionTokens !== sampledCompletionTokens) {
+      throw new Error(
+        `Invalid API response: trajectory branch snapshot ${index} independent completion tokens do not reconcile.`,
+      );
+    }
+    return;
+  }
+
+  const sharedPrefix = record(
+    snapshot.shared_prefix,
+    `trajectory branch snapshot ${index}.shared prefix`,
+  );
+  const prefixCompletionTokens = nonnegativeInteger(
+    sharedPrefix.completion_tokens,
+    `trajectory branch snapshot ${index}.shared prefix completion tokens`,
+  );
+  array(
+    sharedPrefix.steps,
+    `trajectory branch snapshot ${index}.shared prefix steps`,
+  );
+  if (
+    condition.shared_prefix !== true ||
+    prefixCompletionTokens + siblingCompletionTokens !== sampledCompletionTokens
+  ) {
+    throw new Error(
+      `Invalid API response: trajectory branch snapshot ${index} shared-prefix completion tokens do not reconcile.`,
+    );
+  }
 }
 
 function decodeProofSummary(
@@ -285,6 +809,22 @@ function finiteNumber(value: unknown, label: string): number {
     throw new Error(`Invalid API response: expected ${label}.`);
   }
   return value;
+}
+
+function nonnegativeFiniteNumber(value: unknown, label: string): number {
+  const number = finiteNumber(value, label);
+  if (number < 0) {
+    throw new Error(`Invalid API response: expected nonnegative ${label}.`);
+  }
+  return number;
+}
+
+function nonnegativeInteger(value: unknown, label: string): number {
+  const number = nonnegativeFiniteNumber(value, label);
+  if (!Number.isInteger(number)) {
+    throw new Error(`Invalid API response: expected integer ${label}.`);
+  }
+  return number;
 }
 
 function nullableFiniteNumber(value: unknown, label: string): number | null {
