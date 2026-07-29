@@ -23,15 +23,177 @@ except ModuleNotFoundError:
     from . import repository_repair_study as study
 
 
-WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@1"
-OBJECTIVE_ID = "verified-fix-coverage-retention-policy-gradient@15"
-SHARED_PREFIX_CHECKPOINT_STRATEGY = "all_fault_sources_observed"
+WORKLOAD_REVISION = "runpod-repository-repair-large-model-pilot@2"
+OBJECTIVE_ID = "verified-repair-chain-root-branch-retention-policy-gradient@16"
+SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed"
+LOCALIZATION_TELEMETRY_STRATEGY = "all_fault_sources_observed"
+POLICY_CREDIT_SCOPE = (
+    "fault_fixing_edits_and_immediately_upstream_fresh_reads_"
+    "from_verified_successful_siblings"
+)
+LEARNING_SIGNAL = (
+    "verified_fresh_read_and_fault_fixing_edit_chains_"
+    "from_mixed_correctness_sibling_groups"
+)
 MODEL_REVISION = gate.MODEL_REVISION
 PILOT_WORKLOAD = "repository-repair-restored-continuation-post-training"
 OBSERVED_POLICY_UPDATE_COUNT = 0
 POLICY_UPDATE_COUNTS_BY_TRAINING_UPDATE: dict[int, int] = {}
 RETAINED_CHECKPOINT_UPDATE = 0
 RETAINED_POLICY_UPDATE_COUNT = 0
+_FROZEN_SERIALIZE_BRANCH_GROUP = frozen.serialize_branch_group
+_FROZEN_FAULT_SOURCE_READS = frozen.branch_checkpoint_fault_source_reads
+
+
+class PilotRepositoryRepairEnvironment(interface.RepositoryRepairEnvironment):
+    """Use one root listing as the shared prefix before sibling localization."""
+
+    def policy_prompt(self, phase: str) -> str:
+        prompt = super().policy_prompt(phase)
+        if phase != "shared_prefix":
+            return prompt
+        pilot_instruction = (
+            "Expose the repository filename inventory for the branch checkpoint. "
+            'Return exactly {"tool":"list","path":""}; do not read, search, test, edit, '
+            "or finish before the checkpoint."
+        )
+        prompt_header = "PHASE INSTRUCTION\n"
+        environment_boundary = "\n\n<untrusted-environment-data>\n"
+        if not prompt.startswith(prompt_header) or environment_boundary not in prompt:
+            raise RuntimeError("the structured phase prompt contract changed")
+        _, environment_payload = prompt.split(environment_boundary, 1)
+        return (
+            prompt_header
+            + pilot_instruction
+            + environment_boundary
+            + environment_payload
+        )
+
+
+def repository_root_observed_checkpoint(task: Any, prefix: Any) -> bool:
+    """Admit branching after an accepted, complete root listing."""
+
+    if prefix.terminal:
+        return False
+    expected_paths = sorted(task.files)
+    for step in prefix.steps:
+        if (
+            not step.accepted
+            or step.tool != "list"
+            or step.action != {"tool": "list", "path": ""}
+        ):
+            continue
+        try:
+            observation = json.loads(step.observation)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(observation, dict) and observation.get("files") == expected_paths:
+            return True
+    return False
+
+
+def _localization_telemetry(task: Any, environment: Any) -> dict[str, Any]:
+    observed_paths = _FROZEN_FAULT_SOURCE_READS(task, environment)
+    required_reads = len(task.faults)
+    return {
+        "required_fault_source_reads": required_reads,
+        "observed_fault_source_paths": observed_paths,
+        "all_fault_sources_observed": len(observed_paths) == required_reads,
+    }
+
+
+def fault_fixing_edit_and_fresh_read_actions(
+    collection: Any,
+    sibling_index: int,
+) -> list[Any]:
+    """Credit only causal reads and edits from a verified successful sibling."""
+
+    if not 0 <= sibling_index < len(collection.siblings):
+        raise IndexError("sibling index is outside the branch group")
+    sibling = collection.siblings[sibling_index]
+    if sibling.terminal_reason != "solved":
+        return []
+    generated_actions = collection.generated_by_sibling[sibling_index]
+    post_branch_steps = sibling.steps[len(collection.prefix.steps) :]
+    previous_fixed_faults = (
+        int(getattr(collection.prefix.steps[-1], "fixed_faults", 0))
+        if collection.prefix.steps
+        else 0
+    )
+    credited: list[Any] = []
+    for action_index, (generated, step) in enumerate(
+        zip(generated_actions, post_branch_steps, strict=True)
+    ):
+        fixed_faults = int(getattr(step, "fixed_faults", previous_fixed_faults))
+        is_fault_fixing_edit = (
+            step.accepted
+            and step.tool == "edit"
+            and fixed_faults > previous_fixed_faults
+            and bool(generated.input_ids)
+        )
+        if is_fault_fixing_edit:
+            if action_index:
+                preceding_generated = generated_actions[action_index - 1]
+                preceding_step = post_branch_steps[action_index - 1]
+                edited_path = (
+                    step.action.get("path")
+                    if isinstance(step.action, dict)
+                    else None
+                )
+                if (
+                    preceding_step.accepted
+                    and preceding_step.tool == "read"
+                    and isinstance(preceding_step.action, dict)
+                    and preceding_step.action.get("path") == edited_path
+                    and preceding_generated.input_ids
+                ):
+                    credited.append(preceding_generated)
+            credited.append(generated)
+        previous_fixed_faults = fixed_faults
+    return credited
+
+
+def serialize_pilot_branch_group(
+    collection: Any,
+    *,
+    update: int,
+    optimizer_update: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Keep localization coverage visible without using it for branch admission."""
+
+    serialized = _FROZEN_SERIALIZE_BRANCH_GROUP(
+        collection,
+        update=update,
+        optimizer_update=optimizer_update,
+    )
+    shared_prefix = serialized["shared_prefix"]
+    prefix_localization = _localization_telemetry(collection.task, collection.prefix)
+    shared_prefix.update(
+        {
+            "checkpoint_strategy": SHARED_PREFIX_CHECKPOINT_STRATEGY,
+            "required_diagnostic_actions": 1,
+            "required_fault_source_reads": 0,
+            "observed_fault_source_paths": [],
+            "repository_root_observed": repository_root_observed_checkpoint(
+                collection.task,
+                collection.prefix,
+            ),
+        }
+    )
+    serialized["localization_telemetry"] = {
+        "strategy": LOCALIZATION_TELEMETRY_STRATEGY,
+        "branch_admission_gate": False,
+        "prefix": prefix_localization,
+        "siblings": [
+            {
+                "index": index,
+                **_localization_telemetry(collection.task, sibling),
+            }
+            for index, sibling in enumerate(collection.siblings)
+        ],
+    }
+    serialized["policy_credit_scope"] = POLICY_CREDIT_SCOPE
+    return serialized
 
 
 def reset_retained_update_evidence() -> None:
@@ -207,17 +369,29 @@ def validate_runtime_configuration(runtime: Any, manifest: dict[str, Any]) -> No
             raise ValueError(f"larger-model pilot requires {name}={expected_value!r}")
 
 
+def install_bootstrap_checkpoint_contract(branch_width: int) -> None:
+    """Install the K=4 root checkpoint and its narrowly causal policy credit."""
+
+    if branch_width != 4:
+        raise ValueError("the larger-model pilot requires static K=4")
+    frozen.RepositoryRepairEnvironment = PilotRepositoryRepairEnvironment
+    frozen.BRANCH_WIDTH = branch_width
+    frozen_environment.BRANCH_WIDTH = branch_width
+    frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY = SHARED_PREFIX_CHECKPOINT_STRATEGY
+    frozen.MINIMUM_PREFIX_ACCEPTED_ACTIONS = 1
+    frozen.branch_checkpoint_reached = repository_root_observed_checkpoint
+    frozen.fault_fixing_edit_actions = fault_fixing_edit_and_fresh_read_actions
+    frozen.POLICY_CREDIT_SCOPE = POLICY_CREDIT_SCOPE
+    frozen.serialize_branch_group = serialize_pilot_branch_group
+
+
 def install_v32_contract(manifest: dict[str, Any], authorization_digest: str) -> None:
     """Install the new model/interface identity around the byte-frozen trainer."""
 
     reset_retained_update_evidence()
     original_emit_progress = frozen.emit_progress
-    original_checkpoint_reached = frozen.branch_checkpoint_reached
     original_training_stop_decision = frozen.training_stop_decision
     original_make_tasks = frozen.make_tasks
-
-    def nonterminal_checkpoint(task: Any, prefix: Any) -> bool:
-        return not prefix.terminal and original_checkpoint_reached(task, prefix)
 
     def pilot_progress(
         phase: str,
@@ -257,12 +431,9 @@ def install_v32_contract(manifest: dict[str, Any], authorization_digest: str) ->
     frozen.SYSTEM_PROMPT = interface.SYSTEM_PROMPT
     frozen.ACTION_PROTOCOL_REVISION = interface.ACTION_PROTOCOL_REVISION
     frozen.ENVIRONMENT_REVISION = interface.ENVIRONMENT_REVISION
-    frozen.RepositoryRepairEnvironment = interface.RepositoryRepairEnvironment
     frozen_environment.ENVIRONMENT_REVISION = interface.ENVIRONMENT_REVISION
     frozen_environment.ACTION_PROTOCOL_REVISION = interface.ACTION_PROTOCOL_REVISION
-    frozen.BRANCH_WIDTH = manifest["screen"]["branch_width"]
-    frozen_environment.BRANCH_WIDTH = manifest["screen"]["branch_width"]
-    frozen.branch_checkpoint_reached = nonterminal_checkpoint
+    install_bootstrap_checkpoint_contract(manifest["screen"]["branch_width"])
 
     def useful_training_stop_decision(*args: Any, **kwargs: Any) -> Any:
         if kwargs.get("final_evaluation_reserve_exceeded_ceiling") is True:
@@ -317,6 +488,18 @@ def augment_result(
         or total_policy_updates < retained_policy_updates
     ):
         raise RuntimeError("the larger-model pilot retained-update evidence is inconsistent")
+    training_configuration = result.get("training_configuration")
+    if isinstance(training_configuration, dict):
+        result = {
+            **result,
+            "training_configuration": {
+                **training_configuration,
+                "shared_prefix_checkpoint": SHARED_PREFIX_CHECKPOINT_STRATEGY,
+                "minimum_shared_prefix_actions": 1,
+                "policy_credit_scope": POLICY_CREDIT_SCOPE,
+                "learning_signal": LEARNING_SIGNAL,
+            },
+        }
     return {
         **result,
         "workload": PILOT_WORKLOAD,
@@ -345,6 +528,7 @@ def augment_result(
         "gradient_checkpointing_use_reentrant": False,
         "retained_checkpoint_update": retained_update,
         "effective_policy_update_count": retained_policy_updates,
+        "policy_credit_scope": POLICY_CREDIT_SCOPE,
     }
 
 

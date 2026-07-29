@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -71,10 +72,235 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash() -> None:
 
 def test_v32_pilot_constants_do_not_modify_frozen_sources() -> None:
     assert pilot.MODEL_REVISION == gate.MODEL_REVISION
-    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@1"
-    assert pilot.OBJECTIVE_ID == "verified-fix-coverage-retention-policy-gradient@15"
+    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@2"
+    assert (
+        pilot.OBJECTIVE_ID
+        == "verified-repair-chain-root-branch-retention-policy-gradient@16"
+    )
+    assert pilot.SHARED_PREFIX_CHECKPOINT_STRATEGY == "repository_root_observed"
     assert Path(pilot.__file__).name == "repository_repair_large_model_pilot.py"
     assert os.path.basename(pilot.frozen.__file__) == "repository_repair_rl.py"
+
+
+def test_shared_prefix_prompt_requests_only_the_root_listing() -> None:
+    task = pilot.frozen.make_task(0, seed=73)
+    environment = pilot.PilotRepositoryRepairEnvironment(task)
+
+    shared_prefix = environment.policy_prompt("shared_prefix")
+    continuation = environment.policy_prompt("continuation")
+    unchanged_continuation = pilot.interface.RepositoryRepairEnvironment(task).policy_prompt(
+        "continuation"
+    )
+
+    assert shared_prefix.startswith("PHASE INSTRUCTION\n")
+    assert 'Return exactly {"tool":"list","path":""}' in shared_prefix
+    assert "Read each relevant implementation file before the checkpoint" not in shared_prefix
+    shared_data = json.loads(
+        shared_prefix.split("<untrusted-environment-data>\n", 1)[1].splitlines()[0]
+    )
+    assert shared_data["interface_state"]["mechanical_action_space"]["list_paths"] == [""]
+    assert continuation == unchanged_continuation
+
+
+def test_root_checkpoint_requires_an_accepted_complete_nonterminal_listing() -> None:
+    task = pilot.frozen.make_task(0, seed=74)
+    environment = pilot.PilotRepositoryRepairEnvironment(task)
+    fault_path = task.faults[0].path
+
+    rejected_read = environment.step(
+        pilot.frozen.encode_action({"tool": "read", "path": fault_path}),
+        allowed_tools=pilot.frozen.DIAGNOSTIC_TOOLS,
+    )
+    assert rejected_read.accepted is False
+    assert pilot.repository_root_observed_checkpoint(task, environment) is False
+
+    listing = environment.step(
+        pilot.frozen.encode_action({"tool": "list", "path": ""}),
+        allowed_tools=pilot.frozen.DIAGNOSTIC_TOOLS,
+    )
+    assert listing.accepted is True
+    assert json.loads(listing.observation) == {"files": sorted(task.files)}
+    assert pilot.repository_root_observed_checkpoint(task, environment) is True
+
+    environment.terminal = True
+    assert pilot.repository_root_observed_checkpoint(task, environment) is False
+
+
+def test_branching_precedes_localization_and_keeps_coverage_as_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = pilot.frozen.make_task(0, seed=75)
+    fault_path = task.faults[0].path
+    sampling_seed = 5_000
+    monkeypatch.setattr(
+        pilot.frozen,
+        "RepositoryRepairEnvironment",
+        pilot.PilotRepositoryRepairEnvironment,
+    )
+    monkeypatch.setattr(
+        pilot.frozen,
+        "branch_checkpoint_reached",
+        pilot.repository_root_observed_checkpoint,
+    )
+
+    def sample_one(
+        _prompt: str,
+        _stochastic: bool,
+        seed: int,
+    ) -> pilot.frozen.GeneratedAction:
+        if seed == sampling_seed:
+            action = {"tool": "list", "path": ""}
+        elif seed == sampling_seed + 10_000:
+            action = {"tool": "read", "path": fault_path}
+        else:
+            action = {"tool": "finish"}
+        return pilot.frozen.GeneratedAction(
+            response=pilot.frozen.encode_action(action),
+        )
+
+    collection = pilot.frozen.collect_branch_group(
+        task,
+        sample_one,
+        stochastic=True,
+        sampling_seed=sampling_seed,
+    )
+    serialized = pilot.serialize_pilot_branch_group(collection, update=1)
+
+    assert collection.snapshot is not None
+    assert len(collection.prefix.steps) == 1
+    assert len(collection.siblings) == 4
+    assert collection.prefix.steps[0].action == {"tool": "list", "path": ""}
+    assert serialized["checkpoint"]["static_branch_width"] == 4
+    assert (
+        serialized["shared_prefix"]["checkpoint_strategy"]
+        == "repository_root_observed"
+    )
+    assert serialized["shared_prefix"]["required_diagnostic_actions"] == 1
+    assert serialized["shared_prefix"]["required_fault_source_reads"] == 0
+    assert serialized["shared_prefix"]["observed_fault_source_paths"] == []
+    assert serialized["shared_prefix"]["repository_root_observed"] is True
+    telemetry = serialized["localization_telemetry"]
+    assert telemetry["strategy"] == "all_fault_sources_observed"
+    assert telemetry["branch_admission_gate"] is False
+    assert telemetry["prefix"]["all_fault_sources_observed"] is False
+    assert telemetry["siblings"][0]["observed_fault_source_paths"] == [fault_path]
+    assert telemetry["siblings"][0]["all_fault_sources_observed"] is True
+    assert all(
+        sibling["all_fault_sources_observed"] is False
+        for sibling in telemetry["siblings"][1:]
+    )
+
+
+def test_bootstrap_contract_pins_static_k_and_truthful_training_globals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracked = (
+        (pilot.frozen, "RepositoryRepairEnvironment"),
+        (pilot.frozen, "BRANCH_WIDTH"),
+        (pilot.frozen_environment, "BRANCH_WIDTH"),
+        (pilot.frozen, "SHARED_PREFIX_CHECKPOINT_STRATEGY"),
+        (pilot.frozen, "MINIMUM_PREFIX_ACCEPTED_ACTIONS"),
+        (pilot.frozen, "branch_checkpoint_reached"),
+        (pilot.frozen, "fault_fixing_edit_actions"),
+        (pilot.frozen, "POLICY_CREDIT_SCOPE"),
+        (pilot.frozen, "serialize_branch_group"),
+    )
+    for target, name in tracked:
+        monkeypatch.setattr(target, name, getattr(target, name))
+
+    pilot.install_bootstrap_checkpoint_contract(4)
+
+    assert pilot.frozen.BRANCH_WIDTH == 4
+    assert pilot.frozen_environment.BRANCH_WIDTH == 4
+    assert pilot.frozen.MINIMUM_PREFIX_ACCEPTED_ACTIONS == 1
+    assert (
+        pilot.frozen.SHARED_PREFIX_CHECKPOINT_STRATEGY
+        == "repository_root_observed"
+    )
+    assert pilot.frozen.POLICY_CREDIT_SCOPE == pilot.POLICY_CREDIT_SCOPE
+    assert (
+        pilot.frozen.fault_fixing_edit_actions
+        is pilot.fault_fixing_edit_and_fresh_read_actions
+    )
+    with pytest.raises(ValueError, match="static K=4"):
+        pilot.install_bootstrap_checkpoint_contract(1)
+
+
+def test_policy_credit_is_limited_to_fresh_read_and_fix_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = pilot.frozen.make_task(0, seed=76)
+    fault = task.faults[0]
+    unrelated_path = next(path for path in sorted(task.files) if path != fault.path)
+    sampling_seed = 6_000
+    monkeypatch.setattr(
+        pilot.frozen,
+        "RepositoryRepairEnvironment",
+        pilot.PilotRepositoryRepairEnvironment,
+    )
+    monkeypatch.setattr(
+        pilot.frozen,
+        "branch_checkpoint_reached",
+        pilot.repository_root_observed_checkpoint,
+    )
+    monkeypatch.setattr(
+        pilot.frozen,
+        "fault_fixing_edit_actions",
+        pilot.fault_fixing_edit_and_fresh_read_actions,
+    )
+
+    successful_actions = (
+        {"tool": "search", "query": fault.old},
+        {"tool": "read", "path": unrelated_path},
+        {"tool": "read", "path": fault.path},
+        {
+            "tool": "edit",
+            "path": fault.path,
+            "old": fault.old,
+            "new": fault.new,
+        },
+        {"tool": "test"},
+        {"tool": "finish"},
+    )
+
+    def sample_one(
+        _prompt: str,
+        _stochastic: bool,
+        seed: int,
+    ) -> pilot.frozen.GeneratedAction:
+        if seed == sampling_seed:
+            action = {"tool": "list", "path": ""}
+        elif sampling_seed + 10_000 <= seed < sampling_seed + 10_006:
+            action = successful_actions[seed - sampling_seed - 10_000]
+        else:
+            action = {"tool": "finish"}
+        return pilot.frozen.GeneratedAction(
+            response=pilot.frozen.encode_action(action),
+            input_ids=(seed,),
+        )
+
+    collection = pilot.frozen.collect_branch_group(
+        task,
+        sample_one,
+        stochastic=True,
+        sampling_seed=sampling_seed,
+    )
+
+    credited = pilot.fault_fixing_edit_and_fresh_read_actions(collection, 0)
+    credited_tools = [json.loads(action.response)["tool"] for action in credited]
+    examples = pilot.frozen.policy_examples(collection)
+    serialized = pilot.serialize_pilot_branch_group(collection, update=1)
+
+    assert collection.solved_siblings == 1
+    assert collection.informative is True
+    assert credited_tools == ["read", "edit"]
+    assert pilot.fault_fixing_edit_and_fresh_read_actions(collection, 1) == []
+    assert [example.weight for example in examples] == [0.5, 0.5]
+    assert sum(example.weight for example in examples) == 1.0
+    assert [
+        step["policy_signal"] for step in serialized["siblings"][0]["steps"]
+    ] == [False, False, True, True, False, False]
+    assert serialized["policy_credit_scope"] == pilot.POLICY_CREDIT_SCOPE
 
 
 def test_runtime_configuration_pins_the_pilot_optimization_seed() -> None:
@@ -130,6 +356,12 @@ def test_pilot_result_records_seed_and_source_contract(
             "seed": optimization_seed,
             "policy_update_count": 1,
             "best_validation": {"update": 3},
+            "training_configuration": {
+                "shared_prefix_checkpoint": "stale",
+                "minimum_shared_prefix_actions": 2,
+                "policy_credit_scope": "stale",
+                "learning_signal": "stale",
+            },
         },
         manifest=manifest,
         authorization_digest="sha256:" + "a" * 64,
@@ -138,6 +370,12 @@ def test_pilot_result_records_seed_and_source_contract(
 
     assert result["optimization_seed"] == optimization_seed
     assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
+    assert result["training_configuration"]["shared_prefix_checkpoint"] == (
+        "repository_root_observed"
+    )
+    assert result["training_configuration"]["minimum_shared_prefix_actions"] == 1
+    assert result["training_configuration"]["policy_credit_scope"] == pilot.POLICY_CREDIT_SCOPE
+    assert result["training_configuration"]["learning_signal"] == pilot.LEARNING_SIGNAL
 
 
 def test_paid_dependency_setup_fails_closed_instead_of_running_pip(
