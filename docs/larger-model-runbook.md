@@ -5,7 +5,7 @@ stage below require an explicit operator command.
 
 The guarded larger-model flow targets the manifest-pinned
 `Qwen/Qwen2.5-Coder-7B-Instruct` revision under profile
-`qwen2.5-coder-7b-runpod-h100@4`. It has two paid stages:
+`qwen2.5-coder-7b-runpod-h100@5`. It has two paid stages:
 
 1. a bounded eligibility screen that does not update the policy; and
 2. a branch-aware training pilot authorized by the screen receipt.
@@ -40,7 +40,7 @@ the authorized `$25.00` for CPU prewarm, network-volume storage, and contingency
 The launcher never creates or populates a network volume. With no existing volume and
 matching readiness receipt, both `--preflight-only` and paid launch are blocked.
 Readiness receipts and screen authorizations from the former L40 profile or the H100
-`@1`, `@2`, or `@3` profiles do not match this profile and cannot be reused.
+`@1`, `@2`, `@3`, or `@4` profiles do not match this profile and cannot be reused.
 
 Create a 50 GB volume in a data center that offers an `NVIDIA H100 80GB HBM3`:
 
@@ -210,6 +210,12 @@ The screen and pilot both reject a prompt that exceeds 2,048 input tokens. They 
 silently discard the oldest prompt content. Before the screen, the reversible H100
 capacity smoke exercises 2,240 tokens: the larger screen/pilot input envelope plus the
 192-token generation cap.
+
+The pilot-runtime gate extrapolates the observed level-0 baseline across every pilot
+level. It multiplies by `(8 + 10 + 14 + 18) / 8 = 6.25` for the four repair horizons,
+then accounts for paired base/final evaluation and the pinned `1.5` safety factor. The
+1,440-second threshold is unchanged; the screen does not treat level-0 timing as if all
+four levels had the same horizon.
 
 Baseline exact solves are not the nonzero competence gate. The baseline keeps only its
 75% maximum headroom check. Pilot authorization instead requires mixed outcomes across

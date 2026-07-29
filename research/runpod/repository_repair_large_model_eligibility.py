@@ -600,6 +600,17 @@ def capacity_smoke_sequence_tokens(manifest: dict[str, Any]) -> int:
     )
 
 
+def pilot_final_evaluation_horizon_scale() -> float:
+    """Scale an L0 timing sample across every pilot evaluation level."""
+
+    levels = tuple(frozen.COMPLEXITY_LEVELS)
+    if not levels or levels[0].level != 0 or levels[0].repair_horizon <= 0:
+        raise RuntimeError("frozen curriculum does not define a positive level-0 horizon")
+    if tuple(level.level for level in levels) != tuple(range(len(levels))):
+        raise RuntimeError("frozen curriculum levels are not contiguous from level 0")
+    return sum(level.repair_horizon for level in levels) / levels[0].repair_horizon
+
+
 def _baseline_counts(evidence: ScreenEvidence) -> dict[str, dict[str, int]]:
     counts = {
         level: {
@@ -845,7 +856,7 @@ def build_screen_result(
         baseline_runtime_seconds
         / expected_baseline
         * pilot["test_examples"]
-        * len(SCREEN_LEVELS)
+        * pilot_final_evaluation_horizon_scale()
         * 2
         * pilot["final_evaluation_safety_factor"]
         if expected_baseline
@@ -1113,7 +1124,7 @@ def record_screen_branch_collection(
             preserve_context=True,
             update=0,
             current_level=0,
-            evaluation_split="validation",
+            evaluation_split="train",
             evaluation_completed=len(branch_snapshots),
             evaluation_total=expected_groups,
             branch_groups_completed=len(branch_snapshots),

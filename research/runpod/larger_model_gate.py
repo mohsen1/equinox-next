@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@4"
+PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@5"
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 MODEL_REVISION = "c03e6d358207e414f1eca0bb1891e29f1db0e242"
 MODEL_PARAMETER_COUNT = 7_615_616_512
@@ -83,7 +83,7 @@ SOURCE_CONTRACT_SHA256 = {
         "fefade752e6bd82530835a5de493fffe7629a6c8963ae6f5fe7e3073dd1d2557"
     ),
     "repository_repair_large_model_eligibility.py": (
-        "260b96baac2974cee8ce12a38875c17d6e8a62d4e288c69a05ffc90456487fed"
+        "8d82180828d8f853e41e1be00531ac536ab89e47c710f24878227b6a8abdd57f"
     ),
     "repository_repair_large_model_pilot.py": (
         "bbca2e068a34d5a45e1cc4201fb1c1189cee848a55d4ffe1462adc4b55b7d339"
@@ -93,7 +93,7 @@ SOURCE_CONTRACT_SHA256 = {
     ),
 }
 SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
-SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@4"
+SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@5"
 CAPPED_GENERATION_TOKENS = 192
 CLEANUP_COST_RESERVE_SECONDS = 120
 DEFAULT_MANIFEST_PATH = (
@@ -1073,6 +1073,26 @@ def verify_pilot_authorization(
         raise GateError("screen result did not prove optimizer-state restoration")
     if screen_result.get("test_split_accessed") is not False:
         raise GateError("screen result did not preserve test-split isolation")
+    if screen_result.get("training_started") is not False:
+        raise GateError("screen result training_started must be false")
+    if screen_result.get("policy_mutation_enabled") is not False:
+        raise GateError("screen result policy_mutation_enabled must be false")
+
+    expected_level_keys = {str(level) for level in manifest["screen"]["admission_levels"]}
+    expected_baseline_examples = manifest["screen"]["baseline_examples_per_level"] * len(
+        expected_level_keys
+    )
+    exact_screen_counts = {
+        "persistent_policy_updates": 0,
+        "test_examples_accessed": 0,
+        "branch_groups": manifest["screen"]["branch_groups"],
+        "expected_baseline_examples": expected_baseline_examples,
+        "completed_baseline_examples": expected_baseline_examples,
+    }
+    for key, expected in exact_screen_counts.items():
+        observed = _required_integer(screen_result.get(key), f"screen result {key}")
+        if observed != expected:
+            raise GateError(f"screen result {key} does not match the eligibility profile")
 
     gate_results = screen_result.get("gate_results")
     required_gates = tuple(manifest["authorization"]["required_gate_results"])
@@ -1130,19 +1150,9 @@ def verify_pilot_authorization(
     ):
         raise GateError("screen result did not measure positive pilot runtime")
 
-    completed_baseline_examples = _required_integer(
-        screen_result.get("completed_baseline_examples"),
-        "screen result completed_baseline_examples",
-    )
     per_level_rates = screen_result.get("per_level_checkpoint_rates")
-    expected_level_keys = {str(level) for level in manifest["screen"]["admission_levels"]}
     if not isinstance(per_level_rates, dict) or set(per_level_rates) != expected_level_keys:
         raise GateError("screen result checkpoint rates do not match the admission levels")
-    expected_baseline_examples = manifest["screen"]["baseline_examples_per_level"] * len(
-        expected_level_keys
-    )
-    if completed_baseline_examples != expected_baseline_examples:
-        raise GateError("eligible screen did not complete the full baseline")
     per_level_minimum = thresholds["minimum_per_level_checkpoint_rate"]
     for level, raw_rate in per_level_rates.items():
         rate = _required_number(

@@ -135,7 +135,7 @@ def passing_evidence() -> eligibility.ScreenEvidence:
         optimizer_state_restored=True,
         capacity_smoke_completed=True,
         capacity_smoke_completed_at=10.0,
-        baseline_completed_at=110.0,
+        baseline_completed_at=60.0,
         gradient_checkpointing_enabled=True,
         pinned_snapshot_ready=True,
         pinned_snapshot_digest=gate.expected_snapshot_digest(manifest),
@@ -195,8 +195,8 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["repeated_rejected_pair_counts_by_tool"] == {}
     assert result["terminal_reason_counts"] == {}
     assert result["pinned_snapshot_digest"] == gate.expected_snapshot_digest(manifest)
-    assert result["baseline_runtime_seconds"] == 100.0
-    assert result["predicted_final_evaluation_seconds"] == 450.0
+    assert result["baseline_runtime_seconds"] == 50.0
+    assert result["predicted_final_evaluation_seconds"] == 1_406.25
     assert result["gate_results"] == dict.fromkeys(gate.REQUIRED_GATE_RESULTS, True)
     assert result["digest"] == gate.result_digest(result)
     authorization = gate.verify_pilot_authorization(
@@ -285,6 +285,7 @@ def test_branch_progress_contains_cumulative_observer_snapshots(
     assert emitted["preserve_context"] is True
     assert emitted["evaluation_completed"] == 8
     assert emitted["evaluation_total"] == 8
+    assert emitted["evaluation_split"] == "train"
     assert emitted["branch_snapshots"] == [
         {
             "snapshot_id": f"screen-group-{index}",
@@ -512,11 +513,12 @@ def test_runtime_gate_is_derived_from_capacity_and_baseline_timestamps() -> None
 
     multiplier = (
         manifest["pilot"]["test_examples"]
-        * len(eligibility.SCREEN_LEVELS)
+        * eligibility.pilot_final_evaluation_horizon_scale()
         * 2
         * manifest["pilot"]["final_evaluation_safety_factor"]
         / (manifest["screen"]["baseline_examples_per_level"] * len(eligibility.SCREEN_LEVELS))
     )
+    assert eligibility.pilot_final_evaluation_horizon_scale() == 6.25
     evidence.baseline_completed_at = (
         evidence.capacity_smoke_completed_at + maximum_predicted / multiplier + 0.001
     )
