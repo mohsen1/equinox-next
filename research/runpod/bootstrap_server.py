@@ -44,6 +44,7 @@ WORKLOAD_SUPPORT_FILES = {
             "repository_repair_env.py",
             "repository_repair_env_v31.py",
             "repository_repair_env_v32.py",
+            "repository_repair_large_model_pilot.py",
             "repository_repair_rl.py",
             "repository_repair_study.py",
         }
@@ -55,6 +56,7 @@ WORKLOAD_SUPPORT_FILES = {
             "repository_repair_env.py",
             "repository_repair_env_v31.py",
             "repository_repair_env_v32.py",
+            "repository_repair_large_model_eligibility.py",
             "repository_repair_rl.py",
             "repository_repair_study.py",
         }

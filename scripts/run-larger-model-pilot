@@ -51,6 +51,7 @@ if [[ -z "$screen_result" || -z "$screen_receipt" ]]; then
 fi
 
 python3 "$repository_root/research/runpod/larger_model_gate.py" manifest >/dev/null
+python3 "$repository_root/research/runpod/larger_model_gate.py" verify-sources >/dev/null
 python3 "$repository_root/research/runpod/larger_model_gate.py" verify-model >/dev/null
 timeout --kill-after=5 30 runpodctl gpu list --include-unavailable |
   jq '[.[] | select(.gpuId == "NVIDIA L40")]' |

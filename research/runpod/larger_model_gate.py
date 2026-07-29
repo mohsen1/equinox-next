@@ -75,6 +75,23 @@ SNAPSHOT_FILES = {
         "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
     },
 }
+SOURCE_CONTRACT_SHA256 = {
+    "repository_repair_env_v31.py": (
+        "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657"
+    ),
+    "repository_repair_env_v32.py": (
+        "3ebc2ced3fa7b790dfda0b3788ddd4a71383644e4c79902b0aec13add49aec30"
+    ),
+    "repository_repair_large_model_eligibility.py": (
+        "b1d2ab48e702d05b4b3b3ca7c0c7eb74d8caa228eae20e4f5b4c094ecaec23af"
+    ),
+    "repository_repair_large_model_pilot.py": (
+        "d64fbf8bb4c7e62b434b5214c9a773e9aa247d860e88a42ef01fcd336d805cdf"
+    ),
+    "repository_repair_study.py": (
+        "7799ff8969d67ad620db0f8c6bc9ee66bd0ef0300866cd0160696ff80fae7a0c"
+    ),
+}
 SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
 SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@1"
 CLEANUP_COST_RESERVE_SECONDS = 120
@@ -124,6 +141,10 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
     "interface": {
         "environment_revision": "repository-repair-simulator@6",
         "action_protocol_revision": "repository-repair-json-tools@5",
+    },
+    "source_contract": {
+        "algorithm": "sha256",
+        "files": SOURCE_CONTRACT_SHA256,
     },
     "hardware": {
         "provider": "runpod",
@@ -575,7 +596,7 @@ def _sha256_path(path: Path) -> str:
             while chunk := handle.read(8 * 1024 * 1024):
                 digest.update(chunk)
     except OSError as error:
-        raise GateError(f"could not hash pinned snapshot file {path.name}: {error}") from error
+        raise GateError(f"could not hash pinned file {path.name}: {error}") from error
     return digest.hexdigest()
 
 
@@ -646,6 +667,42 @@ def canonical_json(value: Any) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError) as error:
         raise GateError(f"value cannot be represented as canonical JSON: {error}") from error
+
+
+def expected_source_contract_digest(manifest: Mapping[str, Any]) -> str:
+    """Return the stable identity of the manifest-pinned scientific sources."""
+
+    material = {
+        "profile_id": manifest["profile_id"],
+        "source_contract": manifest["source_contract"],
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(material)).hexdigest()
+
+
+def verify_source_contract(
+    manifest: Mapping[str, Any],
+    source_root: Path | None = None,
+) -> dict[str, Any]:
+    """Hash the exact local or flattened-bundle sources used by paid workloads."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    root = source_root or Path(__file__).resolve().parent
+    expected_files = manifest["source_contract"]["files"]
+    observed_files: dict[str, str] = {}
+    for name, expected_sha256 in expected_files.items():
+        path = root / name
+        if not path.is_file():
+            raise GateError(f"the pinned scientific source {name} is unavailable")
+        observed_sha256 = _sha256_path(path)
+        if observed_sha256 != expected_sha256:
+            raise GateError(f"the pinned scientific source {name} failed SHA-256 verification")
+        observed_files[name] = observed_sha256
+    return {
+        "profile_id": manifest["profile_id"],
+        "algorithm": manifest["source_contract"]["algorithm"],
+        "files": observed_files,
+        "source_contract_digest": expected_source_contract_digest(manifest),
+    }
 
 
 def result_digest(result: Mapping[str, Any]) -> str:
@@ -894,9 +951,11 @@ def verify_pilot_authorization(
         "branch_width": manifest["screen"]["branch_width"],
         "training_microbatch_size": manifest["screen"]["training_microbatch_size"],
         "maximum_input_tokens": manifest["screen"]["maximum_input_tokens"],
+        "optimization_seed": manifest["screen_limits"]["optimization_seed"],
         "capacity_smoke_completed": True,
         "gradient_checkpointing_enabled": True,
         "pinned_snapshot_digest": expected_snapshot_digest(manifest),
+        "source_contract_digest": expected_source_contract_digest(manifest),
     }
     for key, expected in expected_result_identity.items():
         if screen_result.get(key) != expected:
@@ -1060,8 +1119,10 @@ def verify_pilot_authorization(
         "model_id": manifest["model"]["id"],
         "model_revision": manifest["model"]["revision"],
         "screen_workload_revision": manifest["screen"]["workload_revision"],
+        "optimization_seed": manifest["pilot_limits"]["optimization_seed"],
         "screen_result_digest": observed_digest,
         "pinned_snapshot_digest": expected_snapshot_digest(manifest),
+        "source_contract_digest": expected_source_contract_digest(manifest),
         "network_volume_id": network_volume_id,
         "provider_handle": provider_handle,
         "screen_completed_at": provider_receipt["completed_at"],
@@ -1088,6 +1149,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("manifest")
+    subparsers.add_parser("verify-sources")
     inventory_parser = subparsers.add_parser("inventory")
     inventory_parser.add_argument("path", type=Path)
     subparsers.add_parser("verify-model")
@@ -1111,6 +1173,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         manifest = load_manifest(arguments.manifest)
         if arguments.command == "manifest":
             output: Any = manifest
+        elif arguments.command == "verify-sources":
+            output = verify_source_contract(manifest)
         elif arguments.command == "inventory":
             raw = (
                 sys.stdin.buffer.read()
@@ -1130,6 +1194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             }
         elif arguments.command == "authorize":
+            verify_source_contract(manifest)
             output = verify_pilot_authorization(
                 manifest,
                 _read_json_object(arguments.screen_result, "screen result"),

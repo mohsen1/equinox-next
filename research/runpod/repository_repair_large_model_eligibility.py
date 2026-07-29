@@ -633,6 +633,12 @@ def build_screen_result(
         "larger_model_profile_id": manifest["profile_id"],
         "model_id": manifest["model"]["id"],
         "model_revision": manifest["model"]["revision"],
+        "optimization_seed": (
+            runtime.optimization_seed
+            if runtime is not None
+            else manifest["screen_limits"]["optimization_seed"]
+        ),
+        "source_contract_digest": gate.expected_source_contract_digest(manifest),
         "device": "cuda" if evidence.gpu_name is not None else "unavailable",
         "parameter_count": evidence.base_parameter_count,
         "base_bfloat16_parameter_count": evidence.base_bf16_parameter_count,
@@ -722,6 +728,7 @@ def validate_runtime_configuration(runtime: Any, manifest: dict[str, Any]) -> No
         "validation_examples": screen["validation_examples"],
         "training_tasks_per_update": screen["training_tasks_per_update"],
         "maximum_updates": screen["maximum_updates"],
+        "optimization_seed": manifest["screen_limits"]["optimization_seed"],
         "workload_attempt": 1,
     }
     for name, value in expected.items():
@@ -1041,6 +1048,7 @@ def self_test(manifest: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> None:
     manifest = gate.load_manifest()
+    gate.verify_source_contract(manifest)
     if "--self-test" in sys.argv:
         self_test(manifest)
         return

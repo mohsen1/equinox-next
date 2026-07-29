@@ -108,6 +108,8 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
     assert result["test_split_accessed"] is False
     assert result["training_microbatch_size"] == 1
     assert result["maximum_input_tokens"] == 1_536
+    assert result["optimization_seed"] == manifest["screen_limits"]["optimization_seed"]
+    assert result["source_contract_digest"] == gate.expected_source_contract_digest(manifest)
     assert result["environment_revision"] == manifest["interface"]["environment_revision"]
     assert result["action_protocol_revision"] == manifest["interface"]["action_protocol_revision"]
     assert result["pinned_snapshot_digest"] == (
@@ -461,6 +463,7 @@ def test_runtime_configuration_is_bound_to_exact_model_and_screen_shape(
         validation_examples=manifest["screen"]["validation_examples"],
         training_tasks_per_update=manifest["screen"]["training_tasks_per_update"],
         maximum_updates=manifest["screen"]["maximum_updates"],
+        optimization_seed=manifest["screen_limits"]["optimization_seed"],
         workload_attempt=1,
     )
     eligibility.validate_runtime_configuration(runtime, manifest)
@@ -470,6 +473,11 @@ def test_runtime_configuration_is_bound_to_exact_model_and_screen_shape(
         eligibility.validate_runtime_configuration(runtime, manifest)
 
     runtime.model_revision = manifest["model"]["revision"]
+    runtime.optimization_seed += 1
+    with pytest.raises(ValueError, match="optimization_seed"):
+        eligibility.validate_runtime_configuration(runtime, manifest)
+
+    runtime.optimization_seed = manifest["screen_limits"]["optimization_seed"]
     monkeypatch.setenv("EQUINOX_ADAPTER_PATH", "/tmp/old-adapter")
     with pytest.raises(ValueError, match="must not load"):
         eligibility.validate_runtime_configuration(runtime, manifest)
@@ -505,7 +513,7 @@ def test_runtime_hooks_install_balanced_v32_k4_screen_and_isolate_test_split(
         "EQUINOX_RL_TEST_EXAMPLES": "4",
         "EQUINOX_RL_TARGET_SECONDS": "2400",
         "EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS": "1200",
-        "EQUINOX_RL_SEED": "73",
+            "EQUINOX_RL_SEED": "137",
         "EQUINOX_WORKLOAD_ATTEMPT": "1",
     }.items():
         monkeypatch.setenv(name, value)

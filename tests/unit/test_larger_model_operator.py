@@ -32,6 +32,12 @@ def run_screen_proof_assertion(payload: dict[str, object]) -> subprocess.Complet
             "--arg",
             "expected_snapshot_digest",
             "sha256:snapshot",
+            "--arg",
+            "expected_source_contract_digest",
+            "sha256:source",
+            "--argjson",
+            "expected_optimization_seed",
+            "137",
             screen_proof_assertion(),
         ],
         input=json.dumps(payload),
@@ -148,8 +154,9 @@ def test_operator_lease_and_authorization_are_shared_and_durable() -> None:
 def test_ambiguous_create_preserves_any_valid_returned_pod_id() -> None:
     source = LAUNCHER.read_text(encoding="utf-8")
     valid_id_branch = source[
-        source.index('if [[ "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]') :
-        source.index('failure_message="RunPod did not report a bounded hourly rate."')
+        source.index('if [[ "$pod_id" =~ ^[a-zA-Z0-9_-]+$ ]]') : source.index(
+            'failure_message="RunPod did not report a bounded hourly rate."'
+        )
     ]
 
     assert 'provider_handle="runpod://pods/$pod_id"' in valid_id_branch
@@ -173,10 +180,20 @@ def test_larger_model_direct_launch_caps_are_manifest_pinned() -> None:
         "optimization_seed",
     ):
         assert key in launcher
-    assert f"EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS={manifest['screen_limits']['stale_progress_timeout_seconds']}" in screen
-    assert f"EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS={manifest['pilot_limits']['stale_progress_timeout_seconds']}" in pilot
+    assert (
+        f"EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS={manifest['screen_limits']['stale_progress_timeout_seconds']}"
+        in screen
+    )
+    assert (
+        f"EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS={manifest['pilot_limits']['stale_progress_timeout_seconds']}"
+        in pilot
+    )
     assert "EQUINOX_RL_SEED=137" in screen
     assert "EQUINOX_RL_SEED=137" in pilot
+    assert "verify-sources" in screen
+    assert "verify-sources" in pilot
+    assert "verify-sources" in launcher
+    assert ".source_contract_digest == $expected_source_contract_digest" in launcher
 
 
 def test_total_cost_and_phase_deadlines_are_enforced_during_polling() -> None:
@@ -207,6 +224,8 @@ def test_completed_ineligible_screen_is_valid_evidence_for_failed_metric_gates()
         "profile_id": "qwen2.5-coder-7b-runpod-l40@1",
         "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
         "model_revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
+        "optimization_seed": 137,
+        "source_contract_digest": "sha256:source",
         "screen_completed": True,
         "eligible": False,
         "policy_mutation_detected": False,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -21,9 +22,11 @@ from research.runpod.larger_model_gate import (
     SCREEN_WORKLOAD,
     SCREEN_WORKLOAD_REVISION,
     SNAPSHOT_FILES,
+    SOURCE_CONTRACT_SHA256,
     GateError,
     canonical_json,
     expected_snapshot_digest,
+    expected_source_contract_digest,
     lifetime_cost_bound,
     load_manifest,
     matching_runpod_gpus,
@@ -34,6 +37,7 @@ from research.runpod.larger_model_gate import (
     verify_dependency_import_smoke,
     verify_huggingface_metadata,
     verify_pilot_authorization,
+    verify_source_contract,
     verify_volume_readiness_receipt,
 )
 
@@ -109,6 +113,8 @@ def eligible_screen(**overrides: object) -> dict[str, object]:
         "profile_id": PROFILE_ID,
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,
+        "optimization_seed": 137,
+        "source_contract_digest": expected_source_contract_digest(load_manifest()),
         "environment_revision": "repository-repair-simulator@6",
         "action_protocol_revision": "repository-repair-json-tools@5",
         "branch_width": 4,
@@ -222,6 +228,10 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
         "environment_revision": "repository-repair-simulator@6",
         "action_protocol_revision": "repository-repair-json-tools@5",
     }
+    assert manifest["source_contract"] == {
+        "algorithm": "sha256",
+        "files": SOURCE_CONTRACT_SHA256,
+    }
     assert manifest["screen"]["validation_examples"] == 8
     assert manifest["screen"]["baseline_examples_per_level"] == 8
     assert manifest["screen"]["training_microbatch_size"] == 1
@@ -255,6 +265,27 @@ def test_repository_manifest_is_the_exact_bounded_profile() -> None:
         manifest["pilot_limits"]["maximum_hourly_cost_usd"],
         manifest["pilot_limits"]["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS,
     ) == Decimal("4.0")
+
+
+@pytest.mark.parametrize("tampered_name", tuple(SOURCE_CONTRACT_SHA256))
+def test_source_contract_verifies_exact_sources_and_rejects_tampering(
+    tmp_path: Path,
+    tampered_name: str,
+) -> None:
+    manifest = load_manifest()
+    repository_sources = DEFAULT_MANIFEST_PATH.parents[1] / "runpod"
+    for name in SOURCE_CONTRACT_SHA256:
+        shutil.copy2(repository_sources / name, tmp_path / name)
+
+    verification = verify_source_contract(manifest, tmp_path)
+
+    assert verification["files"] == SOURCE_CONTRACT_SHA256
+    assert verification["source_contract_digest"] == expected_source_contract_digest(manifest)
+
+    tampered = tmp_path / tampered_name
+    tampered.write_bytes(tampered.read_bytes() + b"\n# tampered\n")
+    with pytest.raises(GateError, match="failed SHA-256"):
+        verify_source_contract(manifest, tmp_path)
 
 
 def test_manifest_path_can_be_supplied_to_a_flattened_remote_bundle(
@@ -408,7 +439,9 @@ def test_dependency_import_smoke_requires_importable_exact_versions() -> None:
     manifest = load_manifest()
 
     def matching_import(package: str) -> object:
-        return type("Dependency", (), {"__version__": manifest["runtime"]["dependencies"][package]})()
+        return type(
+            "Dependency", (), {"__version__": manifest["runtime"]["dependencies"][package]}
+        )()
 
     assert verify_dependency_import_smoke(manifest, importer=matching_import) == (
         "accelerate",
@@ -620,6 +653,10 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
     assert authorization["profile_id"] == PROFILE_ID
     assert authorization["model_id"] == MODEL_ID
     assert authorization["model_revision"] == MODEL_REVISION
+    assert authorization["optimization_seed"] == 137
+    assert authorization["source_contract_digest"] == expected_source_contract_digest(
+        load_manifest()
+    )
     assert authorization["screen_result_digest"] == result_digest(screen)
     assert authorization["pinned_snapshot_digest"] == expected_snapshot_digest(load_manifest())
     assert authorization["network_volume_id"] == "network-volume-123"
@@ -632,6 +669,8 @@ def test_exact_fresh_screen_and_teardown_receipt_authorize_pilot() -> None:
     [
         ({"profile_id": "other-profile@1"}, {}, "result profile_id"),
         ({"model_revision": "main"}, {}, "result model_revision"),
+        ({"optimization_seed": 138}, {}, "optimization_seed"),
+        ({"source_contract_digest": "sha256:" + "0" * 64}, {}, "source_contract_digest"),
         ({"environment_revision": "simulator@old"}, {}, "environment_revision"),
         ({"action_protocol_revision": "tools@old"}, {}, "action_protocol_revision"),
         ({"branch_width": 1}, {}, "branch_width"),

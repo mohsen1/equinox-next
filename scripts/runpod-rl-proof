@@ -69,11 +69,13 @@ case "$experiment" in
       case "$larger_model_mode" in
         screen)
           workload_file="repository_repair_large_model_eligibility.py"
+          support_files+=("repository_repair_large_model_pilot.py")
           workload_id="repository-repair-larger-model-eligibility"
           execution_name="7B eligibility screen"
           ;;
         pilot)
           workload_file="repository_repair_large_model_pilot.py"
+          support_files+=("repository_repair_large_model_eligibility.py")
           workload_id="repository-repair-restored-continuation-post-training"
           execution_name="7B K=4 pilot"
           ;;
@@ -282,6 +284,7 @@ larger_model_screen_result="${EQUINOX_LARGER_MODEL_SCREEN_RESULT:-}"
 larger_model_screen_receipt="${EQUINOX_LARGER_MODEL_SCREEN_RECEIPT:-}"
 larger_model_screen_result_digest=""
 larger_model_expected_snapshot_digest=""
+larger_model_source_contract_digest=""
 volume_readiness_receipt="${EQUINOX_LARGER_MODEL_VOLUME_RECEIPT:-}"
 volume_readiness_receipt_digest=""
 maximum_lifetime_minutes="${EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES:-$default_maximum_lifetime_minutes}"
@@ -518,6 +521,16 @@ from research.runpod.repository_repair_study import verify_frozen_sources
 
 verify_frozen_sources()
 PY
+  verified_source_contract="$(
+    python3 "$repository_root/research/runpod/larger_model_gate.py" verify-sources
+  )"
+  larger_model_source_contract_digest="$(
+    jq -r '.source_contract_digest' <<<"$verified_source_contract"
+  )"
+  if [[ ! "$larger_model_source_contract_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "The larger-model gate returned an invalid source-contract digest." >&2
+    exit 1
+  fi
   larger_model_manifest="$(
     python3 "$repository_root/research/runpod/larger_model_gate.py" manifest
   )"
@@ -711,6 +724,12 @@ if [[ -n "$larger_model_mode" ]]; then
     authorized_snapshot_digest="$(
       jq -r '.pinned_snapshot_digest' <<<"$verified_authorization"
     )"
+    authorized_source_contract_digest="$(
+      jq -r '.source_contract_digest' <<<"$verified_authorization"
+    )"
+    authorized_optimization_seed="$(
+      jq -r '.optimization_seed' <<<"$verified_authorization"
+    )"
     if [[ ! "$larger_model_authorization_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
       echo "The larger-model gate returned an invalid authorization digest." >&2
       exit 1
@@ -720,8 +739,10 @@ if [[ -n "$larger_model_mode" ]]; then
       exit 1
     fi
     if [[ "$authorized_network_volume_id" != "$network_volume_id" ||
-      "$authorized_snapshot_digest" != "$larger_model_expected_snapshot_digest" ]]; then
-      echo "The pilot volume or snapshot does not match the screened authorization." >&2
+      "$authorized_snapshot_digest" != "$larger_model_expected_snapshot_digest" ||
+      "$authorized_source_contract_digest" != "$larger_model_source_contract_digest" ||
+      "$authorized_optimization_seed" != "$optimization_seed" ]]; then
+      echo "The pilot volume, snapshot, source contract, or seed does not match the screened authorization." >&2
       exit 1
     fi
     authorization_consumption_path="$authorization_consumption_directory/${larger_model_screen_result_digest#sha256:}.json"
@@ -991,6 +1012,7 @@ if [[ "$preflight_only" == "1" ]]; then
     --arg network_volume_id "$network_volume_id" \
     --arg network_volume_data_center_id "$network_volume_data_center_id" \
     --arg volume_readiness_receipt_digest "$volume_readiness_receipt_digest" \
+    --arg source_contract_digest "$larger_model_source_contract_digest" \
     --arg model_id "$model_id" \
     --arg model_revision "$(
       if [[ -n "$larger_model_mode" ]]; then
@@ -1047,6 +1069,9 @@ if [[ "$preflight_only" == "1" ]]; then
         then null
         else $volume_readiness_receipt_digest
         end
+      ),
+      source_contract_digest: (
+        if $source_contract_digest == "" then null else $source_contract_digest end
       ),
       gpu_id: $gpu_id,
       minimum_gpu_memory_gb: $minimum_gpu_memory_gb,
@@ -1783,6 +1808,8 @@ if [[ "$larger_model_mode" == "screen" ]]; then
     and .profile_id == "qwen2.5-coder-7b-runpod-l40@1"
     and .model_id == $expected_model
     and .model_revision == "c03e6d358207e414f1eca0bb1891e29f1db0e242"
+    and .optimization_seed == $expected_optimization_seed
+    and .source_contract_digest == $expected_source_contract_digest
     and .screen_completed == true
     and (.eligible | type) == "boolean"
     and .policy_mutation_detected == false
@@ -2175,6 +2202,8 @@ if [[ "$larger_model_mode" == "pilot" ]]; then
     and .profile_id == "qwen2.5-coder-7b-runpod-l40@1"
     and .model_revision == "c03e6d358207e414f1eca0bb1891e29f1db0e242"
     and .authorization_digest == $expected_authorization_digest
+    and .optimization_seed == $expected_optimization_seed
+    and .source_contract_digest == $expected_source_contract_digest
     and .environment_revision == "repository-repair-simulator@6"
     and .action_protocol_revision == "repository-repair-json-tools@5"
     and .gpu_id == "NVIDIA L40"
@@ -2213,6 +2242,7 @@ if ! jq -e \
   --arg expected_shared_prefix_checkpoint "$expected_shared_prefix_checkpoint" \
   --arg expected_authorization_digest "$larger_model_authorization_digest" \
   --arg expected_snapshot_digest "$larger_model_expected_snapshot_digest" \
+  --arg expected_source_contract_digest "$larger_model_source_contract_digest" \
   --arg expected_network_volume_id "$network_volume_id" \
   --argjson expected_branch_width "$expected_branch_width" \
   --argjson expected_optimization_seed "$optimization_seed" \

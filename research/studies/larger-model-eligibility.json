@@ -69,6 +69,16 @@
     "environment_revision": "repository-repair-simulator@6",
     "action_protocol_revision": "repository-repair-json-tools@5"
   },
+  "source_contract": {
+    "algorithm": "sha256",
+    "files": {
+      "repository_repair_env_v31.py": "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657",
+      "repository_repair_env_v32.py": "3ebc2ced3fa7b790dfda0b3788ddd4a71383644e4c79902b0aec13add49aec30",
+      "repository_repair_large_model_eligibility.py": "b1d2ab48e702d05b4b3b3ca7c0c7eb74d8caa228eae20e4f5b4c094ecaec23af",
+      "repository_repair_large_model_pilot.py": "d64fbf8bb4c7e62b434b5214c9a773e9aa247d860e88a42ef01fcd336d805cdf",
+      "repository_repair_study.py": "7799ff8969d67ad620db0f8c6bc9ee66bd0ef0300866cd0160696ff80fae7a0c"
+    }
+  },
   "hardware": {
     "provider": "runpod",
     "cloud_type": "SECURE",

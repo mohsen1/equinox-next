@@ -199,6 +199,7 @@ def validate_runtime_configuration(runtime: Any, manifest: dict[str, Any]) -> No
         "maximum_final_evaluation_reserve_seconds": pilot[
             "maximum_final_evaluation_reserve_seconds"
         ],
+        "optimization_seed": manifest["pilot_limits"]["optimization_seed"],
         "workload_attempt": 1,
     }
     for name, expected_value in expected.items():
@@ -307,6 +308,9 @@ def augment_result(
         best_validation.get("update") if isinstance(best_validation, dict) else None
     )
     total_policy_updates = result.get("policy_update_count")
+    optimization_seed = manifest["pilot_limits"]["optimization_seed"]
+    if result.get("seed") != optimization_seed:
+        raise RuntimeError("the larger-model pilot optimization seed drifted")
     if (
         result_retained_update != retained_update
         or type(total_policy_updates) is not int
@@ -321,6 +325,8 @@ def augment_result(
         "profile_id": manifest["profile_id"],
         "model_id": gate.MODEL_ID,
         "model_revision": gate.MODEL_REVISION,
+        "optimization_seed": optimization_seed,
+        "source_contract_digest": gate.expected_source_contract_digest(manifest),
         "authorization_digest": authorization_digest,
         "environment_revision": interface.ENVIRONMENT_REVISION,
         "action_protocol_revision": interface.ACTION_PROTOCOL_REVISION,
@@ -344,6 +350,7 @@ def augment_result(
 
 def main() -> None:
     manifest = gate.load_manifest()
+    gate.verify_source_contract(manifest)
     if os.environ.get("EQUINOX_RL_MODEL_ID") != gate.MODEL_ID:
         raise ValueError("the larger-model pilot requires the manifest-pinned model")
     authorization_digest = require_authorization_digest()
