@@ -928,6 +928,25 @@ Classify failures separately:
 These categories should be computed from typed events where possible and marked as
 heuristic when inferred.
 
+## Objective @19 pre-run status
+
+The preceding 7B run produced 11 paired improvements and one regression. That is
+useful directional evidence, but it does not pass the sealed final claim gate.
+Objective @19 keeps that gate and its held-out evaluation unchanged while addressing
+the run's two clearest operational weaknesses:
+
+- model execution is deterministic and fail-closed, using eager attention, math SDP,
+  and strict deterministic algorithms instead of nondeterministic flash kernels;
+- rejected updates restore the exact adapter and AdamW state, with the consecutive
+  regression stop window widened from two to four to permit distinct safe attempts;
+- task collection uses a `3:1` active-frontier-to-nearest-probe mix until the first
+  retained promotion, then returns to the `2:2` adaptive mix.
+
+Static `K=4`, the learning rate, KL coefficient, Wilson promotion gate, and sealed
+48-pair final evaluation remain frozen. The next run is therefore an operationally
+cleaner test of the same scientific claim, not a post-hoc relaxation of its success
+criterion.
+
 ## Implementation phases
 
 ### A. Stabilize the scientific loop

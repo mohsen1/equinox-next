@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(
+  cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1
+  pwd -P
+)"
+python_bin="${EQUINOX_PYTHON:-$repository_root/.venv/bin/python}"
+if [[ ! -x "$python_bin" ]]; then
+  python_bin="python3"
+fi
+
+PYTHONPATH="$repository_root${PYTHONPATH:+:$PYTHONPATH}" \
+  exec "$python_bin" -m research.runpod.artifact_republisher "$@"

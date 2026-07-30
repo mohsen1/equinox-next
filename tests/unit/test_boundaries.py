@@ -1,7 +1,10 @@
+import json
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from equinox_core import canonical_digest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
@@ -23,6 +26,215 @@ from services.orchestrator.app.providers import (
     POLICY_COMPUTE_PROVIDERS,
     assert_local_registry,
 )
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _screen_publication(
+    publication_id: str,
+    *,
+    profile_id: str = "qwen2.5-coder-7b-runpod-h100@7",
+    run_result_digest: str | None = None,
+    provider_receipt_digest: str | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "publication_id": publication_id,
+        "publication_type": "screen",
+        "profile_id": profile_id,
+        "artifact_set_manifest_digest": "sha256:" + "a" * 64,
+        "set_digest": "sha256:" + "b" * 64,
+        "run_result_canonical_json_sha256": (run_result_digest or "sha256:" + "c" * 64),
+        "provider_receipt_canonical_json_sha256": (provider_receipt_digest or "sha256:" + "d" * 64),
+    }
+
+
+def _bound_screen_publication(
+    proof_fields: dict[str, object],
+    publication_id: str,
+) -> dict[str, object]:
+    resource_profile = proof_fields["resource_profile"]
+    assert isinstance(resource_profile, dict)
+    return _screen_publication(
+        publication_id,
+        profile_id=str(resource_profile["profile_id"]),
+        run_result_digest=canonical_digest(proof_fields["result"]),
+        provider_receipt_digest=canonical_digest(proof_fields),
+    )
+
+
+def _pilot_publication(
+    publication_id: str,
+    *,
+    source_screen_publication_id: str = "runpod-proof-screen-source",
+    profile_id: str = "qwen2.5-coder-7b-runpod-h100@7",
+    run_result_digest: str | None = None,
+    provider_receipt_digest: str | None = None,
+) -> dict[str, object]:
+    publication = _screen_publication(
+        publication_id,
+        profile_id=profile_id,
+        run_result_digest=run_result_digest,
+        provider_receipt_digest=provider_receipt_digest,
+    )
+    publication.update(
+        {
+            "publication_type": "pilot",
+            "source_screen_publication_id": source_screen_publication_id,
+            "source_screen_manifest_digest": "sha256:" + "e" * 64,
+            "model_artifact_sha256": "sha256:" + "f" * 64,
+            "model_artifact_size_bytes": 1024,
+        }
+    )
+    return publication
+
+
+def _committed_screen_finalization_request(
+    publication_id: str,
+) -> ResearchComputeExecutionRequest:
+    profile_id = "qwen2.5-coder-7b-runpod-h100@10"
+    return ResearchComputeExecutionRequest(
+        name="Committed larger-model eligibility screen",
+        workload_id="repository-repair-larger-model-eligibility",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="SUCCEEDED",
+        provider_name="RunPod",
+        provider_handle="runpod://pods/committed-screen",
+        resource_profile={
+            "profile_id": profile_id,
+            "source_contract_digest": "sha256:" + "1" * 64,
+        },
+        progress={
+            "profile_id": profile_id,
+            "phase": "complete",
+            "message": "Eligibility recorded and teardown confirmed.",
+        },
+        artifact_publication_required=True,
+        artifact_publication=_screen_publication(
+            publication_id,
+            profile_id=profile_id,
+        ),
+        started_at="2026-07-30T08:00:00Z",
+        completed_at="2026-07-30T08:20:00Z",
+        teardown_confirmed=True,
+    )
+
+
+def _stored_execution(
+    execution_id: str,
+    request: ResearchComputeExecutionRequest,
+    **overrides: object,
+) -> dict[str, object]:
+    return {
+        **request.model_dump(mode="python"),
+        "execution_id": execution_id,
+        "proof_id": None,
+        "receipt_digest": None,
+        "failure_receipt_digest": None,
+        **overrides,
+    }
+
+
+def _install_execution_update_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: dict[str, object],
+    *returned_rows: dict[str, object],
+) -> tuple[
+    dict[str, object],
+    list[str],
+    list[tuple[object, ...]],
+]:
+    state = dict(existing)
+    pending_rows = [dict(row) for row in returned_rows]
+    queries: list[str] = []
+    parameters: list[tuple[object, ...]] = []
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            query: str,
+            params: tuple[object, ...] = (),
+        ) -> Result:
+            queries.append(query)
+            parameters.append(params)
+            if "SELECT *" in query:
+                return Result([state])
+            if "INSERT INTO research_compute_executions" in query:
+                assert pending_rows
+                state.clear()
+                state.update(pending_rows.pop(0))
+                return Result([state])
+            raise AssertionError(f"unexpected query: {query}")
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+    return state, queries, parameters
+
+
+@pytest.mark.parametrize("publication_type", ("screen", "pilot"))
+def test_launcher_envelope_filter_matches_the_strict_api_contract(
+    publication_type: str,
+) -> None:
+    source = (ROOT / "scripts/runpod-rl-proof").read_text(encoding="utf-8")
+    block = source.index('  artifact_publication="$(')
+    filter_start = source.index("      '{", block) + len("      '")
+    filter_end = source.index("'\n  )\"", filter_start)
+    jq_filter = source[filter_start:filter_end]
+    digest = "sha256:" + "a" * 64
+    command = [
+        "jq",
+        "-cn",
+        "--arg",
+        "publication_id",
+        "runpod-proof-launcher-contract",
+        "--arg",
+        "publication_type",
+        publication_type,
+        "--arg",
+        "profile_id",
+        "qwen2.5-coder-7b-runpod-h100@10",
+        "--arg",
+        "manifest_digest",
+        digest,
+        "--arg",
+        "set_digest",
+        digest,
+        "--arg",
+        "run_result_digest",
+        digest,
+        "--arg",
+        "provider_receipt_digest",
+        digest,
+        "--arg",
+        "source_publication_id",
+        "runpod-proof-source-screen",
+        "--arg",
+        "source_manifest_digest",
+        digest,
+        "--arg",
+        "model_artifact_digest",
+        digest,
+        "--argjson",
+        "model_artifact_size",
+        "1024",
+        jq_filter,
+    ]
+
+    completed = subprocess.run(command, check=True, capture_output=True, text=True)
+    payload = json.loads(completed.stdout)
+    publication = orchestrator_main.ARTIFACT_PUBLICATION_ADAPTER.validate_python(payload)
+
+    assert publication.schema_version == 2
+    assert publication.publication_type == publication_type
 
 
 def test_local_provider_registry_has_no_real_provider() -> None:
@@ -53,6 +265,74 @@ def test_research_proof_requires_confirmed_teardown() -> None:
             started_at="2026-07-26T16:00:00Z",
             completed_at="2026-07-26T16:01:00Z",
             teardown_confirmed=False,
+        )
+
+
+def test_research_evidence_requires_aware_ordered_timestamps() -> None:
+    proof_fields = {
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/timestamp-proof",
+        "provider_cli_version": "2.7.2",
+        "resource_profile": {"gpu_id": "NVIDIA H100 80GB HBM3"},
+        "workload": {"id": "repository-repair"},
+        "result": {"workload": "repository-repair"},
+        "teardown_confirmed": True,
+    }
+    with pytest.raises(ValidationError):
+        ResearchComputeProofRequest(
+            **proof_fields,
+            started_at="2026-07-30T08:00:00",
+            completed_at="2026-07-30T08:20:00Z",
+        )
+    with pytest.raises(ValidationError):
+        ResearchComputeProofRequest(
+            **proof_fields,
+            started_at="2026-07-30T08:20:00Z",
+            completed_at="2026-07-30T08:00:00Z",
+        )
+    with pytest.raises(ValidationError):
+        ResearchComputeExecutionRequest(
+            name="Invalid execution interval",
+            workload_id="repository-repair",
+            status="FAILED",
+            provider_handle="runpod://pods/timestamp-execution",
+            started_at="2026-07-30T08:20:00Z",
+            completed_at="2026-07-30T08:00:00Z",
+            teardown_confirmed=True,
+        )
+
+
+def test_at10_proof_binds_workload_model_k_and_complexity_to_result() -> None:
+    proof_fields: dict[str, object] = {
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/at10-workload-mismatch",
+        "provider_cli_version": "2.7.2",
+        "resource_profile": {
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+        },
+        "workload": {
+            "id": "repository-repair",
+            "model_id": "Different/Model",
+            "static_branch_width": 4,
+            "complexity_strategy": "adaptive",
+        },
+        "result": {
+            "workload": "repository-repair",
+            "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+            "branch_width": 4,
+            "complexity_strategy": "adaptive",
+        },
+        "started_at": "2026-07-30T08:00:00Z",
+        "completed_at": "2026-07-30T08:20:00Z",
+        "teardown_confirmed": True,
+    }
+    with pytest.raises(ValidationError):
+        ResearchComputeProofRequest(
+            **proof_fields,
+            artifact_publication=_bound_screen_publication(
+                proof_fields,
+                "runpod-proof-at10-workload-mismatch",
+            ),
         )
 
 
@@ -89,6 +369,57 @@ def test_research_execution_keeps_static_k_and_adaptive_complexity() -> None:
         )
 
 
+def test_artifact_publication_envelope_is_strict_and_reserves_marker_keys() -> None:
+    base = {
+        "name": "Model repair observer",
+        "workload_id": "model-repair-group-policy-optimization",
+        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        "branch_width": 4,
+        "complexity_strategy": "adaptive",
+        "status": "RUNNING",
+        "provider_handle": "runpod://pods/strict-envelope",
+        "started_at": "2026-07-29T16:00:00Z",
+    }
+
+    for field, value in (
+        ("progress", {"artifact_set_committed": True}),
+        ("progress", {"nested": {"artifact_publication_required": True}}),
+        (
+            "resource_profile",
+            {"nested": [{"artifact_set_manifest_digest": "sha256:" + "a" * 64}]},
+        ),
+    ):
+        with pytest.raises(ValidationError):
+            ResearchComputeExecutionRequest(**base, **{field: value})
+
+    publication = _screen_publication("runpod-proof-strict-envelope")
+    publication["committed"] = True
+    with pytest.raises(ValidationError):
+        ResearchComputeExecutionRequest(
+            **base,
+            artifact_publication=publication,
+        )
+
+    pilot = _pilot_publication(
+        "runpod-proof-strict-envelope",
+        source_screen_publication_id="runpod-proof-strict-envelope",
+    )
+    with pytest.raises(ValidationError):
+        ResearchComputeExecutionRequest(
+            **base,
+            artifact_publication=pilot,
+        )
+
+    obsolete = _screen_publication("runpod-proof-obsolete-envelope")
+    obsolete["schema_version"] = 1
+    with pytest.raises(ValidationError):
+        ResearchComputeExecutionRequest(
+            **base,
+            artifact_publication_required=True,
+            artifact_publication=obsolete,
+        )
+
+
 def test_operational_receipt_digest_is_valid_only_for_a_failed_execution() -> None:
     request = ResearchComputeExecutionRequest(
         name="Failed model repair observer",
@@ -113,6 +444,703 @@ def test_operational_receipt_digest_is_valid_only_for_a_failed_execution() -> No
                 "status": "SUCCEEDED",
             }
         )
+
+
+def test_execution_success_requires_the_atomic_artifact_set_commit() -> None:
+    request = ResearchComputeExecutionRequest(
+        name="Uncommitted model repair observer",
+        workload_id="model-repair-group-policy-optimization",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="SUCCEEDED",
+        provider_handle="runpod://pods/uncommitted-success",
+        artifact_publication_required=True,
+        progress={"phase": "complete"},
+        started_at="2026-07-29T16:00:00Z",
+        completed_at="2026-07-29T16:20:00Z",
+        teardown_confirmed=True,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-uncommitted-success",
+            request,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {"code": "RESEARCH_EXECUTION_ARTIFACT_SET_UNCOMMITTED"}
+
+
+def test_execution_publication_id_must_match_the_path() -> None:
+    request = ResearchComputeExecutionRequest(
+        name="Published model repair observer",
+        workload_id="model-repair-group-policy-optimization",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="SUCCEEDED",
+        provider_handle="runpod://pods/publication-path",
+        artifact_publication_required=True,
+        artifact_publication=_screen_publication("runpod-proof-another-run"),
+        started_at="2026-07-29T16:00:00Z",
+        completed_at="2026-07-29T16:20:00Z",
+        teardown_confirmed=True,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-publication-path",
+            request,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_MISMATCH"}
+
+
+def test_execution_publication_is_persisted_once_and_replayed_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication = _screen_publication("runpod-proof-publication-once")
+    request = ResearchComputeExecutionRequest(
+        name="Published model repair observer",
+        workload_id="model-repair-group-policy-optimization",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="RUNNING",
+        provider_handle="runpod://pods/publication-once",
+        artifact_publication_required=True,
+        artifact_publication=publication,
+        started_at="2026-07-29T16:00:00Z",
+    )
+    existing = {
+        **request.model_dump(mode="python"),
+        "execution_id": "runpod-proof-publication-once",
+        "proof_id": None,
+        "receipt_digest": None,
+        "failure_receipt_digest": None,
+    }
+    queries: list[str] = []
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            queries.append(query)
+            return Result([existing])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    stored = orchestrator_main.update_research_compute_execution(
+        "runpod-proof-publication-once",
+        request,
+    )
+
+    assert stored["artifact_publication"] == publication
+    assert "artifact_publication = COALESCE" in queries[-1]
+
+    conflicting_publication = dict(publication)
+    conflicting_publication["artifact_set_manifest_digest"] = "sha256:" + "9" * 64
+    conflicting = ResearchComputeExecutionRequest(
+        **{
+            **request.model_dump(mode="python"),
+            "artifact_publication": conflicting_publication,
+        }
+    )
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-publication-once",
+            conflicting,
+        )
+    assert error.value.status_code == 409
+    assert error.value.detail == {"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_CONFLICT"}
+
+    omitted = ResearchComputeExecutionRequest(
+        **{
+            **request.model_dump(mode="python"),
+            "artifact_publication": None,
+        }
+    )
+    with pytest.raises(HTTPException) as omission:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-publication-once",
+            omitted,
+        )
+    assert omission.value.detail == {"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_CONFLICT"}
+
+    downgraded = ResearchComputeExecutionRequest(
+        **{
+            **request.model_dump(mode="python"),
+            "artifact_publication_required": False,
+            "artifact_publication": None,
+        }
+    )
+    with pytest.raises(HTTPException) as requirement:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-publication-once",
+            downgraded,
+        )
+    assert requirement.value.detail == {
+        "code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_REQUIREMENT_CONFLICT"
+    }
+
+
+def test_committed_screen_recovers_a_dropped_terminal_put_from_finalizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_id = "runpod-proof-dropped-screen-terminal"
+    request = _committed_screen_finalization_request(execution_id)
+    existing = _stored_execution(
+        execution_id,
+        request,
+        status="FINALIZING",
+        artifact_publication=None,
+        progress={
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+            "phase": "finalizing",
+        },
+        completed_at=None,
+        teardown_confirmed=False,
+    )
+    returned = _stored_execution(execution_id, request)
+    _state, queries, _parameters = _install_execution_update_rows(
+        monkeypatch,
+        existing,
+        returned,
+    )
+
+    recovered = orchestrator_main.update_research_compute_execution(
+        execution_id,
+        request,
+    )
+
+    assert recovered["status"] == "SUCCEEDED"
+    assert recovered["teardown_confirmed"] is True
+    assert (
+        recovered["artifact_publication"]
+        == request.model_dump(mode="python")["artifact_publication"]
+    )
+    assert len(queries) == 2
+
+
+def test_committed_screen_cannot_skip_the_finalizing_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_id = "runpod-proof-screen-still-running"
+    request = _committed_screen_finalization_request(execution_id)
+    existing = _stored_execution(
+        execution_id,
+        request,
+        status="RUNNING",
+        artifact_publication=None,
+        progress={
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+            "phase": "running",
+        },
+        completed_at=None,
+        teardown_confirmed=False,
+    )
+    _state, queries, _parameters = _install_execution_update_rows(
+        monkeypatch,
+        existing,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.update_research_compute_execution(
+            execution_id,
+            request,
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == {"code": "RESEARCH_EXECUTION_TERMINAL"}
+    assert len(queries) == 1
+
+
+def test_committed_screen_recovers_the_exact_publication_failure_and_retains_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_id = "runpod-proof-recoverable-screen-failure"
+    request = _committed_screen_finalization_request(execution_id)
+    failure_receipt_digest = "sha256:" + "f" * 64
+    existing = _stored_execution(
+        execution_id,
+        request,
+        status="FAILED",
+        artifact_publication=None,
+        progress={
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+            "phase": "failed",
+            "operator_error": {
+                "code": "RUNPOD_OPERATOR_FAILURE",
+                "message": (
+                    "The completed larger-model eligibility screen could not be published."
+                ),
+            },
+        },
+        completed_at=request.completed_at,
+        teardown_confirmed=True,
+        failure_receipt_digest=failure_receipt_digest,
+    )
+    returned = _stored_execution(
+        execution_id,
+        request,
+        failure_receipt_digest=failure_receipt_digest,
+    )
+    _state, queries, parameters = _install_execution_update_rows(
+        monkeypatch,
+        existing,
+        returned,
+    )
+
+    recovered = orchestrator_main.update_research_compute_execution(
+        execution_id,
+        request,
+    )
+
+    assert recovered["status"] == "SUCCEEDED"
+    assert recovered["failure_receipt_digest"] == failure_receipt_digest
+    assert request.failure_receipt_digest is None
+    assert parameters[-1][-1] is None
+    assert "failure_receipt_digest = COALESCE" in queries[-1]
+    assert "research_compute_executions.progress" in queries[-1]
+    assert "- 'operator_error'" in queries[-1]
+
+
+def test_recovered_committed_screen_is_exactly_idempotent_with_retained_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_id = "runpod-proof-idempotent-recovered-screen"
+    request = _committed_screen_finalization_request(execution_id)
+    failure_receipt_digest = "sha256:" + "f" * 64
+    existing = _stored_execution(
+        execution_id,
+        request,
+        failure_receipt_digest=failure_receipt_digest,
+    )
+    returned = dict(existing)
+    _state, queries, _parameters = _install_execution_update_rows(
+        monkeypatch,
+        existing,
+        returned,
+    )
+
+    replayed = orchestrator_main.update_research_compute_execution(
+        execution_id,
+        request,
+    )
+
+    assert replayed["status"] == "SUCCEEDED"
+    assert replayed["failure_receipt_digest"] == failure_receipt_digest
+    assert len(queries) == 2
+
+
+@pytest.mark.parametrize(
+    ("progress", "teardown_confirmed"),
+    (
+        (
+            {
+                "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+                "phase": "failed",
+                "operator_error": {
+                    "code": "RUNPOD_OPERATOR_FAILURE",
+                    "message": "RunPod teardown could not be confirmed.",
+                },
+            },
+            True,
+        ),
+        (
+            {
+                "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+                "phase": "failed",
+                "operator_error": {
+                    "code": "RUNPOD_OPERATOR_FAILURE",
+                    "message": (
+                        "The completed larger-model eligibility screen could not be published."
+                    ),
+                },
+            },
+            False,
+        ),
+    ),
+)
+def test_committed_screen_does_not_recover_other_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    progress: dict[str, object],
+    teardown_confirmed: bool,
+) -> None:
+    execution_id = "runpod-proof-nonrecoverable-screen-failure"
+    request = _committed_screen_finalization_request(execution_id)
+    existing = _stored_execution(
+        execution_id,
+        request,
+        status="FAILED",
+        artifact_publication=None,
+        progress=progress,
+        completed_at=request.completed_at,
+        teardown_confirmed=teardown_confirmed,
+        failure_receipt_digest="sha256:" + "f" * 64,
+    )
+    _state, queries, _parameters = _install_execution_update_rows(
+        monkeypatch,
+        existing,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.update_research_compute_execution(
+            execution_id,
+            request,
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == {"code": "RESEARCH_EXECUTION_TERMINAL"}
+    assert len(queries) == 1
+
+
+def test_stale_failed_demotion_remains_recoverable_but_cannot_overwrite_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_id = "runpod-proof-stale-screen-demotion"
+    success_request = _committed_screen_finalization_request(execution_id)
+    failure_receipt_digest = "sha256:" + "e" * 64
+    failed_request = ResearchComputeExecutionRequest(
+        **{
+            **success_request.model_dump(mode="python"),
+            "status": "FAILED",
+            "progress": {
+                "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+                "phase": "failed",
+                "operator_error": {
+                    "code": "RUNPOD_OPERATOR_FAILURE",
+                    "message": (
+                        "The completed larger-model eligibility screen could not be published."
+                    ),
+                },
+            },
+            "failure_receipt_digest": failure_receipt_digest,
+        }
+    )
+    initial = _stored_execution(
+        execution_id,
+        success_request,
+        status="FINALIZING",
+        artifact_publication=None,
+        completed_at=None,
+        teardown_confirmed=False,
+    )
+    failed = _stored_execution(
+        execution_id,
+        failed_request,
+        failure_receipt_digest=failure_receipt_digest,
+    )
+    succeeded = _stored_execution(
+        execution_id,
+        success_request,
+        failure_receipt_digest=failure_receipt_digest,
+    )
+    state, _queries, _parameters = _install_execution_update_rows(
+        monkeypatch,
+        initial,
+        failed,
+        succeeded,
+    )
+
+    demoted = orchestrator_main.update_research_compute_execution(
+        execution_id,
+        failed_request,
+    )
+    assert demoted["status"] == "FAILED"
+
+    recovered = orchestrator_main.update_research_compute_execution(
+        execution_id,
+        success_request,
+    )
+    assert recovered["status"] == "SUCCEEDED"
+    assert recovered["failure_receipt_digest"] == failure_receipt_digest
+
+    with pytest.raises(HTTPException) as stale:
+        orchestrator_main.update_research_compute_execution(
+            execution_id,
+            failed_request,
+        )
+
+    assert stale.value.detail == {"code": "RESEARCH_EXECUTION_TERMINAL"}
+    assert state["status"] == "SUCCEEDED"
+    assert state["failure_receipt_digest"] == failure_receipt_digest
+
+
+def test_at10_profile_cannot_omit_the_required_publication_contract() -> None:
+    with pytest.raises(ValidationError):
+        ResearchComputeExecutionRequest(
+            name="Required @10 screen",
+            workload_id="repository-repair-larger-model-eligibility",
+            model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+            branch_width=4,
+            complexity_strategy="adaptive",
+            status="PROVISIONING",
+            resource_profile={
+                "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+            },
+            started_at="2026-07-29T16:00:00Z",
+        )
+
+    with pytest.raises(ValidationError):
+        ResearchComputeExecutionRequest(
+            name="Required @10 screen from progress",
+            workload_id="repository-repair-larger-model-eligibility",
+            model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+            branch_width=4,
+            complexity_strategy="adaptive",
+            status="PROVISIONING",
+            progress={
+                "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+            },
+            started_at="2026-07-29T16:00:00Z",
+        )
+
+    with pytest.raises(ValidationError):
+        ResearchComputeProofRequest(
+            provider_name="RunPod",
+            provider_handle="runpod://pods/at10-uncommitted",
+            provider_cli_version="2.7.2",
+            resource_profile={
+                "gpu_id": "NVIDIA H100 80GB HBM3",
+                "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+            },
+            workload={"id": "repository-repair"},
+            result={"workload": "repository-repair"},
+            started_at="2026-07-29T16:00:00Z",
+            completed_at="2026-07-29T16:20:00Z",
+            teardown_confirmed=True,
+        )
+
+    predecessor = ResearchComputeExecutionRequest(
+        name="Predecessor profile remains legacy",
+        workload_id="repository-repair-larger-model-eligibility",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="PROVISIONING",
+        resource_profile={
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@9",
+        },
+        started_at="2026-07-29T16:00:00Z",
+    )
+    assert predecessor.artifact_publication_required is False
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        ({"branch_width": 1}, "RESEARCH_EXECUTION_CONFLICT"),
+        (
+            {"provider_handle": "runpod://pods/authorization-other"},
+            "RESEARCH_EXECUTION_AUTHORIZATION_CONFLICT",
+        ),
+        (
+            {
+                "resource_profile": {
+                    "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+                    "source_contract_digest": "sha256:" + "2" * 64,
+                    "maximum_total_cost_usd": 25.0,
+                },
+            },
+            "RESEARCH_EXECUTION_AUTHORIZATION_CONFLICT",
+        ),
+        (
+            {
+                "resource_profile": {
+                    "profile_id": "qwen2.5-coder-7b-runpod-h100@9",
+                    "source_contract_digest": "sha256:" + "1" * 64,
+                    "maximum_total_cost_usd": 25.0,
+                },
+                "progress": {
+                    "profile_id": "qwen2.5-coder-7b-runpod-h100@9",
+                },
+            },
+            "RESEARCH_EXECUTION_AUTHORIZATION_CONFLICT",
+        ),
+    ),
+)
+def test_atomic_execution_authorization_fields_are_immutable(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: dict[str, object],
+    expected_code: str,
+) -> None:
+    base = ResearchComputeExecutionRequest(
+        name="Atomic authorization boundary",
+        workload_id="repository-repair-larger-model-eligibility",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="RUNNING",
+        provider_handle="runpod://pods/authorization",
+        resource_profile={
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+            "source_contract_digest": "sha256:" + "1" * 64,
+            "maximum_total_cost_usd": 25.0,
+        },
+        progress={
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+        },
+        artifact_publication_required=True,
+        started_at="2026-07-29T16:00:00Z",
+    )
+    existing = {
+        **base.model_dump(mode="python"),
+        "execution_id": "runpod-proof-authorization",
+        "proof_id": None,
+        "receipt_digest": None,
+        "failure_receipt_digest": None,
+    }
+    updated = ResearchComputeExecutionRequest(
+        **{
+            **base.model_dump(mode="python"),
+            **mutation,
+        }
+    )
+    queries: list[str] = []
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            queries.append(query)
+            return Result([existing])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-authorization",
+            updated,
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == {"code": expected_code}
+    assert len(queries) == 1
+
+
+def test_required_publication_must_be_declared_on_initial_provisioning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = ResearchComputeExecutionRequest(
+        name="Late atomic declaration",
+        workload_id="repository-repair-larger-model-eligibility",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="RUNNING",
+        provider_handle="runpod://pods/late-declaration",
+        artifact_publication_required=True,
+        started_at="2026-07-29T16:00:00Z",
+    )
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            _query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            return Result([])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.update_research_compute_execution(
+            "runpod-proof-late-declaration",
+            request,
+        )
+    assert error.value.detail == {
+        "code": "RESEARCH_EXECUTION_PUBLICATION_REQUIRES_INITIAL_PROVISIONING"
+    }
+
+
+def test_initial_provisioning_persists_the_required_publication_bit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = ResearchComputeExecutionRequest(
+        name="Atomic @10 provisioning",
+        workload_id="repository-repair-larger-model-eligibility",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="PROVISIONING",
+        resource_profile={
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+        },
+        artifact_publication_required=True,
+        started_at="2026-07-29T16:00:00Z",
+    )
+    stored = {
+        **request.model_dump(mode="python"),
+        "execution_id": "runpod-proof-atomic-provisioning",
+        "proof_id": None,
+        "receipt_digest": None,
+        "failure_receipt_digest": None,
+    }
+    queries: list[str] = []
+    parameters: list[tuple[object, ...]] = []
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            query: str,
+            params: tuple[object, ...] = (),
+        ) -> Result:
+            queries.append(query)
+            parameters.append(params)
+            if "SELECT *" in query:
+                return Result([])
+            return Result([stored])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    result = orchestrator_main.update_research_compute_execution(
+        "runpod-proof-atomic-provisioning",
+        request,
+    )
+
+    assert result["artifact_publication_required"] is True
+    assert "artifact_publication_required" in queries[-1]
+    assert parameters[-1][11] is True
+    assert parameters[-1][12] is None
 
 
 def test_failed_execution_attaches_one_operational_receipt_idempotently(
@@ -231,24 +1259,96 @@ def test_failed_execution_attaches_one_operational_receipt_idempotently(
     assert unregistered.value.detail == {"code": "RESEARCH_EXECUTION_RECEIPT_REQUIRES_REGISTRATION"}
 
 
-def test_proof_receipt_recovers_only_the_exact_post_contract_failure() -> None:
+def test_proof_publication_binds_exact_canonical_result_and_receipt() -> None:
+    proof_fields: dict[str, object] = {
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/canonical-proof",
+        "provider_cli_version": "2.7.2",
+        "resource_profile": {
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@7",
+        },
+        "workload": {"id": "repository-repair"},
+        "result": {"workload": "repository-repair", "reward_gain": 0.125},
+        "started_at": "2026-07-29T16:00:00Z",
+        "completed_at": "2026-07-29T16:20:00Z",
+        "teardown_confirmed": True,
+    }
+    publication = _bound_screen_publication(
+        proof_fields,
+        "runpod-proof-canonical-proof",
+    )
     request = ResearchComputeProofRequest(
-        provider_name="RunPod",
-        provider_handle="runpod://pods/recovered-pod",
-        provider_cli_version="2.7.2",
-        resource_profile={"gpu_id": "NVIDIA RTX PRO 4500 Blackwell"},
-        workload={
+        **proof_fields,
+        artifact_publication=publication,
+    )
+
+    assert request.artifact_publication.run_result_canonical_json_sha256 == canonical_digest(
+        request.result
+    )
+    assert request.artifact_publication.provider_receipt_canonical_json_sha256 == canonical_digest(
+        request.model_dump(mode="json", exclude={"artifact_publication"})
+    )
+    assert canonical_digest(request.model_dump(mode="json")) != (
+        request.artifact_publication.provider_receipt_canonical_json_sha256
+    )
+
+    wrong_result = dict(publication)
+    wrong_result["run_result_canonical_json_sha256"] = "sha256:" + "9" * 64
+    with pytest.raises(ValidationError):
+        ResearchComputeProofRequest(
+            **proof_fields,
+            artifact_publication=wrong_result,
+        )
+
+    wrong_receipt = dict(publication)
+    wrong_receipt["provider_receipt_canonical_json_sha256"] = "sha256:" + "8" * 64
+    with pytest.raises(ValidationError):
+        ResearchComputeProofRequest(
+            **proof_fields,
+            artifact_publication=wrong_receipt,
+        )
+
+    marked_result = dict(proof_fields)
+    marked_result["result"] = {
+        "workload": "repository-repair",
+        "artifact_set_committed": True,
+    }
+    with pytest.raises(ValidationError):
+        ResearchComputeProofRequest(
+            **marked_result,
+            artifact_publication=publication,
+        )
+
+
+def test_proof_receipt_recovers_only_the_exact_post_contract_failure() -> None:
+    proof_fields: dict[str, object] = {
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/recovered-pod",
+        "provider_cli_version": "2.7.2",
+        "resource_profile": {
+            "gpu_id": "NVIDIA RTX PRO 4500 Blackwell",
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@7",
+        },
+        "workload": {
             "id": "repository-repair-restored-continuation-post-training",
             "model_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
         },
-        result={
+        "result": {
             "workload": "repository-repair-restored-continuation-post-training",
             "model_id": "Qwen/Qwen2.5-Coder-3B-Instruct",
             "reward_gain": 0.1875,
         },
-        started_at="2026-07-28T14:24:04Z",
-        completed_at="2026-07-28T15:56:46Z",
-        teardown_confirmed=True,
+        "started_at": "2026-07-28T14:24:04Z",
+        "completed_at": "2026-07-28T15:56:46Z",
+        "teardown_confirmed": True,
+    }
+    request = ResearchComputeProofRequest(
+        **proof_fields,
+        artifact_publication=_bound_screen_publication(
+            proof_fields,
+            "runpod-proof-recovered",
+        ),
     )
     execution = {
         "execution_id": "runpod-proof-recovered",
@@ -312,23 +1412,34 @@ def test_scientific_recovery_locks_execution_and_preserves_failure_receipt_linea
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     failure_digest = "sha256:" + "f" * 64
-    request = ResearchComputeProofRequest(
-        provider_name="RunPod",
-        provider_handle="runpod://pods/recovered-lineage",
-        provider_cli_version="2.7.2",
-        resource_profile={"gpu_id": "NVIDIA H100 80GB HBM3"},
-        workload={
+    proof_fields: dict[str, object] = {
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/recovered-lineage",
+        "provider_cli_version": "2.7.2",
+        "resource_profile": {
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@7",
+        },
+        "workload": {
             "id": "repository-repair-restored-continuation-post-training",
             "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
         },
-        result={
+        "result": {
             "workload": "repository-repair-restored-continuation-post-training",
             "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
             "reward_gain": 0.125,
         },
-        started_at="2026-07-29T16:00:00Z",
-        completed_at="2026-07-29T16:20:00Z",
-        teardown_confirmed=True,
+        "started_at": "2026-07-29T16:00:00Z",
+        "completed_at": "2026-07-29T16:20:00Z",
+        "teardown_confirmed": True,
+    }
+    publication = _bound_screen_publication(
+        proof_fields,
+        "runpod-proof-recovered-lineage",
+    )
+    request = ResearchComputeProofRequest(
+        **proof_fields,
+        artifact_publication=publication,
     )
     execution = {
         "execution_id": "runpod-proof-recovered-lineage",
@@ -341,6 +1452,9 @@ def test_scientific_recovery_locks_execution_and_preserves_failure_receipt_linea
         "proof_id": None,
         "receipt_digest": None,
         "failure_receipt_digest": failure_digest,
+        "artifact_publication_required": True,
+        "artifact_publication": None,
+        "resource_profile": proof_fields["resource_profile"],
         "progress": {
             "operator_error": {
                 "code": "RUNPOD_OPERATOR_FAILURE",
@@ -365,6 +1479,8 @@ def test_scientific_recovery_locks_execution_and_preserves_failure_receipt_linea
                 return Result([execution])
             if "SELECT proof_id" in query:
                 return Result([])
+            if "UPDATE research_compute_executions SET" in query:
+                return Result([{"execution_id": execution["execution_id"]}])
             return Result([])
 
     @contextmanager
@@ -387,6 +1503,476 @@ def test_scientific_recovery_locks_execution_and_preserves_failure_receipt_linea
     assert "failure_receipt_digest" not in execution_update
 
 
+def test_proof_ingestion_refuses_an_uncommitted_required_artifact_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = ResearchComputeProofRequest(
+        provider_name="RunPod",
+        provider_handle="runpod://pods/uncommitted",
+        provider_cli_version="2.7.2",
+        resource_profile={
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@7",
+        },
+        workload={"id": "repository-repair"},
+        result={"workload": "repository-repair"},
+        started_at="2026-07-29T16:00:00Z",
+        completed_at="2026-07-29T16:20:00Z",
+        teardown_confirmed=True,
+    )
+    execution = {
+        "execution_id": "runpod-proof-uncommitted",
+        "artifact_publication_required": True,
+        "artifact_publication": None,
+    }
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            _query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            return Result([execution])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.ingest_research_compute_proof(request)
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {"code": "RESEARCH_PROOF_ARTIFACT_SET_UNCOMMITTED"}
+
+
+def test_legacy_execution_and_proof_remain_non_atomic_and_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_request = ResearchComputeExecutionRequest(
+        name="Legacy external evaluation",
+        workload_id="revision30-post-freeze-external-adapter-evaluation",
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        branch_width=4,
+        complexity_strategy="adaptive",
+        status="SUCCEEDED",
+        provider_handle="runpod://pods/legacy-evaluation",
+        resource_profile={"gpu_id": "NVIDIA H100 80GB HBM3"},
+        progress={"phase": "complete", "elapsed_seconds": 60},
+        started_at="2026-07-28T16:00:00Z",
+        completed_at="2026-07-28T16:01:00Z",
+        teardown_confirmed=True,
+    )
+    stored_execution = {
+        **execution_request.model_dump(mode="python"),
+        "execution_id": "runpod-proof-legacy-evaluation",
+        "proof_id": None,
+        "receipt_digest": None,
+        "failure_receipt_digest": None,
+        "progress": {
+            **execution_request.progress,
+            "artifact_set_committed": True,
+            "artifact_set_manifest_digest": "sha256:" + "9" * 64,
+        },
+    }
+    execution_queries: list[str] = []
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class ExecutionConnection:
+        def execute(
+            self,
+            query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            execution_queries.append(query)
+            if "SELECT *" in query:
+                return Result([])
+            return Result([stored_execution])
+
+    @contextmanager
+    def execution_connection():
+        yield ExecutionConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", execution_connection)
+
+    stored = orchestrator_main.update_research_compute_execution(
+        "runpod-proof-legacy-evaluation",
+        execution_request,
+    )
+    observed = research_execution_response(stored)
+
+    assert stored["artifact_publication_required"] is False
+    assert stored["artifact_publication"] is None
+    assert observed["status"] == "SUCCEEDED"
+    assert "artifact_set_committed" not in observed["observer_evidence"]
+    assert "artifact_publication_required" in execution_queries[-1]
+
+    proof_request = ResearchComputeProofRequest(
+        provider_name="RunPod",
+        provider_handle="runpod://pods/legacy-evaluation",
+        provider_cli_version="2.7.2",
+        resource_profile={"gpu_id": "NVIDIA H100 80GB HBM3"},
+        workload={
+            "id": "revision30-post-freeze-external-adapter-evaluation",
+            "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        },
+        result={
+            "workload": "revision30-post-freeze-external-adapter-evaluation",
+            "elapsed_seconds": 60,
+        },
+        started_at="2026-07-28T16:00:00Z",
+        completed_at="2026-07-28T16:01:00Z",
+        teardown_confirmed=True,
+    )
+    legacy_execution = {
+        **stored_execution,
+        "status": "FINALIZING",
+        "proof_id": None,
+    }
+    proof_queries: list[str] = []
+    proof_parameters: list[tuple[object, ...]] = []
+
+    class ProofConnection:
+        def execute(
+            self,
+            query: str,
+            params: tuple[object, ...] = (),
+        ) -> Result:
+            proof_queries.append(query)
+            proof_parameters.append(params)
+            if "SELECT *" in query and "provider_handle" in query:
+                return Result([legacy_execution])
+            if "UPDATE research_compute_executions SET" in query:
+                return Result([{"execution_id": legacy_execution["execution_id"]}])
+            return Result([])
+
+    @contextmanager
+    def proof_connection():
+        yield ProofConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", proof_connection)
+
+    proof = orchestrator_main.ingest_research_compute_proof(proof_request)
+    legacy_receipt = proof_request.model_dump(
+        mode="json",
+        exclude={"artifact_publication"},
+    )
+
+    assert proof["receipt_digest"] == canonical_digest(legacy_receipt)
+    proof_insert_index = next(
+        index
+        for index, query in enumerate(proof_queries)
+        if "INSERT INTO research_compute_proofs" in query
+    )
+    assert proof_parameters[proof_insert_index][7] is None
+    legacy_item = {
+        "proof_id": proof["proof_id"],
+        "execution_id": "runpod-proof-legacy-evaluation",
+        "execution_name": "Legacy external evaluation",
+        "provider_name": "RunPod",
+        "provider_handle": proof_request.provider_handle,
+        "provider_cli_version": proof_request.provider_cli_version,
+        "resource_profile": proof_request.resource_profile,
+        "workload": proof_request.workload,
+        "result": proof_request.result,
+        "artifact_publication": None,
+        "receipt_digest": proof["receipt_digest"],
+        "failure_receipt_digest": None,
+        "started_at": proof_request.started_at,
+        "completed_at": proof_request.completed_at,
+        "teardown_confirmed": True,
+    }
+    detail = research_proof_response(legacy_item, detail=True)
+    assert detail["evidence"]["artifact_set_committed"] is False
+    assert detail["evidence"]["artifact_set_manifest_digest"] is None
+    assert detail["evidence"]["artifact_publication_status"] == "legacy_non_atomic"
+
+    class ListConnection:
+        def execute(
+            self,
+            _query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            return Result([legacy_item])
+
+    @contextmanager
+    def list_connection():
+        yield ListConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", list_connection)
+
+    listed = orchestrator_main.list_research_compute_proofs()
+    assert listed["items"][0]["proof_id"] == proof["proof_id"]
+
+
+def test_proof_ingestion_requires_the_exact_registered_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proof_fields: dict[str, object] = {
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/missing-execution",
+        "provider_cli_version": "2.7.2",
+        "resource_profile": {
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "profile_id": "qwen2.5-coder-7b-runpod-h100@7",
+        },
+        "workload": {"id": "repository-repair"},
+        "result": {"workload": "repository-repair"},
+        "started_at": "2026-07-29T16:00:00Z",
+        "completed_at": "2026-07-29T16:20:00Z",
+        "teardown_confirmed": True,
+    }
+    request = ResearchComputeProofRequest(
+        **proof_fields,
+        artifact_publication=_bound_screen_publication(
+            proof_fields,
+            "runpod-proof-missing-execution",
+        ),
+    )
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    executions: list[dict[str, object]] = []
+
+    class FakeConnection:
+        def execute(
+            self,
+            _query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            return Result(executions)
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.ingest_research_compute_proof(request)
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {"code": "RESEARCH_PROOF_EXECUTION_REQUIRED"}
+
+    executions.append(
+        {
+            "execution_id": "runpod-proof-different-execution",
+            "artifact_publication_required": True,
+            "artifact_publication": None,
+        }
+    )
+    with pytest.raises(HTTPException) as mismatch:
+        orchestrator_main.ingest_research_compute_proof(request)
+    assert mismatch.value.detail == {"code": "RESEARCH_PROOF_ARTIFACT_PUBLICATION_MISMATCH"}
+
+
+@pytest.mark.parametrize(
+    ("execution_mutation", "expected_code"),
+    (
+        (
+            {"workload_id": "different-workload"},
+            "RESEARCH_PROOF_EXECUTION_LINEAGE_MISMATCH",
+        ),
+        (
+            {"model_id": "Qwen/Qwen2.5-Coder-1.5B-Instruct"},
+            "RESEARCH_PROOF_EXECUTION_LINEAGE_MISMATCH",
+        ),
+        (
+            {"started_at": "2026-07-29T15:59:59Z"},
+            "RESEARCH_PROOF_EXECUTION_LINEAGE_MISMATCH",
+        ),
+        (
+            {
+                "resource_profile": {
+                    "profile_id": "qwen2.5-coder-7b-runpod-h100@8",
+                }
+            },
+            "RESEARCH_PROOF_EXECUTION_PROFILE_MISMATCH",
+        ),
+    ),
+)
+def test_normal_proof_ingestion_rejects_execution_lineage_mismatches(
+    monkeypatch: pytest.MonkeyPatch,
+    execution_mutation: dict[str, object],
+    expected_code: str,
+) -> None:
+    profile_id = "qwen2.5-coder-7b-runpod-h100@7"
+    proof_fields: dict[str, object] = {
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/exact-lineage",
+        "provider_cli_version": "2.7.2",
+        "resource_profile": {
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "profile_id": profile_id,
+        },
+        "workload": {
+            "id": "repository-repair",
+            "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        },
+        "result": {
+            "workload": "repository-repair",
+            "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        },
+        "started_at": "2026-07-29T16:00:00Z",
+        "completed_at": "2026-07-29T16:20:00Z",
+        "teardown_confirmed": True,
+    }
+    request = ResearchComputeProofRequest(
+        **proof_fields,
+        artifact_publication=_bound_screen_publication(
+            proof_fields,
+            "runpod-proof-exact-lineage",
+        ),
+    )
+    execution = {
+        "execution_id": "runpod-proof-exact-lineage",
+        "status": "FINALIZING",
+        "provider_name": "RunPod",
+        "provider_handle": request.provider_handle,
+        "workload_id": "repository-repair",
+        "model_id": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        "resource_profile": {"profile_id": profile_id},
+        "progress": {},
+        "started_at": request.started_at,
+        "teardown_confirmed": True,
+        "artifact_publication_required": True,
+        "artifact_publication": None,
+        "proof_id": None,
+        **execution_mutation,
+    }
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            _query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            return Result([execution])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    with pytest.raises(HTTPException) as error:
+        orchestrator_main.ingest_research_compute_proof(request)
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {"code": expected_code}
+
+
+def test_pilot_proof_verifies_source_screen_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_id = "qwen2.5-coder-7b-runpod-h100@7"
+    proof_fields: dict[str, object] = {
+        "provider_name": "RunPod",
+        "provider_handle": "runpod://pods/pilot-lineage",
+        "provider_cli_version": "2.7.2",
+        "resource_profile": {
+            "gpu_id": "NVIDIA H100 80GB HBM3",
+            "profile_id": profile_id,
+        },
+        "workload": {"id": "repository-repair"},
+        "result": {"workload": "repository-repair", "reward_gain": 0.25},
+        "started_at": "2026-07-29T16:00:00Z",
+        "completed_at": "2026-07-29T16:20:00Z",
+        "teardown_confirmed": True,
+    }
+    publication = _pilot_publication(
+        "runpod-proof-pilot-lineage",
+        profile_id=profile_id,
+        run_result_digest=canonical_digest(proof_fields["result"]),
+        provider_receipt_digest=canonical_digest(proof_fields),
+    )
+    request = ResearchComputeProofRequest(
+        **proof_fields,
+        artifact_publication=publication,
+    )
+    primary_execution = {
+        "execution_id": "runpod-proof-pilot-lineage",
+        "status": "FINALIZING",
+        "provider_handle": request.provider_handle,
+        "workload_id": "repository-repair",
+        "model_id": None,
+        "started_at": request.started_at,
+        "teardown_confirmed": True,
+        "artifact_publication_required": True,
+        "artifact_publication": None,
+        "proof_id": None,
+        "resource_profile": {"profile_id": profile_id},
+        "progress": {},
+    }
+    source_publication = _screen_publication(
+        "runpod-proof-screen-source",
+        profile_id=profile_id,
+    )
+    source_publication["artifact_set_manifest_digest"] = "sha256:" + "e" * 64
+    source_execution = {
+        "execution_id": "runpod-proof-screen-source",
+        "status": "SUCCEEDED",
+        "teardown_confirmed": True,
+        "artifact_publication_required": True,
+        "artifact_publication": source_publication,
+    }
+    queries: list[str] = []
+
+    class Result(list[dict[str, object]]):
+        def fetchone(self) -> dict[str, object] | None:
+            return self[0] if self else None
+
+    class FakeConnection:
+        def execute(
+            self,
+            query: str,
+            _params: tuple[object, ...] = (),
+        ) -> Result:
+            queries.append(query)
+            if "WHERE provider_handle" in query and "SELECT *" in query:
+                return Result([primary_execution])
+            if "SELECT execution_id, status" in query:
+                return Result([source_execution])
+            if "UPDATE research_compute_executions SET" in query:
+                return Result([{"execution_id": primary_execution["execution_id"]}])
+            return Result([])
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(orchestrator_main, "connection", fake_connection)
+
+    response = orchestrator_main.ingest_research_compute_proof(request)
+
+    assert response["already_recorded"] is False
+    assert any(
+        "artifact_publication" in query and "INSERT INTO research_compute_proofs" in query
+        for query in queries
+    )
+
+    source_execution["status"] = "RUNNING"
+    with pytest.raises(HTTPException) as invalid_source:
+        orchestrator_main.ingest_research_compute_proof(request)
+    assert invalid_source.value.detail == {
+        "code": "RESEARCH_ARTIFACT_PUBLICATION_SOURCE_SCREEN_INVALID"
+    }
+
+
 def test_operational_failure_receipt_migration_preserves_scientific_lineage() -> None:
     migration = Path(
         "services/orchestrator/migrations/012_operational_failure_receipts.sql"
@@ -396,6 +1982,25 @@ def test_operational_failure_receipt_migration_preserves_scientific_lineage() ->
     assert "SET failure_receipt_digest = receipt_digest" in migration
     assert "status = 'FAILED'" in migration
     assert "proof_id IS NULL" in migration
+
+
+def test_artifact_publication_migration_adds_nullable_jsonb_to_both_records() -> None:
+    migration = Path("services/orchestrator/migrations/013_artifact_publication.sql").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ALTER TABLE research_compute_executions" in migration
+    assert "ALTER TABLE research_compute_proofs" in migration
+    assert migration.count("ADD COLUMN IF NOT EXISTS artifact_publication jsonb") == 2
+    assert "ADD COLUMN IF NOT EXISTS artifact_publication_required boolean" in migration
+    assert "NOT NULL DEFAULT false" in migration
+    assert "research_compute_executions_required_publication_check" in migration
+    assert "NOT artifact_publication_required" in migration
+    assert "status <> 'SUCCEEDED'" in migration
+    assert "OR artifact_publication IS NOT NULL" in migration
+    assert "artifact_publication_required" in migration
+    assert "AND jsonb_typeof(artifact_publication) = 'object'" in migration
+    assert "INSERT INTO schema_migrations(version) VALUES (13)" in migration
 
 
 def test_estimated_compute_cost_uses_recorded_rate_and_elapsed_runtime() -> None:
@@ -431,6 +2036,83 @@ def test_research_execution_response_exposes_gpu_and_live_estimated_cost() -> No
     assert response["allocated_gpu"] == "NVIDIA A40"
     assert response["cost"]["total_usd"] == 0.11
     assert response["cost"]["estimated"] is True
+
+
+def test_research_execution_response_normalizes_only_present_observer_evidence() -> None:
+    bundle_digest = "sha256:" + "b" * 64
+    stage_digest = "sha256:" + "c" * 64
+    source_digest = "sha256:" + "d" * 64
+    response = research_execution_response(
+        {
+            "execution_id": "runpod-proof-observer",
+            "provider_handle": "runpod://pods/observer",
+            "resource_profile": {
+                "workload_bundle_digest": bundle_digest,
+                "bundle_stage_receipt_digest": stage_digest,
+                "source_contract_digest": "sha256:" + "e" * 64,
+                "internal_launcher_value": "not-public-observer-evidence",
+            },
+            "progress": {
+                "phase": "verifying_runtime",
+                "message": "Verifying the runtime and pinned model.",
+                "source_contract_digest": source_digest,
+                "branch_groups_completed": 3,
+            },
+        }
+    )
+
+    assert response["observer_evidence"] == {
+        "phase": "verifying_runtime",
+        "message": "Verifying the runtime and pinned model.",
+        "source_contract_digest": source_digest,
+        "workload_bundle_digest": bundle_digest,
+        "bundle_stage_receipt_digest": stage_digest,
+        "branch_groups_completed": 3,
+    }
+    assert "internal_launcher_value" not in response["observer_evidence"]
+    assert "gate_results" not in response["observer_evidence"]
+
+
+def test_execution_response_claims_success_only_after_atomic_artifact_commit() -> None:
+    digest = "sha256:" + "a" * 64
+    item = {
+        "execution_id": "runpod-proof-publication",
+        "status": "SUCCEEDED",
+        "provider_handle": "runpod://pods/publication",
+        "resource_profile": {},
+        "progress": {"phase": "complete"},
+        "proof_id": "research_proof_publication",
+        "receipt_digest": "sha256:" + "b" * 64,
+        "artifact_publication_required": True,
+    }
+
+    pending = research_execution_response(item)
+    assert pending["status"] == "FINALIZING"
+    assert pending["proof_id"] is None
+    assert pending["receipt_digest"] is None
+
+    published = research_execution_response(
+        {
+            **item,
+            "progress": {
+                "phase": "complete",
+                "artifact_set_manifest_digest": digest,
+                "artifact_set_committed": True,
+            },
+        }
+    )
+    assert published["status"] == "FINALIZING"
+
+    published = research_execution_response(
+        {
+            **item,
+            "artifact_publication": _screen_publication("runpod-proof-publication"),
+        }
+    )
+    assert published["status"] == "SUCCEEDED"
+    assert published["proof_id"] == "research_proof_publication"
+    assert published["observer_evidence"]["artifact_set_manifest_digest"] == digest
+    assert published["observer_evidence"]["artifact_set_committed"] is True
 
 
 def test_research_execution_response_handles_awaiting_allocation() -> None:
@@ -472,11 +2154,15 @@ def test_proof_list_and_detail_contracts_keep_summary_focused() -> None:
             "initial_reward": 0.0,
             "final_reward": 1.0,
             "reward_gain": 1.0,
+            "meaningful_post_training": False,
+            "post_training_outcome": "NEGATIVE_EXPERIMENT_COMPLETED",
+            "dynamic_complexity_progressed": True,
             "elapsed_seconds": 900,
             "promotion_count": 2,
             "reached_complexity_level": 2,
             "maximum_complexity_level": 3,
         },
+        "artifact_publication": _screen_publication("runpod-proof-test"),
         "receipt_digest": "sha256:receipt",
         "failure_receipt_digest": "sha256:" + "f" * 64,
         "started_at": "2026-07-26T21:00:00Z",
@@ -489,6 +2175,8 @@ def test_proof_list_and_detail_contracts_keep_summary_focused() -> None:
 
     assert summary["execution_id"] == "runpod-proof-test"
     assert summary["learning"]["reward_gain"] == 1.0
+    assert summary["learning"]["meaningful_post_training"] is False
+    assert summary["learning"]["post_training_outcome"] == "NEGATIVE_EXPERIMENT_COMPLETED"
     assert summary["cost"]["total_usd"] == 0.11
     assert "provider" not in summary
     assert "evidence" not in summary
@@ -496,8 +2184,11 @@ def test_proof_list_and_detail_contracts_keep_summary_focused() -> None:
     assert detail["provider"]["handle"] == "runpod://pods/pod-test"
     assert detail["workload"]["model_id"].endswith("1.5B-Instruct")
     assert detail["curriculum"]["reached_level"] == 2
+    assert detail["curriculum"]["dynamic_complexity_progressed"] is True
     assert detail["evidence"]["receipt_digest"] == "sha256:receipt"
     assert detail["evidence"]["failure_receipt_digest"] == "sha256:" + "f" * 64
+    assert detail["evidence"]["artifact_set_committed"] is True
+    assert detail["evidence"]["artifact_set_manifest_digest"] == "sha256:" + "a" * 64
 
 
 def test_partial_proof_suppresses_headline_learning_metrics() -> None:
@@ -542,7 +2233,11 @@ def test_proof_api_list_and_detail_use_dedicated_contracts(
         "provider_cli_version": "2.7.2",
         "resource_profile": {"gpu_id": "NVIDIA A40", "hourly_cost_usd": 0.44},
         "workload": {"id": "repository-repair"},
-        "result": {"elapsed_seconds": 900, "reward_gain": 1.0},
+        "result": {
+            "elapsed_seconds": 900,
+            "reward_gain": 1.0,
+        },
+        "artifact_publication": _screen_publication("runpod-proof-api"),
         "receipt_digest": "sha256:api",
         "failure_receipt_digest": "sha256:" + "f" * 64,
         "started_at": "2026-07-26T21:00:00Z",

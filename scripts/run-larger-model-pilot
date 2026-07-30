@@ -18,35 +18,89 @@ if (($# == 1)); then
   preflight_only=1
 fi
 
-screen_result="${EQUINOX_LARGER_MODEL_SCREEN_RESULT:-}"
-screen_receipt="${EQUINOX_LARGER_MODEL_SCREEN_RECEIPT:-}"
-if [[ -z "$screen_result" || -z "$screen_receipt" ]]; then
-  while IFS= read -r candidate; do
-    candidate_receipt="${candidate%.result.json}.json"
-    if [[ ! -f "$candidate_receipt" ]]; then
-      continue
-    fi
-    if authorization="$(
+proof_directory="$repository_root/var/research-proofs"
+artifact_set_id="${EQUINOX_LARGER_MODEL_ARTIFACT_SET_ID:-}"
+profile_id="$(
+  python3 "$repository_root/research/runpod/larger_model_gate.py" manifest |
+    jq -r '.profile_id'
+)"
+artifact_set=""
+if [[ -n "$artifact_set_id" ]]; then
+  artifact_set="$(
+    PYTHONPATH="$repository_root${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m research.runpod.artifact_publication verify \
+      --proof-directory "$proof_directory" \
+      --publication-id "$artifact_set_id" \
+      --expected-profile-id "$profile_id" \
+      --expected-publication-type screen
+  )"
+else
+  while IFS= read -r manifest_path; do
+    candidate_id="${manifest_path##*/}"
+    candidate_id="${candidate_id%.artifact-set.json}"
+    if candidate="$(
+      PYTHONPATH="$repository_root${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 -m research.runpod.artifact_publication verify \
+        --proof-directory "$proof_directory" \
+        --publication-id "$candidate_id" \
+        --expected-profile-id "$profile_id" \
+        --expected-publication-type screen 2>/dev/null
+    )" &&
+      candidate_result="$(jq -r '.artifacts.run_result' <<<"$candidate")" &&
+      candidate_receipt="$(jq -r '.artifacts.provider_receipt' <<<"$candidate")" &&
       python3 "$repository_root/research/runpod/larger_model_gate.py" \
         authorize \
-        "$candidate" \
-        "$candidate_receipt" 2>/dev/null
-    )"; then
-      screen_result="$candidate"
-      screen_receipt="$candidate_receipt"
+        "$candidate_result" \
+        "$candidate_receipt" >/dev/null 2>&1; then
+      artifact_set="$candidate"
+      artifact_set_id="$candidate_id"
       break
     fi
   done < <(
-    find "$repository_root/var/research-proofs" \
+    find "$proof_directory" \
       -maxdepth 1 \
       -type f \
-      -name 'runpod-proof-*.result.json' \
+      -name 'runpod-proof-*.artifact-set.json' \
       -print 2>/dev/null |
       sort -r
   )
 fi
-if [[ -z "$screen_result" || -z "$screen_receipt" ]]; then
-  echo "No fresh eligible 7B screen result and matching teardown receipt were found." >&2
+if [[ -z "$artifact_set" ]] ||
+  ! jq -e \
+    --arg profile_id "$profile_id" \
+    '
+      .verified == true
+      and .artifact_set_committed == true
+      and .publication_type == "screen"
+      and .profile_id == $profile_id
+      and (.artifact_set_manifest_digest | test("^sha256:[0-9a-f]{64}$"))
+      and (.artifacts | keys | sort) == [
+        "attempt_record",
+        "bundle_receipt",
+        "provider_receipt",
+        "readiness_receipt",
+        "run_result",
+        "torch_evidence"
+      ]
+    ' >/dev/null <<<"$artifact_set"; then
+  echo "No committed eligible 7B screen artifact set was found." >&2
+  exit 1
+fi
+screen_result="$(jq -r '.artifacts.run_result' <<<"$artifact_set")"
+screen_receipt="$(jq -r '.artifacts.provider_receipt' <<<"$artifact_set")"
+volume_readiness_receipt="$(jq -r '.artifacts.readiness_receipt' <<<"$artifact_set")"
+bundle_stage_receipt="$(jq -r '.artifacts.bundle_receipt' <<<"$artifact_set")"
+torch_retention_evidence="$(jq -r '.artifacts.torch_evidence' <<<"$artifact_set")"
+artifact_set_manifest_digest="$(
+  jq -r '.artifact_set_manifest_digest' <<<"$artifact_set"
+)"
+if [[ -n "${EQUINOX_LARGER_MODEL_SCREEN_RESULT:-}" &&
+  "$EQUINOX_LARGER_MODEL_SCREEN_RESULT" != "$screen_result" ]] ||
+  [[ -n "${EQUINOX_LARGER_MODEL_SCREEN_RECEIPT:-}" &&
+    "$EQUINOX_LARGER_MODEL_SCREEN_RECEIPT" != "$screen_receipt" ]] ||
+  [[ -n "${EQUINOX_LARGER_MODEL_ARTIFACT_SET_MANIFEST_DIGEST:-}" &&
+    "$EQUINOX_LARGER_MODEL_ARTIFACT_SET_MANIFEST_DIGEST" != "$artifact_set_manifest_digest" ]]; then
+  echo "Explicit screen evidence does not belong to the committed artifact set." >&2
   exit 1
 fi
 
@@ -66,6 +120,11 @@ authorization="$(
 export EQUINOX_LARGER_MODEL_MODE=pilot
 export EQUINOX_LARGER_MODEL_SCREEN_RESULT="$screen_result"
 export EQUINOX_LARGER_MODEL_SCREEN_RECEIPT="$screen_receipt"
+export EQUINOX_LARGER_MODEL_VOLUME_RECEIPT="$volume_readiness_receipt"
+export EQUINOX_LARGER_MODEL_BUNDLE_STAGE_RECEIPT="$bundle_stage_receipt"
+export EQUINOX_LARGER_MODEL_TORCH_RETENTION_EVIDENCE="$torch_retention_evidence"
+export EQUINOX_LARGER_MODEL_ARTIFACT_SET_ID="$artifact_set_id"
+export EQUINOX_LARGER_MODEL_ARTIFACT_SET_MANIFEST_DIGEST="$artifact_set_manifest_digest"
 export EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST
 EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST="$(jq -r '.digest' <<<"$authorization")"
 export EQUINOX_RL_MODEL_ID=Qwen/Qwen2.5-Coder-7B-Instruct
@@ -80,6 +139,10 @@ export EQUINOX_RUNPOD_MAX_LIFETIME_MINUTES=238
 export EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS=1200
 export EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS=900
 export EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS=1
+export EQUINOX_RUNPOD_CAMPAIGN_BASELINE_BALANCE_USD=45.2834247943
+export EQUINOX_RUNPOD_CAMPAIGN_AUTHORIZED_BUDGET_USD=25.00
+export EQUINOX_RUNPOD_CAMPAIGN_FUTURE_PILOT_RESERVE_USD=0.00
+export EQUINOX_RUNPOD_CAMPAIGN_STORAGE_RESERVE_USD=0.30
 export EQUINOX_RL_SEED=137
 export EQUINOX_RL_TARGET_SECONDS=9000
 export EQUINOX_RL_MAX_UPDATES=40

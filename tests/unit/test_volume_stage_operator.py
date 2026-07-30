@@ -338,6 +338,20 @@ def valid_torch_evidence(
         "effective_policy_update_count_after_resume_step": 2,
         "retained_observation_after_resume_step": {"exact_rate": 0.75},
         "optimizer_state_entries_after_resume_step": 1,
+        "optimizer_state_digest_before_persist": "sha256:" + "6" * 64,
+        "optimizer_state_digest_after_restore": "sha256:" + "6" * 64,
+        "optimizer_state_digest_after_resume_step": "sha256:" + "7" * 64,
+        "optimizer_parameter_device": "cpu",
+        "optimizer_state_devices_before_persist": {
+            "exp_avg": ["cpu"],
+            "exp_avg_sq": ["cpu"],
+            "step": ["cpu"],
+        },
+        "optimizer_state_devices_after_restore": {
+            "exp_avg": ["cpu"],
+            "exp_avg_sq": ["cpu"],
+            "step": ["cpu"],
+        },
     }
 
 
@@ -1046,6 +1060,20 @@ def test_torch_checkpoint_evidence_binds_exact_runtime_and_checkout() -> None:
         "effective_policy_update_count_after_resume_step": 2,
         "retained_observation_after_resume_step": {"exact_rate": 0.75},
         "optimizer_state_entries_after_resume_step": 1,
+        "optimizer_state_digest_before_persist": "sha256:" + "6" * 64,
+        "optimizer_state_digest_after_restore": "sha256:" + "6" * 64,
+        "optimizer_state_digest_after_resume_step": "sha256:" + "7" * 64,
+        "optimizer_parameter_device": "cpu",
+        "optimizer_state_devices_before_persist": {
+            "exp_avg": ["cpu"],
+            "exp_avg_sq": ["cpu"],
+            "step": ["cpu"],
+        },
+        "optimizer_state_devices_after_restore": {
+            "exp_avg": ["cpu"],
+            "exp_avg_sq": ["cpu"],
+            "step": ["cpu"],
+        },
     }
 
     assert (
@@ -1068,6 +1096,9 @@ def test_torch_checkpoint_evidence_binds_exact_runtime_and_checkout() -> None:
         ("checkpoint_size_bytes", 0),
         ("effective_policy_update_count_after_resume_step", 1),
         ("optimizer_state_entries_after_resume_step", 0),
+        ("optimizer_state_digest_before_persist", "sha256:bad"),
+        ("optimizer_state_digest_after_restore", "sha256:" + "5" * 64),
+        ("optimizer_state_digest_after_resume_step", "sha256:" + "6" * 64),
     ):
         invalid = {**evidence, field: value}
         with pytest.raises(RuntimeError, match="evidence is invalid"):

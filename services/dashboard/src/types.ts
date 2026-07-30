@@ -51,6 +51,42 @@ export type ResearchComputeStatus =
   | "SUCCEEDED"
   | "FAILED";
 
+export interface ResearchObserverEvidence {
+  phase?: string;
+  message?: string;
+  profile_id?: string;
+  head_commit?: string;
+  source_contract_digest?: string;
+  bootstrap_source_digest?: string;
+  workload_bundle_digest?: string;
+  workload_bundle_size_bytes?: number;
+  workload_bundle_path?: string;
+  bundle_stage_receipt_digest?: string;
+  volume_readiness_receipt_digest?: string;
+  torch_retention_evidence_digest?: string;
+  bundle_activation_digest?: string;
+  artifact_set_manifest_digest?: string;
+  artifact_set_committed?: boolean;
+  network_volume_id?: string;
+  network_volume_data_center_id?: string;
+  network_volume_size_gb?: number;
+  model_snapshot_digest?: string;
+  pinned_snapshot_digest?: string;
+  model_revision?: string;
+  gate_results?: Record<string, boolean>;
+  screen_completed?: boolean;
+  eligible?: boolean;
+  larger_model_eligible?: boolean;
+  evaluation_completed?: number;
+  evaluation_total?: number;
+  branch_groups_completed?: number;
+  branch_groups_total?: number;
+  update?: number;
+  maximum_updates?: number;
+  current_level?: number;
+  maximum_level?: number;
+}
+
 export interface ResearchComputeExecution {
   execution_id: string;
   name: string;
@@ -65,12 +101,31 @@ export interface ResearchComputeExecution {
     gpu_id?: string;
     cloud_type?: string;
     image?: string;
+    image_digest?: string;
     hourly_cost_usd?: number;
     maximum_hourly_cost_usd?: number;
+    profile_id?: string;
+    head_commit?: string;
+    source_contract_digest?: string;
+    bootstrap_source_digest?: string;
+    workload_bundle_digest?: string;
+    workload_bundle_size_bytes?: number;
+    workload_bundle_path?: string;
+    bundle_stage_receipt_digest?: string;
+    volume_readiness_receipt_digest?: string;
+    torch_retention_evidence_digest?: string;
+    bundle_activation_digest?: string;
+    artifact_set_manifest_digest?: string;
+    artifact_set_committed?: boolean;
+    network_volume_id?: string;
+    network_volume_data_center_id?: string;
+    network_volume_size_gb?: number;
     [key: string]: unknown;
   };
   allocated_gpu?: string | null;
   cost?: EstimatedComputeCost;
+  observer_evidence?: ResearchObserverEvidence;
+  artifact_publication_required?: boolean;
   progress: {
     phase?: string;
     message?: string;
@@ -90,6 +145,9 @@ export interface ResearchComputeExecution {
     final_exact_rate?: number;
     reward_gain?: number;
     hypothesis_passed?: boolean;
+    meaningful_post_training?: boolean;
+    post_training_outcome?: string;
+    dynamic_complexity_progressed?: boolean;
     adapter_persisted?: boolean;
     post_training_completed?: boolean;
     informative_group_rate?: number;
@@ -131,6 +189,23 @@ export interface ResearchComputeExecution {
     larger_model_eligible?: boolean;
     larger_model_profile_id?: string;
     profile_id?: string;
+    head_commit?: string;
+    source_contract_digest?: string;
+    bootstrap_source_digest?: string;
+    workload_bundle_digest?: string;
+    workload_bundle_size_bytes?: number;
+    workload_bundle_path?: string;
+    bundle_stage_receipt_digest?: string;
+    volume_readiness_receipt_digest?: string;
+    torch_retention_evidence_digest?: string;
+    bundle_activation_digest?: string;
+    artifact_set_manifest_digest?: string;
+    artifact_set_committed?: boolean;
+    network_volume_id?: string;
+    network_volume_data_center_id?: string;
+    network_volume_size_gb?: number;
+    model_snapshot_digest?: string;
+    pinned_snapshot_digest?: string;
     model_revision?: string;
     checkpoint_admission_rate?: number;
     branch_checkpoint_rate?: number;
@@ -148,6 +223,8 @@ export interface ResearchComputeExecution {
     policy_unchanged?: boolean;
     policy_mutation_enabled?: boolean;
     gate_results?: Record<string, boolean>;
+    branch_groups_completed?: number;
+    branch_groups_total?: number;
     [key: string]: unknown;
   };
   proof_id: string | null;
@@ -245,6 +322,8 @@ export interface ResearchProofSummary {
     final_reward?: number | null;
     reward_gain?: number | null;
     hypothesis_passed?: boolean | null;
+    meaningful_post_training?: boolean | null;
+    post_training_outcome?: string | null;
     claim_strength?: string | null;
     seed_count?: number | null;
   };
@@ -283,6 +362,7 @@ export interface ResearchProofDetail extends ResearchProofSummary {
   };
   curriculum: {
     promotion_count?: number | null;
+    dynamic_complexity_progressed?: boolean | null;
     promotions?: Array<{
       update?: number;
       from_level?: number;
@@ -299,6 +379,9 @@ export interface ResearchProofDetail extends ResearchProofSummary {
     receipt_digest: string;
     failure_receipt_digest: string | null;
     teardown_confirmed: boolean;
+    artifact_set_manifest_digest: string | null;
+    artifact_set_committed: boolean;
+    artifact_publication_status: "committed" | "legacy_non_atomic";
   };
 }
 
@@ -620,6 +703,10 @@ export interface ResearchPolicyUpdateLineage {
 
 export interface ResearchTrajectory {
   schema_version: 1 | 2;
+  phase?: string;
+  message?: string;
+  artifact_set_manifest_digest?: string;
+  artifact_set_committed?: boolean;
   branch_width: 1 | 4;
   complexity_strategy: "adaptive";
   multi_step?: boolean;
@@ -646,6 +733,10 @@ export interface ResearchTrajectory {
   checkpoints: ResearchTrajectoryCheckpoint[];
   promotions: ResearchTrajectoryPromotion[];
   branch_snapshots: ResearchBranchSnapshot[];
+  evaluation_completed?: number;
+  evaluation_total?: number;
+  branch_groups_completed?: number;
+  branch_groups_total?: number;
   branch_evidence_complete?: boolean;
   branch_evidence_group_count?: number;
   branch_evidence_limit?: number;

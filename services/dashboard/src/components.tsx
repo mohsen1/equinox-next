@@ -142,6 +142,7 @@ function statusTone(status: string): string {
       "CONTRACT_ONLY",
       "NOT_EVALUATED",
       "EXPLORATORY_SINGLE_SEED",
+      "WARNING",
     ].includes(status)
   )
     return "warning";
@@ -363,11 +364,7 @@ export function AsyncState({
   if (empty) {
     return (
       <div className="state-panel empty-state">
-        <strong>No persisted records yet</strong>
-        <p>Launch or seed a local CAD run to create inspectable lineage.</p>
-        <NavLink className="button primary" to="/runs/new">
-          Launch run
-        </NavLink>
+        <strong>No records yet</strong>
       </div>
     );
   }

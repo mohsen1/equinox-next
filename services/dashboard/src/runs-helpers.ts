@@ -1,6 +1,31 @@
 import { friendlyStatus } from "./components";
 import type { ResearchComplexity, ResearchComputeExecution } from "./types";
 
+export function postTrainingOutcomeLabel(
+  postTrainingOutcome: unknown,
+  meaningfulPostTraining: unknown,
+  legacyClaim: string | null = null,
+): string {
+  const outcome = stringValue(postTrainingOutcome);
+  const meaningful = booleanValue(meaningfulPostTraining);
+  if (meaningful === true) return "Meaningful";
+  switch (outcome) {
+    case "NEGATIVE_EXPERIMENT_COMPLETED":
+      return "Negative result";
+    case "INCONCLUSIVE_EXPERIMENT_COMPLETED":
+      return "Inconclusive";
+  }
+  if (meaningful === false) return "Not meaningful";
+  if (outcome === "MEANINGFUL_POST_TRAINING") return "Meaningful";
+  return legacyClaim ? friendlyStatus(legacyClaim) : "Not recorded";
+}
+
+export function dynamicComplexityProgressLabel(value: unknown): string {
+  const progressed = booleanValue(value);
+  if (progressed === null) return "Not recorded";
+  return progressed ? "Progressed" : "No progression";
+}
+
 export function resultItems(
   run: ResearchComputeExecution,
   claimStrength: string | null,
@@ -24,16 +49,33 @@ export function resultItems(
   const finalEvaluationPartial = booleanValue(
     progress.final_evaluation_partial,
   );
+  const meaningfulPostTraining = booleanValue(
+    progress.meaningful_post_training,
+  );
+  const postTrainingOutcome =
+    typeof progress.post_training_outcome === "string"
+      ? progress.post_training_outcome
+      : null;
+  const dynamicComplexityProgressed = booleanValue(
+    progress.dynamic_complexity_progressed,
+  );
   return [
     {
-      label: "Claim",
-      value:
-        claimStrength === "EXPLORATORY_SINGLE_SEED"
-          ? "Exploratory · one seed"
-          : claimStrength
-            ? friendlyStatus(claimStrength)
-            : "Not reported",
+      label: "Post-training",
+      value: postTrainingOutcomeLabel(
+        postTrainingOutcome,
+        meaningfulPostTraining,
+        claimStrength,
+      ),
     },
+    ...(dynamicComplexityProgressed === null
+      ? []
+      : [
+          {
+            label: "Complexity",
+            value: dynamicComplexityProgressLabel(dynamicComplexityProgressed),
+          },
+        ]),
     ...(resumedFromCheckpoint
       ? [
           {

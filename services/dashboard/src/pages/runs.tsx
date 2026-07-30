@@ -24,7 +24,6 @@ import {
   formatRateInterval,
   intervalValue,
   numberValue,
-  observerStages,
   percent,
   recordValue,
   resultItems,
@@ -34,6 +33,7 @@ import {
 } from "../runs-helpers";
 import type {
   ResearchComputeExecution,
+  ResearchObserverEvidence,
   ResearchValidationSummary,
 } from "../types";
 import { ResearchRunTabs } from "./research-trajectory";
@@ -41,6 +41,8 @@ import { ResearchRunTabs } from "./research-trajectory";
 const LARGER_MODEL_ELIGIBILITY_WORKLOADS = new Set([
   "repository-repair-larger-model-eligibility",
   "repository-repair-larger-model-eligibility-screen",
+  "repository-repair-protocol-eligibility",
+  "repository-repair-protocol-eligibility-screen",
 ]);
 
 export function RunsPage() {
@@ -101,7 +103,8 @@ function RunRow({ run }: { run: ResearchComputeExecution }) {
   const progressLabel =
     update !== null
       ? `Update ${update}${maximumUpdates !== null ? ` of ${maximumUpdates}` : ""}`
-      : friendlyStatus(phase ?? run.status);
+      : observerProgressLabel(run, phase);
+  const displayStatus = observerExecutionStatus(run);
 
   return (
     <Link
@@ -115,7 +118,7 @@ function RunRow({ run }: { run: ResearchComputeExecution }) {
           {run.complexity_strategy}
         </span>
       </span>
-      <StatusBadge status={run.status} />
+      <StatusBadge status={displayStatus} />
       <span className="run-progress">
         <span className="progress-track" aria-hidden="true">
           <span style={{ width: `${percentage}%` }} />
@@ -124,11 +127,12 @@ function RunRow({ run }: { run: ResearchComputeExecution }) {
       </span>
       <span className="run-gpu">
         {run.allocated_gpu ?? "Awaiting allocation"}
-        <small>
-          {level !== null
-            ? `Level ${level}${maximumLevel !== null ? ` of ${maximumLevel}` : ""}`
-            : "No evaluation yet"}
-        </small>
+        {level !== null ? (
+          <small>
+            Level {level}
+            {maximumLevel !== null ? ` of ${maximumLevel}` : ""}
+          </small>
+        ) : null}
       </span>
       <span className="run-cost">{formatEstimatedCost(run.cost)}</span>
       <time
@@ -142,6 +146,282 @@ function RunRow({ run }: { run: ResearchComputeExecution }) {
   );
 }
 
+type ObserverStageKey =
+  | "preparing"
+  | "staging_bundle"
+  | "verifying_runtime"
+  | "screening"
+  | "running"
+  | "teardown"
+  | "publication";
+
+type ObserverStageState = "complete" | "current" | "failed" | "pending";
+
+interface ObserverStage {
+  key: ObserverStageKey;
+  label: string;
+  state: ObserverStageState;
+}
+
+const OBSERVER_STAGE_LABELS: Record<ObserverStageKey, string> = {
+  preparing: "Prepare",
+  staging_bundle: "Stage bundle",
+  verifying_runtime: "Verify runtime/model",
+  screening: "Screen",
+  running: "Run",
+  teardown: "Teardown",
+  publication: "Publish",
+};
+
+const OBSERVER_EVIDENCE_KEYS = [
+  "phase",
+  "message",
+  "profile_id",
+  "head_commit",
+  "source_contract_digest",
+  "bootstrap_source_digest",
+  "workload_bundle_digest",
+  "workload_bundle_size_bytes",
+  "workload_bundle_path",
+  "bundle_stage_receipt_digest",
+  "volume_readiness_receipt_digest",
+  "torch_retention_evidence_digest",
+  "bundle_activation_digest",
+  "artifact_set_manifest_digest",
+  "artifact_set_committed",
+  "network_volume_id",
+  "network_volume_data_center_id",
+  "network_volume_size_gb",
+  "model_snapshot_digest",
+  "pinned_snapshot_digest",
+  "model_revision",
+  "gate_results",
+  "screen_completed",
+  "eligible",
+  "larger_model_eligible",
+  "evaluation_completed",
+  "evaluation_total",
+  "branch_groups_completed",
+  "branch_groups_total",
+  "update",
+  "maximum_updates",
+  "current_level",
+  "maximum_level",
+] as const satisfies ReadonlyArray<keyof ResearchObserverEvidence>;
+
+function isEligibilityScreenExecution(run: ResearchComputeExecution): boolean {
+  return (
+    LARGER_MODEL_ELIGIBILITY_WORKLOADS.has(run.workload_id) ||
+    run.workload_id.includes("eligibility")
+  );
+}
+
+function observerEvidence(
+  run: ResearchComputeExecution,
+): ResearchObserverEvidence {
+  if (run.observer_evidence) return run.observer_evidence;
+  const evidence: ResearchObserverEvidence = {};
+  const sources = [run.progress, run.resource_profile];
+  for (const key of OBSERVER_EVIDENCE_KEYS) {
+    for (const source of sources) {
+      const value = source[key];
+      if (value !== undefined && value !== null) {
+        Object.assign(evidence, { [key]: value });
+        break;
+      }
+    }
+  }
+  return evidence;
+}
+
+function observerPhaseStage(
+  phase: string | null,
+  status: ResearchComputeExecution["status"],
+): ObserverStageKey {
+  const normalized = phase?.toLowerCase() ?? "";
+  if (
+    normalized === "complete" ||
+    normalized.includes("publish") ||
+    normalized.includes("persisted")
+  ) {
+    return "publication";
+  }
+  if (
+    normalized === "finalizing" ||
+    normalized.includes("teardown") ||
+    normalized.includes("release")
+  ) {
+    return "teardown";
+  }
+  if (
+    normalized === "training" ||
+    normalized === "resuming" ||
+    normalized.includes("policy_update") ||
+    normalized.includes("final_evaluation") ||
+    normalized === "evaluation"
+  ) {
+    return "running";
+  }
+  if (
+    normalized.includes("screen") ||
+    normalized.includes("eligibility") ||
+    normalized.includes("baseline_evaluation") ||
+    normalized.includes("branch_collection")
+  ) {
+    return "screening";
+  }
+  if (
+    normalized === "verifying_runtime" ||
+    normalized === "activating" ||
+    normalized === "model_loading" ||
+    normalized.includes("runtime") ||
+    normalized.includes("model")
+  ) {
+    return "verifying_runtime";
+  }
+  if (normalized === "staging_bundle" || normalized.includes("bundle_stag")) {
+    return "staging_bundle";
+  }
+  if (status === "FINALIZING") return "teardown";
+  if (status === "RUNNING") return "running";
+  return "preparing";
+}
+
+function observerCurrentStage(
+  run: ResearchComputeExecution,
+  evidence: ResearchObserverEvidence,
+  phase: string | null,
+): ObserverStageKey {
+  if (phase && phase !== "failed") return observerPhaseStage(phase, run.status);
+  if (
+    numberValue(evidence.branch_groups_completed) !== null ||
+    recordValue(evidence.gate_results)
+  ) {
+    return "screening";
+  }
+  if (
+    numberValue(evidence.update) !== null ||
+    numberValue(evidence.current_level) !== null
+  ) {
+    return "running";
+  }
+  if (
+    stringValue(evidence.bundle_activation_digest) ||
+    stringValue(evidence.torch_retention_evidence_digest) ||
+    stringValue(evidence.model_snapshot_digest) ||
+    stringValue(evidence.pinned_snapshot_digest)
+  ) {
+    return "verifying_runtime";
+  }
+  if (stringValue(evidence.bundle_stage_receipt_digest)) {
+    return "staging_bundle";
+  }
+  return observerPhaseStage(phase, run.status);
+}
+
+export function hasDurablePublication(run: ResearchComputeExecution): boolean {
+  const evidence = observerEvidence(run);
+  const digest = stringValue(evidence.artifact_set_manifest_digest);
+  return Boolean(
+    evidence.artifact_set_committed === true &&
+      digest?.startsWith("sha256:") &&
+      digest.length === 71,
+  );
+}
+
+export function observerExecutionStatus(
+  run: ResearchComputeExecution,
+): ResearchComputeExecution["status"] {
+  return run.status === "SUCCEEDED" &&
+    run.artifact_publication_required === true &&
+    !hasDurablePublication(run)
+    ? "FINALIZING"
+    : run.status;
+}
+
+export function integratedObserverStages(
+  run: ResearchComputeExecution,
+  eligibilityScreen = isEligibilityScreenExecution(run),
+): ObserverStage[] {
+  const keys: ObserverStageKey[] = [
+    "preparing",
+    "staging_bundle",
+    "verifying_runtime",
+    "screening",
+    ...(eligibilityScreen ? [] : (["running"] as ObserverStageKey[])),
+    "teardown",
+    "publication",
+  ];
+  const evidence = observerEvidence(run);
+  const phase = stringValue(evidence.phase) ?? stringValue(run.progress.phase);
+  const currentKey = observerCurrentStage(run, evidence, phase);
+  const currentIndex = Math.max(0, keys.indexOf(currentKey));
+  const published =
+    hasDurablePublication(run) ||
+    (run.status === "SUCCEEDED" && run.artifact_publication_required !== true);
+  const failurePublished = Boolean(run.failure_receipt_digest);
+
+  return keys.map((key, index) => {
+    let state: ObserverStageState =
+      published || index < currentIndex
+        ? "complete"
+        : index === currentIndex
+          ? "current"
+          : "pending";
+
+    if (key === "teardown" && run.teardown_confirmed) state = "complete";
+    if (key === "publication" && (published || failurePublished)) {
+      state = "complete";
+    }
+    if (
+      run.status === "FAILED" &&
+      key === currentKey &&
+      key !== "publication" &&
+      !(key === "teardown" && run.teardown_confirmed)
+    ) {
+      state = "failed";
+    }
+
+    return { key, label: OBSERVER_STAGE_LABELS[key], state };
+  });
+}
+
+function observerProgressLabel(
+  run: ResearchComputeExecution,
+  phase: string | null,
+): string {
+  if (run.status === "SUCCEEDED" && hasDurablePublication(run)) {
+    return "Published";
+  }
+  if (
+    run.status === "SUCCEEDED" &&
+    run.artifact_publication_required !== true
+  ) {
+    return "Complete";
+  }
+  if (run.status === "FAILED") return "Failed";
+  const evidence = observerEvidence(run);
+  const branchGroups = numberValue(evidence.branch_groups_completed);
+  const branchTotal = numberValue(evidence.branch_groups_total);
+  if (
+    observerPhaseStage(phase, run.status) === "screening" &&
+    branchGroups !== null
+  ) {
+    return `Screening · ${branchGroups}${
+      branchTotal !== null ? ` of ${branchTotal}` : ""
+    } groups`;
+  }
+  const labels: Partial<Record<string, string>> = {
+    preparing: "Preparing",
+    staging_bundle: "Staging bundle",
+    verifying_runtime: "Verifying runtime",
+    activating: "Activating bundle",
+    finalizing: run.teardown_confirmed ? "Publishing" : "Teardown",
+    complete: hasDurablePublication(run) ? "Published" : "Publishing",
+  };
+  return labels[phase ?? ""] ?? friendlyStatus(phase ?? run.status);
+}
+
 export function ResearchRunPage() {
   const { executionId = "" } = useParams<{ executionId: string }>();
   const execution = useApi<ResearchComputeExecution>(
@@ -150,32 +430,12 @@ export function ResearchRunPage() {
     decodeResearchComputeExecution,
   );
   const run = execution.data;
-  const phase = stringValue(run?.progress.phase);
   const claimStrength = stringValue(run?.progress.claim_strength);
-  const attempt = numberValue(run?.progress.attempt);
   const isEligibilityScreen =
-    run !== null &&
-    run !== undefined &&
-    LARGER_MODEL_ELIGIBILITY_WORKLOADS.has(run.workload_id);
+    run !== null && run !== undefined && isEligibilityScreenExecution(run);
   const eligibility = run ? largerModelEligibility(run) : null;
-  const stages = run
-    ? observerStages(
-        run.status,
-        phase,
-        run.teardown_confirmed,
-        attempt,
-        numberValue(run.progress.update) !== null ||
-          numberValue(run.progress.current_level) !== null,
-      ).map((stage) =>
-        isEligibilityScreen && stage.label === "Learn"
-          ? {
-              ...stage,
-              label: "Screen",
-              detail: "Load · sample · admit",
-            }
-          : stage,
-      )
-    : [];
+  const stages = run ? integratedObserverStages(run, isEligibilityScreen) : [];
+  const durablePublication = run ? hasDurablePublication(run) : false;
 
   return (
     <>
@@ -187,7 +447,11 @@ export function ResearchRunPage() {
             ? `${shortModelName(run.model_id)} · K=${run.branch_width} · ${run.complexity_strategy}`
             : undefined
         }
-        actions={run ? <StatusBadge status={run.status} /> : undefined}
+        actions={
+          run ? (
+            <StatusBadge status={observerExecutionStatus(run)} />
+          ) : undefined
+        }
       />
       <ResearchRunTabs executionId={executionId} active="overview" />
       <div className="content workspace-content">
@@ -204,15 +468,10 @@ export function ResearchRunPage() {
                   <KeyValue items={failureItems(run)} />
                 </Notice>
               ) : run.status === "SUCCEEDED" &&
-                (!isEligibilityScreen || !run.teardown_confirmed) ? (
-                <Notice
-                  title={
-                    isEligibilityScreen ? "Release unconfirmed" : "Run complete"
-                  }
-                >
-                  {run.teardown_confirmed
-                    ? "Result persisted. Compute release confirmed."
-                    : "Result persisted. Compute release is not confirmed."}
+                run.artifact_publication_required === true &&
+                !durablePublication ? (
+                <Notice tone="warning" title="Publication pending">
+                  A durable proof receipt has not been recorded.
                 </Notice>
               ) : null}
 
@@ -224,7 +483,6 @@ export function ResearchRunPage() {
                     aria-label={`${stage.label}: ${friendlyStatus(stage.state)}`}
                   >
                     <span>{stage.label}</span>
-                    <small>{stage.detail}</small>
                     <span className="observer-stage-status" aria-hidden="true">
                       {stage.state === "complete"
                         ? "✓"
@@ -269,6 +527,10 @@ export function ResearchRunPage() {
                 </Section>
               </div>
 
+              <Section title="Evidence">
+                <KeyValue items={observerEvidenceItems(run)} />
+              </Section>
+
               {!isEligibilityScreen && validationRows(run).length ? (
                 <Section title="Validation">
                   <ValidationHistory
@@ -299,16 +561,21 @@ export function ResearchRunPage() {
                     { label: "Complexity", value: run.complexity_strategy },
                     {
                       label: "Proof",
-                      value: run.proof_id ? (
-                        <Link to={`/proofs/${run.proof_id}`}>
-                          <MachineId value={run.proof_id} />
-                        </Link>
-                      ) : run.status === "SUCCEEDED" ||
-                        run.status === "FAILED" ? (
-                        "Not produced"
-                      ) : (
-                        "Pending"
-                      ),
+                      value:
+                        run.proof_id &&
+                        (hasDurablePublication(run) ||
+                          run.artifact_publication_required !== true) ? (
+                          <Link to={`/proofs/${run.proof_id}`}>
+                            <MachineId value={run.proof_id} />
+                          </Link>
+                        ) : run.status === "FAILED" ? (
+                          "Not produced"
+                        ) : isEligibilityScreen &&
+                          run.status === "SUCCEEDED" ? (
+                          "Not required"
+                        ) : (
+                          "Pending publication"
+                        ),
                     },
                     ...(run.status === "SUCCEEDED" && run.failure_receipt_digest
                       ? [
@@ -371,6 +638,199 @@ function failureItems(run: ResearchComputeExecution) {
       value: run.teardown_confirmed ? "Confirmed" : "Unconfirmed",
     },
   ];
+}
+
+function observerEvidenceItems(run: ResearchComputeExecution) {
+  const evidence = observerEvidence(run);
+  const phase = stringValue(evidence.phase);
+  const message = stringValue(evidence.message);
+  const phaseLabel = phase ? friendlyStatus(phase) : null;
+  const showMessage =
+    message !== null &&
+    normalizeObserverText(message) !== normalizeObserverText(phaseLabel);
+  const gates = recordValue(evidence.gate_results);
+  const gateEntries = Object.entries(gates ?? {}).filter(
+    (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
+  );
+  const branchGroups = numberValue(evidence.branch_groups_completed);
+  const branchGroupTotal = numberValue(evidence.branch_groups_total);
+  const evaluation = numberValue(evidence.evaluation_completed);
+  const evaluationTotal = numberValue(evidence.evaluation_total);
+  const modelSnapshot =
+    stringValue(evidence.model_snapshot_digest) ??
+    stringValue(evidence.pinned_snapshot_digest);
+  const networkVolume = stringValue(evidence.network_volume_id);
+  const networkDataCenter = stringValue(evidence.network_volume_data_center_id);
+  const networkSize = numberValue(evidence.network_volume_size_gb);
+
+  return [
+    ...(phase ? [{ label: "Phase", value: friendlyStatus(phase) }] : []),
+    ...(showMessage ? [{ label: "Message", value: message, span: true }] : []),
+    ...machineEvidence("Profile", stringValue(evidence.profile_id)),
+    ...machineEvidence("Commit", stringValue(evidence.head_commit)),
+    ...machineEvidence(
+      "Source contract",
+      stringValue(evidence.source_contract_digest),
+    ),
+    ...machineEvidence(
+      "Bootstrap",
+      stringValue(evidence.bootstrap_source_digest),
+    ),
+    ...machineEvidence("Bundle", stringValue(evidence.workload_bundle_digest)),
+    ...(numberValue(evidence.workload_bundle_size_bytes) !== null
+      ? [
+          {
+            label: "Bundle size",
+            value: formatBytes(
+              numberValue(evidence.workload_bundle_size_bytes) ?? 0,
+            ),
+          },
+        ]
+      : []),
+    ...(stringValue(evidence.workload_bundle_path)
+      ? [
+          {
+            label: "Bundle path",
+            value: <code>{stringValue(evidence.workload_bundle_path)}</code>,
+            span: true,
+          },
+        ]
+      : []),
+    ...machineEvidence(
+      "Bundle stage",
+      stringValue(evidence.bundle_stage_receipt_digest),
+    ),
+    ...machineEvidence(
+      "Volume readiness",
+      stringValue(evidence.volume_readiness_receipt_digest),
+    ),
+    ...machineEvidence(
+      "Torch retention",
+      stringValue(evidence.torch_retention_evidence_digest),
+    ),
+    ...machineEvidence(
+      "Activation",
+      stringValue(evidence.bundle_activation_digest),
+    ),
+    ...(stringValue(evidence.artifact_set_manifest_digest)
+      ? [
+          {
+            label: "Artifact set",
+            value: (
+              <>
+                <MachineId
+                  value={stringValue(evidence.artifact_set_manifest_digest)!}
+                />
+                {evidence.artifact_set_committed === true ? " · committed" : ""}
+              </>
+            ),
+          },
+        ]
+      : evidence.artifact_set_committed !== undefined
+        ? [
+            {
+              label: "Artifact set",
+              value:
+                evidence.artifact_set_committed === true
+                  ? "Commit marker only"
+                  : "Not committed",
+            },
+          ]
+        : run.status === "SUCCEEDED" &&
+            run.artifact_publication_required !== true
+          ? [{ label: "Artifact set", value: "Legacy · non-atomic" }]
+          : []),
+    ...machineEvidence("Model snapshot", modelSnapshot),
+    ...machineEvidence("Model revision", stringValue(evidence.model_revision)),
+    ...(networkVolume
+      ? [
+          {
+            label: "Network volume",
+            value: (
+              <>
+                <MachineId value={networkVolume} />
+                {networkDataCenter ? ` · ${networkDataCenter}` : ""}
+                {networkSize !== null ? ` · ${networkSize} GB` : ""}
+              </>
+            ),
+          },
+        ]
+      : []),
+    ...(branchGroups !== null
+      ? [
+          {
+            label: "Branch groups",
+            value: `${branchGroups}${
+              branchGroupTotal !== null ? ` / ${branchGroupTotal}` : ""
+            }`,
+          },
+        ]
+      : []),
+    ...(evaluation !== null
+      ? [
+          {
+            label: "Evaluation",
+            value: `${evaluation}${
+              evaluationTotal !== null ? ` / ${evaluationTotal}` : ""
+            }`,
+          },
+        ]
+      : []),
+    ...(gateEntries.length
+      ? [
+          {
+            label: "Gates",
+            value: gateEntries
+              .map(
+                ([name, passed]) =>
+                  `${friendlyStatus(name)}: ${passed ? "pass" : "fail"}`,
+              )
+              .join(" · "),
+            span: true,
+          },
+        ]
+      : []),
+    ...(run.receipt_digest && run.proof_id && hasDurablePublication(run)
+      ? [
+          {
+            label: "Proof receipt",
+            value: <MachineId value={run.receipt_digest} />,
+          },
+        ]
+      : []),
+    ...(run.failure_receipt_digest
+      ? [
+          {
+            label: "Failure receipt",
+            value: <MachineId value={run.failure_receipt_digest} />,
+          },
+        ]
+      : []),
+  ];
+}
+
+function machineEvidence(label: string, value: string | null) {
+  return value
+    ? [
+        {
+          label,
+          value: <MachineId value={value} />,
+        },
+      ]
+    : [];
+}
+
+function formatBytes(value: number): string {
+  if (value < 1_000) return `${value} B`;
+  if (value < 1_000_000) return `${(value / 1_000).toFixed(1)} KB`;
+  return `${(value / 1_000_000).toFixed(1)} MB`;
+}
+
+function normalizeObserverText(value: string | null): string {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 interface ExecutionError {

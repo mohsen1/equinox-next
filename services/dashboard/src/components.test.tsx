@@ -2,7 +2,13 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { AppShell, displayRunName, EvidenceRender } from "./components";
+import {
+  AppShell,
+  AsyncState,
+  displayRunName,
+  EvidenceRender,
+  StatusBadge,
+} from "./components";
 import type { ArtifactRef } from "./types";
 
 describe("displayRunName", () => {
@@ -98,5 +104,37 @@ describe("EvidenceRender", () => {
     );
     expect(container.textContent).toContain("candidate render");
     expect(container.textContent).toContain("sha256:hidden");
+  });
+});
+
+describe("dashboard states", () => {
+  let container: HTMLDivElement;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    container = document.createElement("div");
+    document.body.append(container);
+  });
+
+  afterEach(async () => {
+    if (root) await act(async () => root?.unmount());
+    container.remove();
+  });
+
+  it("keeps empty states concise and free of mock launch paths", async () => {
+    root = createRoot(container);
+    await act(async () => root?.render(<AsyncState empty />));
+
+    expect(container.textContent).toBe("No records yet");
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).not.toContain("local CAD");
+  });
+
+  it("renders unconfirmed teardown as a warning", async () => {
+    root = createRoot(container);
+    await act(async () => root?.render(<StatusBadge status="WARNING" />));
+
+    expect(container.querySelector(".status.warning")).not.toBeNull();
   });
 });

@@ -14,22 +14,38 @@ import importlib.metadata
 import json
 import math
 import os
+import re
+import shutil
+import stat
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@8"
+PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@10"
 MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 MODEL_REVISION = "c03e6d358207e414f1eca0bb1891e29f1db0e242"
 MODEL_PARAMETER_COUNT = 7_615_616_512
 MODEL_SAFETENSORS_BYTES = 15_231_271_864
 SNAPSHOT_FILES = {
+    ".gitattributes": {
+        "size_bytes": 1_519,
+        "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+    },
+    "LICENSE": {
+        "size_bytes": 11_343,
+        "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+    },
+    "README.md": {
+        "size_bytes": 6_392,
+        "sha256": "3c090be37f829adc1e4cdb78733667437732541470430ab2cd785d7f0d460077",
+    },
     "config.json": {
         "size_bytes": 663,
         "sha256": "c0242402ad6a13b331ea320feea8c7e3776ffb7a4eff0757b9cd667e116d9a28",
@@ -75,7 +91,19 @@ SNAPSHOT_FILES = {
         "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
     },
 }
+SNAPSHOT_AUXILIARY_FILES = frozenset({".gitattributes", "LICENSE", "README.md"})
+PREDECESSOR_SNAPSHOT_FILES = {
+    name: metadata
+    for name, metadata in SNAPSHOT_FILES.items()
+    if name not in SNAPSHOT_AUXILIARY_FILES
+}
 SOURCE_CONTRACT_SHA256 = {
+    "larger-model-dependencies.lock": (
+        "bb143bf631b6509c07881a606dc96cd244099debdca09f8f700abc90dad2e34f"
+    ),
+    "repository_repair_env.py": (
+        "527050c5444a3731119773d4e0932840068fda9664654dce9bf0350edf56e40f"
+    ),
     "repository_repair_env_v31.py": (
         "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657"
     ),
@@ -86,23 +114,55 @@ SOURCE_CONTRACT_SHA256 = {
         "02b57b074c72e81ae3c72ab82121d226656378ab47c8aa51215091a913c41285"
     ),
     "repository_repair_large_model_eligibility.py": (
-        "309eac07fcd578827f1952963c5c2bd45fd3e5266b3f76239e8d0f9e570699c2"
+        "8a1dc7161760a7cf8a2ca738bcfe4fa0e513b80df6ee073c874002d289800a18"
     ),
     "repository_repair_large_model_pilot.py": (
-        "20ef27a4a5d5b1edbc72188030436d4b0548a4c2799a21fde889d0a8d505dac5"
+        "4f67ee3a3c6b90c9fc3b53f477f3981359a4d67d241ebf959999d9a22f41dd80"
     ),
     "repository_repair_large_model_study.py": (
-        "c2a3d95bbcca4306e40440fb9655f4b9e43b8bbc718ab3a664f0ae27548d866c"
+        "9535783495e7584ad650e280a80e6aa03df6f91f27b74b6ef7859878d6f981f4"
     ),
     "repository_repair_large_model_trainer.py": (
-        "f036790903caef7651f4c34f632372ff1fd97ab181093dc014a726a590bcc97d"
+        "50e71174e4a4c897009e99730e2c7bfd2abd5897b89196cdfc53ae0396791ee2"
+    ),
+    "retention_checkpoint_probe.py": (
+        "4277e92188b53f41a5201ff6b01ffb9d4fdac925eb38462d0d9d930b62aa2e38"
     ),
 }
 SCREEN_WORKLOAD = "repository-repair-larger-model-eligibility-screen"
-SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@8"
+SCREEN_WORKLOAD_REVISION = "larger-model-eligibility-screen@10"
 CAPPED_GENERATION_TOKENS = 192
 CLEANUP_COST_RESERVE_SECONDS = 120
+TEARDOWN_RESERVE_SECONDS = 120
 BUNDLE_HANDOFF_REVISION = "runpod-volume-bundle-handoff@1"
+LIVE_STAGE_ACTIVATION_REVISION = "authenticated-proxy-stage-activation@2"
+RETENTION_CHECKPOINT_EVIDENCE_REVISION = "real-adamw-persist-restore-advance@7"
+CHECKPOINT_AUTHENTICATION_REVISION = "launch-bound-checkpoint-manifest@1"
+CHECKPOINT_AUTHENTICATION_MECHANISM = {
+    "revision": CHECKPOINT_AUTHENTICATION_REVISION,
+    "manifest_schema_version": 1,
+    "pointer_schema_version": 2,
+    "file_validation": "dirfd-nofollow-bounded-single-link-regular@1",
+    "private_materialization": "digest-verified-private-copy@1",
+    "training_state_load": "torch-weights-only@1",
+    "replay_binding": "runner-private-generation-and-manifest-digest@1",
+}
+VOLUME_READINESS_ATTESTATION_REVISION = "runpod-h100-volume-readiness@2"
+DEPENDENCY_QUARANTINE_REVISION = "hash-locked-private-dependencies@1"
+CODE_MATERIALIZATION_REVISION = "private-code-materialization@1"
+DEPENDENCY_INSTALLER_REVISION = "isolated-pip-binary-hash-lock@1"
+DEPENDENCY_LOCK_MEMBER = "larger-model-dependencies.lock"
+DEPENDENCY_LOCK_SIZE_BYTES = 30_866
+DEPENDENCY_LOCK_SHA256 = "sha256:bb143bf631b6509c07881a606dc96cd244099debdca09f8f700abc90dad2e34f"
+PREDECESSOR_READINESS_BRIDGE_REVISION = "exact-predecessor-readiness-seed@1"
+PREDECESSOR_PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@6"
+PREDECESSOR_MANIFEST_COMMIT = "f0b83d62591b9b2a43ca1aa29a554b23e1a31300"
+PREDECESSOR_MANIFEST_DIGEST = (
+    "sha256:e3637e7ba95eaeb23caa3747e592918b1d48659a3fa8f30c287982f4872029f2"
+)
+PREDECESSOR_SNAPSHOT_DIGEST = (
+    "sha256:54c5fe22c88f933cd11f35f6da3146376f3d3741e952e385c7a96931ab1058ba"
+)
 MAXIMUM_WORKLOAD_BUNDLE_BYTES = 2 * 1024 * 1024
 DEFAULT_MANIFEST_PATH = (
     Path(__file__).resolve().parents[1] / "studies/larger-model-eligibility.json"
@@ -119,10 +179,12 @@ REQUIRED_GATE_RESULTS = (
     "pinned_snapshot_ready",
     "offline_mode_active",
     "hardware_verified",
+    "deterministic_runtime_verified",
     "pilot_runtime_feasible",
     "policy_unchanged",
     "optimizer_state_restored",
     "test_split_isolated",
+    "preparation_evidence_complete",
 )
 
 _EXPECTED_MANIFEST: dict[str, Any] = {
@@ -152,6 +214,24 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "action_protocol_revision": "repository-repair-json-tools@8",
         "terminal_submission_contract": "accepted-passing-test-or-finish@1",
     },
+    "materialization": {
+        "code": {
+            "revision": CODE_MATERIALIZATION_REVISION,
+            "evidence_schema_version": 1,
+        },
+        "dependency_lock": {
+            "path": DEPENDENCY_LOCK_MEMBER,
+            "digest": DEPENDENCY_LOCK_SHA256,
+            "size_bytes": DEPENDENCY_LOCK_SIZE_BYTES,
+            "revision": DEPENDENCY_QUARANTINE_REVISION,
+            "evidence_schema_version": 2,
+            "installer_revision": DEPENDENCY_INSTALLER_REVISION,
+            "python_version": "3.12",
+            "platform_tag": "manylinux_2_28_x86_64",
+            "index_url": "https://pypi.org/simple",
+            "network_policy": ("hash-locked-binary-wheels-during-authenticated-preparation-only"),
+        },
+    },
     "source_contract": {
         "algorithm": "sha256",
         "files": SOURCE_CONTRACT_SHA256,
@@ -179,15 +259,17 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
     },
     "screen_limits": {
         "maximum_hourly_cost_usd": 4.0,
-        "maximum_total_cost_usd": 3.0,
-        "maximum_lifetime_seconds": 2_580,
-        "boot_timeout_seconds": 360,
+        "maximum_total_cost_usd": 3.35,
+        "maximum_lifetime_seconds": 2_880,
+        "conservative_billing_seconds": 3_000,
+        "boot_timeout_seconds": 600,
         "model_load_timeout_seconds": 1_200,
         "stale_progress_timeout_seconds": 600,
         "maximum_workload_attempts": 1,
         "target_runtime_seconds": 1_500,
         "retry_reserve_seconds": 300,
         "maximum_final_evaluation_reserve_seconds": 300,
+        "artifact_retrieval_reserve_seconds": 60,
         "optimization_seed": 137,
     },
     "pilot_limits": {
@@ -210,6 +292,7 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
         "localization_telemetry_strategy": "all_fault_sources_observed",
         "branch_width": 4,
+        "live_stage_activation_revision": LIVE_STAGE_ACTIVATION_REVISION,
         "validation_examples": 8,
         "training_tasks_per_update": 8,
         "training_microbatch_size": 1,
@@ -236,8 +319,8 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         },
     },
     "pilot": {
-        "workload_revision": "runpod-repository-repair-large-model-pilot@6",
-        "objective_id": "verified-repair-chain-transactional-retention-policy-gradient@18",
+        "workload_revision": "runpod-repository-repair-large-model-pilot@7",
+        "objective_id": "verified-repair-chain-transactional-retention-policy-gradient@19",
         "reward_contract_revision": "correctness-gated-efficiency@1",
         "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
         "localization_telemetry_strategy": "all_fault_sources_observed",
@@ -258,6 +341,31 @@ _EXPECTED_MANIFEST: dict[str, Any] = {
         "retention_transaction_revision": "adapter-optimizer-policy-lineage@1",
         "learning_rate": 1e-5,
         "reference_kl_coefficient": 1.0,
+        "maximum_consecutive_regression_windows": 4,
+        "determinism": {
+            "revision": "eager-math-sdp-deterministic@1",
+            "attention_implementation": "eager",
+            "cublas_workspace_config": ":4096:8",
+            "deterministic_algorithms": True,
+            "deterministic_algorithms_warn_only": False,
+            "flash_sdp_enabled": False,
+            "memory_efficient_sdp_enabled": False,
+            "math_sdp_enabled": True,
+            "cudnn_benchmark": False,
+            "cudnn_deterministic": True,
+            "tf32": False,
+        },
+        "training_level_allocation": {
+            "revision": "retained-promotion-3-1-to-2-2@1",
+            "before_first_retained_promotion": {
+                "active_frontier_tasks": 3,
+                "nearest_probe_tasks": 1,
+            },
+            "after_first_retained_promotion": {
+                "active_frontier_tasks": 2,
+                "adaptive_probe_tasks": 2,
+            },
+        },
         "minimum_effective_policy_updates": 1,
         "final_evaluation_safety_factor": 1.5,
     },
@@ -356,11 +464,37 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
     except json.JSONDecodeError as error:
         raise GateError(f"larger-model manifest is not valid JSON: {error}") from error
     _expect_exact(payload, _EXPECTED_MANIFEST, "manifest")
+    screen_limits = payload["screen_limits"]
+    exact_screen_lifetime = (
+        screen_limits["boot_timeout_seconds"]
+        + screen_limits["target_runtime_seconds"]
+        + screen_limits["retry_reserve_seconds"]
+        + screen_limits["maximum_final_evaluation_reserve_seconds"]
+        + screen_limits["artifact_retrieval_reserve_seconds"]
+        + TEARDOWN_RESERVE_SECONDS
+    )
+    if screen_limits["maximum_lifetime_seconds"] != exact_screen_lifetime:
+        raise GateError(
+            "manifest.screen_limits maximum lifetime does not cover the exact "
+            "readiness, science, retrieval, and teardown reserves"
+        )
+    if screen_limits["conservative_billing_seconds"] != (
+        screen_limits["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS
+    ):
+        raise GateError(
+            "manifest.screen_limits conservative billing reserve does not match "
+            "the exact maximum lifetime plus cleanup reserve"
+        )
     for name in ("screen_limits", "pilot_limits"):
         limits = payload[name]
+        billed_seconds = (
+            limits["conservative_billing_seconds"]
+            if name == "screen_limits"
+            else limits["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS
+        )
         bound = lifetime_cost_bound(
             limits["maximum_hourly_cost_usd"],
-            limits["maximum_lifetime_seconds"] + CLEANUP_COST_RESERVE_SECONDS,
+            billed_seconds,
         )
         if bound > Decimal(str(limits["maximum_total_cost_usd"])):
             raise GateError(f"manifest.{name} lifetime cost exceeds its total-cost ceiling")
@@ -705,36 +839,175 @@ def _sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_local_snapshot(
+def _snapshot_entries(snapshot: Path) -> dict[str, Path]:
+    try:
+        entries = {entry.name: entry for entry in snapshot.iterdir()}
+    except OSError as error:
+        raise GateError(f"could not enumerate the pinned snapshot: {error}") from error
+    return entries
+
+
+def _open_snapshot_regular_file(path: Path) -> tuple[Any, os.stat_result]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise GateError(f"could not open pinned snapshot file {path.name}: {error}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise GateError(f"the pinned snapshot entry {path.name} is not a regular file")
+        return os.fdopen(descriptor, "rb"), metadata
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _snapshot_content_path(snapshot: Path, path: Path) -> Path:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise GateError(f"the pinned snapshot is missing {path.name}") from error
+    if stat.S_ISREG(metadata.st_mode):
+        return path
+    if not stat.S_ISLNK(metadata.st_mode):
+        raise GateError(f"the pinned snapshot entry {path.name} has an unsafe file type")
+
+    try:
+        target_text = os.readlink(path)
+    except OSError as error:
+        raise GateError(f"could not read pinned snapshot symlink {path.name}") from error
+    if Path(target_text).is_absolute():
+        raise GateError(f"the pinned snapshot symlink {path.name} must be relative")
+
+    model_cache = snapshot.parent.parent
+    blobs = model_cache / "blobs"
+    target = path.parent / target_text
+    try:
+        resolved_blobs = blobs.resolve(strict=True)
+        resolved_target = target.resolve(strict=True)
+        target_metadata = target.lstat()
+    except OSError as error:
+        raise GateError(f"the pinned snapshot symlink {path.name} is broken") from error
+    if (
+        stat.S_ISLNK(target_metadata.st_mode)
+        or not stat.S_ISREG(target_metadata.st_mode)
+        or resolved_target.parent != resolved_blobs
+        or len(resolved_target.name) not in {40, 64}
+        or any(character not in "0123456789abcdef" for character in resolved_target.name)
+    ):
+        raise GateError(
+            f"the pinned snapshot symlink {path.name} does not target a direct cache blob"
+        )
+    return target
+
+
+def _hash_snapshot_entry(
+    snapshot: Path,
+    path: Path,
+    *,
+    destination: Path | None = None,
+    capture_bytes: bool = False,
+) -> tuple[int, str, bytes | None]:
+    content_path = _snapshot_content_path(snapshot, path)
+    handle, before = _open_snapshot_regular_file(content_path)
+    digest = hashlib.sha256()
+    captured = bytearray() if capture_bytes else None
+    output: Any | None = None
+    try:
+        if destination is not None:
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(destination, flags, 0o400)
+            output = os.fdopen(descriptor, "wb")
+        with handle:
+            while chunk := handle.read(8 * 1024 * 1024):
+                digest.update(chunk)
+                if captured is not None:
+                    captured.extend(chunk)
+                if output is not None:
+                    output.write(chunk)
+            after = os.fstat(handle.fileno())
+        if output is not None:
+            output.flush()
+            os.fsync(output.fileno())
+            copied = os.fstat(output.fileno())
+            if not stat.S_ISREG(copied.st_mode) or copied.st_size != before.st_size:
+                raise GateError(f"the verified snapshot copy {path.name} is incomplete")
+    except OSError as error:
+        raise GateError(f"could not hash pinned snapshot file {path.name}: {error}") from error
+    finally:
+        if output is not None:
+            output.close()
+    stable_fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+    if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+        raise GateError(f"the pinned snapshot file {path.name} changed while being hashed")
+    return before.st_size, digest.hexdigest(), bytes(captured) if captured is not None else None
+
+
+def _verify_snapshot(
     manifest: Mapping[str, Any],
     snapshot: Path,
+    *,
+    destination: Path | None,
 ) -> dict[str, Any]:
-    """Hash every required local artifact before any model initialization."""
-
     _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
-    if not snapshot.is_dir():
+    try:
+        snapshot_metadata = snapshot.lstat()
+    except OSError as error:
+        raise GateError("the pinned local model snapshot directory is unavailable") from error
+    if not stat.S_ISDIR(snapshot_metadata.st_mode):
         raise GateError("the pinned local model snapshot directory is unavailable")
     expected_files = manifest["model"]["snapshot_files"]
-    observed_files: dict[str, dict[str, Any]] = {}
-    for name, expected in expected_files.items():
-        path = snapshot / name
+    entries = _snapshot_entries(snapshot)
+    if set(entries) != set(expected_files):
+        raise GateError("the pinned snapshot entry set does not match the exact file contract")
+    if destination is not None:
         try:
-            size = path.stat().st_size
+            destination_metadata = destination.lstat()
         except OSError as error:
-            raise GateError(f"the pinned snapshot is missing {name}") from error
-        if not path.is_file() or size != expected["size_bytes"]:
+            raise GateError("the verified snapshot destination is unavailable") from error
+        if not stat.S_ISDIR(destination_metadata.st_mode) or _snapshot_entries(destination):
+            raise GateError("the verified snapshot destination must be an empty directory")
+    observed_files: dict[str, dict[str, Any]] = {}
+    index_bytes: bytes | None = None
+    for name, expected in expected_files.items():
+        path = entries[name]
+        size, observed_sha256, captured = _hash_snapshot_entry(
+            snapshot,
+            path,
+            destination=destination / name if destination is not None else None,
+            capture_bytes=name == "model.safetensors.index.json",
+        )
+        if size != expected["size_bytes"]:
             raise GateError(f"the pinned snapshot file {name} has an invalid size")
-        observed_sha256 = _sha256_path(path)
         if observed_sha256 != expected["sha256"]:
             raise GateError(f"the pinned snapshot file {name} failed SHA-256 verification")
+        if captured is not None:
+            index_bytes = captured
         observed_files[name] = {
             "size_bytes": size,
             "sha256": observed_sha256,
         }
+    if set(_snapshot_entries(snapshot)) != set(expected_files):
+        raise GateError("the pinned snapshot entry set changed while being verified")
+    if destination is not None:
+        copied_entries = _snapshot_entries(destination)
+        if set(copied_entries) != set(expected_files) or any(
+            not stat.S_ISREG(path.lstat().st_mode) for path in copied_entries.values()
+        ):
+            raise GateError("the verified snapshot copy has an invalid entry set")
 
     try:
-        index = json.loads((snapshot / "model.safetensors.index.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        if index_bytes is None:
+            raise ValueError("missing captured model index")
+        index = json.loads(index_bytes)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
         raise GateError("the pinned model index is invalid") from error
     expected_shards = {name for name in expected_files if name.endswith(".safetensors")}
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
@@ -753,10 +1026,66 @@ def verify_local_snapshot(
     }
     return {
         **snapshot_material,
-        "snapshot_path": str(snapshot),
+        "snapshot_path": str(destination if destination is not None else snapshot),
         "snapshot_digest": "sha256:"
         + hashlib.sha256(canonical_json(snapshot_material)).hexdigest(),
     }
+
+
+def verify_local_snapshot(
+    manifest: Mapping[str, Any],
+    snapshot: Path,
+) -> dict[str, Any]:
+    """Hash every required local artifact before any model initialization."""
+
+    return _verify_snapshot(manifest, snapshot, destination=None)
+
+
+def materialize_verified_snapshot(
+    manifest: Mapping[str, Any],
+    snapshot: Path,
+    *,
+    destination_parent: Path | None = None,
+) -> dict[str, Any]:
+    """Verify once while copying into a private immutable container-local snapshot."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    parent = (destination_parent or Path(tempfile.gettempdir())).resolve(strict=True)
+    try:
+        parent_metadata = parent.lstat()
+    except OSError as error:
+        raise GateError("the verified snapshot parent is unavailable") from error
+    if not stat.S_ISDIR(parent_metadata.st_mode):
+        raise GateError("the verified snapshot parent must be a directory")
+    required_bytes = sum(
+        item["size_bytes"] for item in manifest["model"]["snapshot_files"].values()
+    )
+    if shutil.disk_usage(parent).free < required_bytes + 2_000_000_000:
+        raise GateError("container-local storage cannot hold the verified model snapshot")
+
+    destination = Path(tempfile.mkdtemp(prefix="equinox-verified-snapshot-", dir=str(parent)))
+    try:
+        evidence = _verify_snapshot(manifest, snapshot, destination=destination)
+        directory_descriptor = os.open(
+            destination,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+        os.chmod(destination, 0o500)
+        return evidence
+    except BaseException:
+        try:
+            os.chmod(destination, 0o700)
+            shutil.rmtree(destination)
+        except OSError:
+            pass
+        raise
 
 
 def canonical_json(value: Any) -> bytes:
@@ -772,6 +1101,14 @@ def canonical_json(value: Any) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError) as error:
         raise GateError(f"value cannot be represented as canonical JSON: {error}") from error
+
+
+def checkpoint_authentication_mechanism_digest() -> str:
+    """Return the stable cross-launch checkpoint mechanism identity."""
+
+    return (
+        "sha256:" + hashlib.sha256(canonical_json(CHECKPOINT_AUTHENTICATION_MECHANISM)).hexdigest()
+    )
 
 
 def expected_source_contract_digest(manifest: Mapping[str, Any]) -> str:
@@ -873,10 +1210,331 @@ def _required_sha256(value: Any, name: str) -> str:
     return value
 
 
+def materialization_evidence_digest(evidence: Mapping[str, Any]) -> str:
+    """Digest one private-materialization receipt without its self digest."""
+
+    material = {key: value for key, value in evidence.items() if key != "evidence_digest"}
+    return "sha256:" + hashlib.sha256(canonical_json(material)).hexdigest()
+
+
+def _verify_private_tree_identity(
+    evidence: Mapping[str, Any],
+    *,
+    tree_kind: str,
+    source_digest_key: str = "source_tree_digest",
+) -> tuple[str, str]:
+    source_tree_digest = _required_sha256(
+        evidence.get(source_digest_key),
+        f"{tree_kind} source tree digest",
+    )
+    private_tree_digest = _required_sha256(
+        evidence.get("private_tree_digest"),
+        f"{tree_kind} private tree digest",
+    )
+    if private_tree_digest != source_tree_digest:
+        raise GateError(f"{tree_kind} private tree does not match its source")
+    expected_private_root = (
+        f"/tmp/equinox-quarantine/{tree_kind}/{private_tree_digest.removeprefix('sha256:')}"
+    )
+    if evidence.get("private_root") != expected_private_root:
+        raise GateError(f"{tree_kind} private root is not content-addressed")
+    evidence_digest = _required_sha256(
+        evidence.get("evidence_digest"),
+        f"{tree_kind} evidence digest",
+    )
+    if evidence_digest != materialization_evidence_digest(evidence):
+        raise GateError(f"{tree_kind} evidence digest is invalid")
+    return evidence_digest, private_tree_digest
+
+
+def verify_dependency_quarantine_evidence(
+    manifest: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    *,
+    workload_bundle_path: str,
+) -> dict[str, Any]:
+    """Verify one hash-locked, binary-only private dependency installation."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    required_keys = {
+        "schema_version",
+        "revision",
+        "profile_id",
+        "lock_path",
+        "lock_digest",
+        "python_version",
+        "platform_tag",
+        "installer_revision",
+        "index_url",
+        "private_root",
+        "install_tree_digest",
+        "private_tree_digest",
+        "record_closure_digest",
+        "distributions",
+        "installed_file_count",
+        "installed_bytes",
+        "ready",
+        "evidence_digest",
+    }
+    if not isinstance(evidence, Mapping) or set(evidence) != required_keys:
+        raise GateError("dependency quarantine evidence has an invalid field set")
+    expected_identity = {
+        "schema_version": 2,
+        "revision": manifest["materialization"]["dependency_lock"]["revision"],
+        "profile_id": manifest["profile_id"],
+        "lock_path": (
+            f"{workload_bundle_path}::{manifest['materialization']['dependency_lock']['path']}"
+        ),
+        "lock_digest": manifest["materialization"]["dependency_lock"]["digest"],
+        "python_version": manifest["materialization"]["dependency_lock"]["python_version"],
+        "platform_tag": manifest["materialization"]["dependency_lock"]["platform_tag"],
+        "installer_revision": manifest["materialization"]["dependency_lock"]["installer_revision"],
+        "index_url": manifest["materialization"]["dependency_lock"]["index_url"],
+        "ready": True,
+    }
+    for key, expected in expected_identity.items():
+        if evidence.get(key) != expected:
+            raise GateError(f"dependency quarantine evidence {key} is invalid")
+    distributions = evidence.get("distributions")
+    if not isinstance(distributions, list) or not distributions:
+        raise GateError("dependency quarantine distributions are invalid")
+    if distributions != sorted(distributions, key=lambda item: str(item.get("name", ""))):
+        raise GateError("dependency quarantine distributions are not sorted")
+    observed_versions: dict[str, str] = {}
+    file_count = 0
+    for distribution in distributions:
+        if not isinstance(distribution, Mapping) or set(distribution) != {
+            "name",
+            "version",
+            "record_path",
+            "record_digest",
+            "file_count",
+            "files_digest",
+        }:
+            raise GateError("dependency quarantine distribution has an invalid field set")
+        name = distribution.get("name")
+        version = distribution.get("version")
+        record_path = distribution.get("record_path")
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in observed_versions
+            or not isinstance(version, str)
+            or not version
+            or not isinstance(record_path, str)
+            or not record_path.endswith(".dist-info/RECORD")
+            or record_path.startswith("/")
+            or ".." in PurePosixPath(record_path).parts
+        ):
+            raise GateError("dependency quarantine distribution identity is invalid")
+        observed_versions[name] = version
+        _required_sha256(distribution.get("record_digest"), "dependency RECORD digest")
+        _required_sha256(distribution.get("files_digest"), "dependency files digest")
+        count = _required_integer(
+            distribution.get("file_count"),
+            "dependency distribution file count",
+        )
+        if count == 0:
+            raise GateError("dependency distribution file count must be positive")
+        file_count += count
+    lock_path = (
+        Path(__file__).resolve().with_name(manifest["materialization"]["dependency_lock"]["path"])
+    )
+    try:
+        lock_payload = lock_path.read_bytes()
+    except OSError as error:
+        raise GateError("dependency lock is unavailable beside the gate source") from error
+    if (
+        len(lock_payload) != manifest["materialization"]["dependency_lock"]["size_bytes"]
+        or "sha256:" + hashlib.sha256(lock_payload).hexdigest()
+        != manifest["materialization"]["dependency_lock"]["digest"]
+    ):
+        raise GateError("dependency lock bytes do not match the immutable profile")
+    locked_versions: dict[str, str] = {}
+    for raw_line in lock_payload.decode("utf-8").splitlines():
+        match = re.fullmatch(r"([a-z0-9][a-z0-9._-]*)==([^ \\]+) \\", raw_line)
+        if match is None:
+            continue
+        name = re.sub(r"[-_.]+", "-", match.group(1)).lower()
+        if name in locked_versions:
+            raise GateError("dependency lock contains a duplicate distribution")
+        locked_versions[name] = match.group(2)
+    if (
+        len(locked_versions) != 30
+        or "torch" in locked_versions
+        or observed_versions != locked_versions
+    ):
+        raise GateError("dependency installation does not exactly match the hash lock")
+    installed_file_count = _required_integer(
+        evidence.get("installed_file_count"),
+        "dependency installed file count",
+    )
+    installed_bytes = _required_integer(
+        evidence.get("installed_bytes"),
+        "dependency installed bytes",
+    )
+    if installed_file_count == 0 or installed_bytes == 0 or file_count != installed_file_count:
+        raise GateError("dependency quarantine installed totals are invalid")
+    record_closure_digest = _required_sha256(
+        evidence.get("record_closure_digest"),
+        "dependency record closure digest",
+    )
+    expected_closure_digest = "sha256:" + hashlib.sha256(canonical_json(distributions)).hexdigest()
+    if record_closure_digest != expected_closure_digest:
+        raise GateError("dependency RECORD closure digest is invalid")
+    install_tree_digest = _required_sha256(
+        evidence.get("install_tree_digest"),
+        "dependency install tree digest",
+    )
+    if evidence.get("private_tree_digest") != install_tree_digest:
+        raise GateError("dependency private tree does not match the installed tree")
+    evidence_digest, private_tree_digest = _verify_private_tree_identity(
+        evidence,
+        tree_kind="dependencies",
+        source_digest_key="install_tree_digest",
+    )
+    return {
+        "evidence_digest": evidence_digest,
+        "private_tree_digest": private_tree_digest,
+        "private_root": evidence["private_root"],
+    }
+
+
+def verify_code_materialization_evidence(
+    manifest: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    *,
+    workload_bundle_digest: str,
+    workload_bundle_size_bytes: int,
+    workload_bundle_path: str,
+) -> dict[str, Any]:
+    """Verify the exact allowlisted private code materialization receipt."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    required_keys = {
+        "schema_version",
+        "revision",
+        "profile_id",
+        "bundle_digest",
+        "bundle_size_bytes",
+        "source_contract_digest",
+        "source_root",
+        "private_root",
+        "source_tree_digest",
+        "private_tree_digest",
+        "files",
+        "installed_file_count",
+        "installed_bytes",
+        "ready",
+        "evidence_digest",
+    }
+    if not isinstance(evidence, Mapping) or set(evidence) != required_keys:
+        raise GateError("code materialization evidence has an invalid field set")
+    expected_identity = {
+        "schema_version": 1,
+        "revision": manifest["materialization"]["code"]["revision"],
+        "profile_id": manifest["profile_id"],
+        "bundle_digest": _required_sha256(
+            workload_bundle_digest,
+            "workload bundle digest",
+        ),
+        "bundle_size_bytes": workload_bundle_size_bytes,
+        "source_contract_digest": expected_source_contract_digest(manifest),
+        "source_root": workload_bundle_path,
+        "ready": True,
+    }
+    for key, expected in expected_identity.items():
+        if evidence.get(key) != expected:
+            raise GateError(f"code materialization evidence {key} is invalid")
+    if (
+        type(workload_bundle_size_bytes) is not int
+        or not 0 < workload_bundle_size_bytes <= MAXIMUM_WORKLOAD_BUNDLE_BYTES
+    ):
+        raise GateError("code materialization bundle size is invalid")
+    files = evidence.get("files")
+    if not isinstance(files, list) or not files:
+        raise GateError("code materialization file inventory is invalid")
+    observed_paths: set[str] = set()
+    installed_bytes = 0
+    for entry in files:
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "path",
+            "size_bytes",
+            "sha256",
+        }:
+            raise GateError("code materialization file entry has an invalid field set")
+        path = entry.get("path")
+        size_bytes = _required_integer(
+            entry.get("size_bytes"),
+            "code materialization file size",
+        )
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or "\\" in path
+            or ".." in PurePosixPath(path).parts
+            or path in observed_paths
+        ):
+            raise GateError("code materialization file path is invalid")
+        observed_paths.add(path)
+        _required_sha256(entry.get("sha256"), "code materialization file digest")
+        installed_bytes += size_bytes
+    if files != sorted(files, key=lambda entry: str(entry["path"])):
+        raise GateError("code materialization files are not sorted")
+    if not set(manifest["source_contract"]["files"]).issubset(observed_paths):
+        raise GateError("code materialization omits a pinned scientific source")
+    entries_by_path = {str(entry["path"]): entry for entry in files}
+    for path, expected_digest in manifest["source_contract"]["files"].items():
+        if entries_by_path[path]["sha256"] != f"sha256:{expected_digest}":
+            raise GateError(f"code materialization source {path} digest is invalid")
+    dependency_lock_entry = entries_by_path[manifest["materialization"]["dependency_lock"]["path"]]
+    if (
+        dependency_lock_entry["size_bytes"]
+        != manifest["materialization"]["dependency_lock"]["size_bytes"]
+        or dependency_lock_entry["sha256"]
+        != manifest["materialization"]["dependency_lock"]["digest"]
+    ):
+        raise GateError("code materialization dependency lock identity is invalid")
+    if (
+        evidence.get("installed_file_count") != len(files)
+        or evidence.get("installed_bytes") != installed_bytes
+    ):
+        raise GateError("code materialization installed totals are invalid")
+    expected_tree_digest = "sha256:" + hashlib.sha256(canonical_json(files)).hexdigest()
+    if evidence.get("source_tree_digest") != expected_tree_digest:
+        raise GateError("code materialization source tree digest is invalid")
+    evidence_digest, private_tree_digest = _verify_private_tree_identity(
+        evidence,
+        tree_kind="code",
+    )
+    return {
+        "evidence_digest": evidence_digest,
+        "private_tree_digest": private_tree_digest,
+        "private_root": evidence["private_root"],
+    }
+
+
+def expected_cuda_version(manifest: Mapping[str, Any]) -> str:
+    """Return the exact dotted CUDA version encoded by the pinned Torch build."""
+
+    torch_version = manifest["runtime"]["torch_version"]
+    _, separator, cuda_suffix = torch_version.partition("+cu")
+    if (
+        not separator
+        or len(cuda_suffix) != 3
+        or not cuda_suffix.isascii()
+        or not cuda_suffix.isdigit()
+    ):
+        raise GateError("the immutable Torch build does not encode an exact CUDA version")
+    return f"{int(cuda_suffix[:-1])}.{int(cuda_suffix[-1])}"
+
+
 def verify_dependency_import_smoke(
     manifest: Mapping[str, Any],
     *,
     importer: Callable[[str], Any] = importlib.import_module,
+    dependency_root: Path | None = None,
 ) -> tuple[str, ...]:
     """Import every pinned volume dependency before declaring the cache ready."""
 
@@ -893,23 +1551,48 @@ def verify_dependency_import_smoke(
                 f"prewarmed dependency {package} import reported {observed_version!r}, "
                 f"expected {expected_version!r}"
             )
+        if dependency_root is not None:
+            module_file = getattr(module, "__file__", None)
+            if not isinstance(module_file, str):
+                raise GateError(f"prewarmed dependency {package} did not expose its import origin")
+            try:
+                Path(module_file).resolve(strict=False).relative_to(
+                    dependency_root.resolve(strict=False)
+                )
+            except (OSError, ValueError) as error:
+                raise GateError(
+                    f"prewarmed dependency {package} was not imported from "
+                    "the private hash-locked tree"
+                ) from error
         imported.append(package)
     return tuple(imported)
 
 
-def build_volume_readiness_receipt(
+def build_attested_volume_readiness_receipt(
     manifest: Mapping[str, Any],
-    snapshot: Path,
     *,
+    snapshot_digest: str,
     volume_id: str,
     data_center_id: str,
     volume_size_gb: int,
     dependency_versions: Mapping[str, str],
+    torch_version: str,
+    torch_cuda_version: str,
+    hardware: CUDAHardware,
+    dependency_lock_digest: str,
+    dependency_quarantine_evidence: Mapping[str, Any],
+    dependency_quarantine_evidence_digest: str,
+    dependency_private_tree_digest: str,
+    code_materialization_evidence: Mapping[str, Any],
+    code_materialization_evidence_digest: str,
+    code_private_tree_digest: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build a local receipt on a CPU-prewarmed mounted network volume."""
+    """Build a receipt from exact evidence already verified on the paid H100."""
 
     _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    if dependency_lock_digest != manifest["materialization"]["dependency_lock"]["digest"]:
+        raise GateError("volume readiness dependency lock digest is invalid")
     if (
         not isinstance(volume_id, str)
         or not volume_id
@@ -924,14 +1607,66 @@ def build_volume_readiness_receipt(
         or dict(dependency_versions) != manifest["runtime"]["dependencies"]
     ):
         raise GateError("volume readiness dependencies do not match the immutable profile")
-    verify_dependency_import_smoke(manifest)
-    snapshot_evidence = verify_local_snapshot(manifest, snapshot)
+    if snapshot_digest != expected_snapshot_digest(manifest):
+        raise GateError("volume readiness snapshot does not match the immutable profile")
+    if torch_version != manifest["runtime"]["torch_version"]:
+        raise GateError("volume readiness Torch build does not match the immutable profile")
+    if torch_cuda_version != expected_cuda_version(manifest):
+        raise GateError("volume readiness CUDA build does not match the immutable profile")
+    if (
+        not isinstance(hardware, CUDAHardware)
+        or hardware.gpu_name != manifest["hardware"]["gpu_id"]
+        or hardware.total_memory_bytes < manifest["hardware"]["minimum_cuda_memory_bytes"]
+        or hardware.bf16_supported is not True
+    ):
+        raise GateError("volume readiness hardware does not match the immutable profile")
     prepared_at = now or datetime.now(UTC)
     if prepared_at.tzinfo is None or prepared_at.utcoffset() is None:
         raise GateError("volume readiness time must be timezone-aware")
     prepared_at = prepared_at.astimezone(UTC)
+    code_bundle_digest = code_materialization_evidence.get("bundle_digest")
+    code_bundle_size_bytes = code_materialization_evidence.get("bundle_size_bytes")
+    code_source_root = code_materialization_evidence.get("source_root")
+    verified_dependencies = verify_dependency_quarantine_evidence(
+        manifest,
+        dependency_quarantine_evidence,
+        workload_bundle_path=code_source_root,
+    )
+    if dependency_lock_digest != manifest["materialization"]["dependency_lock"]["digest"]:
+        raise GateError("volume readiness dependency lock digest is invalid")
+    verified_code = verify_code_materialization_evidence(
+        manifest,
+        code_materialization_evidence,
+        workload_bundle_digest=code_bundle_digest,
+        workload_bundle_size_bytes=code_bundle_size_bytes,
+        workload_bundle_path=code_source_root,
+    )
+    if (
+        verified_dependencies["evidence_digest"]
+        != _required_sha256(
+            dependency_quarantine_evidence_digest,
+            "dependency quarantine evidence digest",
+        )
+        or verified_dependencies["private_tree_digest"]
+        != _required_sha256(
+            dependency_private_tree_digest,
+            "dependency private tree digest",
+        )
+        or verified_code["evidence_digest"]
+        != _required_sha256(
+            code_materialization_evidence_digest,
+            "code materialization evidence digest",
+        )
+        or verified_code["private_tree_digest"]
+        != _required_sha256(
+            code_private_tree_digest,
+            "code private tree digest",
+        )
+    ):
+        raise GateError("volume readiness private materialization digests do not match")
     receipt = {
-        "schema_version": 1,
+        "schema_version": 3,
+        "attestation_revision": VOLUME_READINESS_ATTESTATION_REVISION,
         "profile_id": manifest["profile_id"],
         "model_id": manifest["model"]["id"],
         "model_revision": manifest["model"]["revision"],
@@ -939,13 +1674,81 @@ def build_volume_readiness_receipt(
         "network_volume_id": volume_id,
         "network_volume_data_center_id": data_center_id,
         "network_volume_size_gb": volume_size_gb,
-        "snapshot_digest": snapshot_evidence["snapshot_digest"],
+        "snapshot_digest": snapshot_digest,
         "dependencies": dict(dependency_versions),
+        "torch_version": torch_version,
+        "torch_cuda_version": torch_cuda_version,
+        "gpu_name": hardware.gpu_name,
+        "gpu_total_memory_bytes": hardware.total_memory_bytes,
+        "bf16_supported": hardware.bf16_supported,
+        "dependency_quarantine_revision": manifest["materialization"]["dependency_lock"][
+            "revision"
+        ],
+        "dependency_lock_digest": dependency_lock_digest,
+        "dependency_quarantine_evidence": dict(dependency_quarantine_evidence),
+        "dependency_quarantine_evidence_digest": verified_dependencies["evidence_digest"],
+        "dependency_private_tree_digest": verified_dependencies["private_tree_digest"],
+        "code_materialization_revision": manifest["materialization"]["code"]["revision"],
+        "code_materialization_evidence": dict(code_materialization_evidence),
+        "code_materialization_evidence_digest": verified_code["evidence_digest"],
+        "code_private_tree_digest": verified_code["private_tree_digest"],
         "prepared_at": prepared_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
         "ready": True,
     }
     receipt["receipt_digest"] = _receipt_digest(receipt)
     return receipt
+
+
+def build_volume_readiness_receipt(
+    manifest: Mapping[str, Any],
+    snapshot: Path,
+    *,
+    volume_id: str,
+    data_center_id: str,
+    volume_size_gb: int,
+    dependency_versions: Mapping[str, str],
+    dependency_lock_digest: str,
+    dependency_quarantine_evidence: Mapping[str, Any],
+    dependency_quarantine_evidence_digest: str,
+    dependency_private_tree_digest: str,
+    code_materialization_evidence: Mapping[str, Any],
+    code_materialization_evidence_digest: str,
+    code_private_tree_digest: str,
+    torch_module: Any | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Verify the mounted snapshot and runtime, then build an H100-attested receipt."""
+
+    if torch_module is None:
+        try:
+            import torch as torch_module
+        except ImportError as error:
+            raise GateError("the pinned Torch runtime is unavailable") from error
+    hardware = require_cuda_hardware(manifest, torch_module)
+    verify_dependency_import_smoke(manifest)
+    snapshot_evidence = verify_local_snapshot(manifest, snapshot)
+    cuda_version = getattr(getattr(torch_module, "version", None), "cuda", None)
+    if not isinstance(cuda_version, str):
+        raise GateError("the pinned Torch runtime did not report its CUDA build")
+    return build_attested_volume_readiness_receipt(
+        manifest,
+        snapshot_digest=snapshot_evidence["snapshot_digest"],
+        volume_id=volume_id,
+        data_center_id=data_center_id,
+        volume_size_gb=volume_size_gb,
+        dependency_versions=dependency_versions,
+        torch_version=str(torch_module.__version__),
+        torch_cuda_version=cuda_version,
+        hardware=hardware,
+        dependency_lock_digest=dependency_lock_digest,
+        dependency_quarantine_evidence=dependency_quarantine_evidence,
+        dependency_quarantine_evidence_digest=dependency_quarantine_evidence_digest,
+        dependency_private_tree_digest=dependency_private_tree_digest,
+        code_materialization_evidence=code_materialization_evidence,
+        code_materialization_evidence_digest=code_materialization_evidence_digest,
+        code_private_tree_digest=code_private_tree_digest,
+        now=now,
+    )
 
 
 def verify_volume_readiness_receipt(
@@ -960,6 +1763,7 @@ def verify_volume_readiness_receipt(
     _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
     required_keys = {
         "schema_version",
+        "attestation_revision",
         "profile_id",
         "model_id",
         "model_revision",
@@ -969,6 +1773,20 @@ def verify_volume_readiness_receipt(
         "network_volume_size_gb",
         "snapshot_digest",
         "dependencies",
+        "torch_version",
+        "torch_cuda_version",
+        "gpu_name",
+        "gpu_total_memory_bytes",
+        "bf16_supported",
+        "dependency_quarantine_revision",
+        "dependency_lock_digest",
+        "dependency_quarantine_evidence",
+        "dependency_quarantine_evidence_digest",
+        "dependency_private_tree_digest",
+        "code_materialization_revision",
+        "code_materialization_evidence",
+        "code_materialization_evidence_digest",
+        "code_private_tree_digest",
         "prepared_at",
         "ready",
         "receipt_digest",
@@ -976,13 +1794,23 @@ def verify_volume_readiness_receipt(
     if not isinstance(receipt, Mapping) or set(receipt) != required_keys:
         raise GateError("volume readiness receipt has an invalid field set")
     expected_identity = {
-        "schema_version": 1,
+        "schema_version": 3,
+        "attestation_revision": VOLUME_READINESS_ATTESTATION_REVISION,
         "profile_id": manifest["profile_id"],
         "model_id": manifest["model"]["id"],
         "model_revision": manifest["model"]["revision"],
         "manifest_digest": "sha256:" + hashlib.sha256(canonical_json(manifest)).hexdigest(),
         "snapshot_digest": expected_snapshot_digest(manifest),
         "dependencies": manifest["runtime"]["dependencies"],
+        "torch_version": manifest["runtime"]["torch_version"],
+        "torch_cuda_version": expected_cuda_version(manifest),
+        "gpu_name": manifest["hardware"]["gpu_id"],
+        "bf16_supported": True,
+        "dependency_quarantine_revision": manifest["materialization"]["dependency_lock"][
+            "revision"
+        ],
+        "dependency_lock_digest": manifest["materialization"]["dependency_lock"]["digest"],
+        "code_materialization_revision": manifest["materialization"]["code"]["revision"],
         "ready": True,
     }
     for key, expected in expected_identity.items():
@@ -993,6 +1821,41 @@ def verify_volume_readiness_receipt(
     volume_id = receipt.get("network_volume_id")
     data_center_id = receipt.get("network_volume_data_center_id")
     volume_size_gb = receipt.get("network_volume_size_gb")
+    gpu_total_memory_bytes = receipt.get("gpu_total_memory_bytes")
+    for key in (
+        "dependency_quarantine_evidence_digest",
+        "dependency_private_tree_digest",
+        "code_materialization_evidence_digest",
+        "code_private_tree_digest",
+    ):
+        _required_sha256(receipt.get(key), f"volume readiness receipt {key}")
+    dependency_evidence = receipt.get("dependency_quarantine_evidence")
+    code_evidence = receipt.get("code_materialization_evidence")
+    if not isinstance(dependency_evidence, Mapping) or not isinstance(
+        code_evidence,
+        Mapping,
+    ):
+        raise GateError("volume readiness private materialization evidence is invalid")
+    verified_dependencies = verify_dependency_quarantine_evidence(
+        manifest,
+        dependency_evidence,
+        workload_bundle_path=code_evidence.get("source_root"),
+    )
+    verified_code = verify_code_materialization_evidence(
+        manifest,
+        code_evidence,
+        workload_bundle_digest=code_evidence.get("bundle_digest"),
+        workload_bundle_size_bytes=code_evidence.get("bundle_size_bytes"),
+        workload_bundle_path=code_evidence.get("source_root"),
+    )
+    for key, expected in {
+        "dependency_quarantine_evidence_digest": verified_dependencies["evidence_digest"],
+        "dependency_private_tree_digest": verified_dependencies["private_tree_digest"],
+        "code_materialization_evidence_digest": verified_code["evidence_digest"],
+        "code_private_tree_digest": verified_code["private_tree_digest"],
+    }.items():
+        if receipt.get(key) != expected:
+            raise GateError(f"volume readiness receipt {key} does not match its evidence")
     if (
         not isinstance(volume_id, str)
         or not volume_id
@@ -1000,8 +1863,10 @@ def verify_volume_readiness_receipt(
         or not data_center_id
         or type(volume_size_gb) is not int
         or volume_size_gb < manifest["hardware"]["volume_disk_gb"]
+        or type(gpu_total_memory_bytes) is not int
+        or gpu_total_memory_bytes < manifest["hardware"]["minimum_cuda_memory_bytes"]
     ):
-        raise GateError("volume readiness receipt volume identity or size is invalid")
+        raise GateError("volume readiness receipt volume identity or size or hardware is invalid")
     receipt_digest = receipt.get("receipt_digest")
     if not isinstance(receipt_digest, str) or receipt_digest != _receipt_digest(receipt):
         raise GateError("volume readiness receipt digest is invalid")
@@ -1038,7 +1903,610 @@ def verify_volume_readiness_receipt(
         "network_volume_data_center_id": provider_data_center,
         "network_volume_size_gb": provider_size,
         "snapshot_digest": receipt["snapshot_digest"],
+        "torch_version": receipt["torch_version"],
+        "torch_cuda_version": receipt["torch_cuda_version"],
+        "gpu_name": receipt["gpu_name"],
+        "dependency_lock_digest": receipt["dependency_lock_digest"],
+        "dependency_quarantine_evidence_digest": receipt["dependency_quarantine_evidence_digest"],
+        "dependency_private_tree_digest": receipt["dependency_private_tree_digest"],
+        "code_materialization_evidence_digest": receipt["code_materialization_evidence_digest"],
+        "code_private_tree_digest": receipt["code_private_tree_digest"],
+        "gpu_total_memory_bytes": receipt["gpu_total_memory_bytes"],
+        "bf16_supported": receipt["bf16_supported"],
         "receipt_digest": receipt["receipt_digest"],
+    }
+
+
+def verify_predecessor_readiness_bridge(
+    manifest: Mapping[str, Any],
+    predecessor_manifest: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    provider_volume: Any,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Allow one screen allocation from only the exact @6 volume seed receipt."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    if not isinstance(predecessor_manifest, Mapping):
+        raise GateError("predecessor manifest must be an object")
+    observed_predecessor_digest = (
+        "sha256:" + hashlib.sha256(canonical_json(predecessor_manifest)).hexdigest()
+    )
+    if observed_predecessor_digest != PREDECESSOR_MANIFEST_DIGEST:
+        raise GateError("predecessor manifest is not the pinned committed @6 profile")
+    if predecessor_manifest.get("profile_id") != PREDECESSOR_PROFILE_ID:
+        raise GateError("predecessor manifest profile identity is invalid")
+    for section in ("model", "runtime"):
+        predecessor_section = predecessor_manifest.get(section)
+        current_section = manifest.get(section)
+        if section == "model":
+            expected = {
+                key: (
+                    PREDECESSOR_SNAPSHOT_FILES if key == "snapshot_files" else current_section[key]
+                )
+                for key in (
+                    "id",
+                    "revision",
+                    "parameter_count",
+                    "safetensors_bytes",
+                    "snapshot_files",
+                    "dtype",
+                )
+            }
+        else:
+            expected = {
+                key: current_section[key]
+                for key in (
+                    "template_id",
+                    "image",
+                    "image_digest",
+                    "torch_version",
+                    "dependencies",
+                )
+            }
+        if predecessor_section != expected:
+            raise GateError(f"predecessor manifest {section} no longer matches the current profile")
+
+    required_keys = {
+        "schema_version",
+        "profile_id",
+        "model_id",
+        "model_revision",
+        "manifest_digest",
+        "network_volume_id",
+        "network_volume_data_center_id",
+        "network_volume_size_gb",
+        "snapshot_digest",
+        "dependencies",
+        "prepared_at",
+        "ready",
+        "receipt_digest",
+    }
+    if not isinstance(receipt, Mapping) or set(receipt) != required_keys:
+        raise GateError("predecessor volume readiness receipt has an invalid field set")
+    expected_receipt = {
+        "schema_version": 1,
+        "profile_id": PREDECESSOR_PROFILE_ID,
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+        "manifest_digest": PREDECESSOR_MANIFEST_DIGEST,
+        "snapshot_digest": PREDECESSOR_SNAPSHOT_DIGEST,
+        "dependencies": manifest["runtime"]["dependencies"],
+        "ready": True,
+    }
+    for key, expected in expected_receipt.items():
+        try:
+            _expect_exact(receipt.get(key), expected, f"predecessor receipt {key}")
+        except GateError as error:
+            raise GateError(f"predecessor receipt {key} is invalid") from error
+    if receipt.get("receipt_digest") != _receipt_digest(receipt):
+        raise GateError("predecessor volume readiness receipt digest is invalid")
+    prepared_at = _utc_timestamp(
+        receipt.get("prepared_at"),
+        "predecessor receipt prepared_at",
+    )
+    current_time = now or datetime.now(UTC)
+    if current_time.tzinfo is None or current_time.utcoffset() is None:
+        raise GateError("predecessor bridge verification time must be timezone-aware")
+    current_time = current_time.astimezone(UTC)
+    age_seconds = (current_time - prepared_at).total_seconds()
+    if age_seconds < 0 or age_seconds > 7 * 24 * 3_600:
+        raise GateError("predecessor volume readiness receipt is not fresh")
+
+    payload = _json_value(provider_volume, "RunPod network volume")
+    if not isinstance(payload, Mapping):
+        raise GateError("RunPod network volume must be an object")
+    volume = payload.get("networkVolume", payload)
+    if not isinstance(volume, Mapping):
+        raise GateError("RunPod network volume payload is invalid")
+    volume_id = receipt.get("network_volume_id")
+    data_center_id = receipt.get("network_volume_data_center_id")
+    volume_size_gb = receipt.get("network_volume_size_gb")
+    provider_id = volume.get("id", volume.get("networkVolumeId"))
+    provider_data_center = volume.get("dataCenterId")
+    provider_size = volume.get("size")
+    if (
+        not isinstance(volume_id, str)
+        or not volume_id
+        or not isinstance(data_center_id, str)
+        or not data_center_id
+        or type(volume_size_gb) is not int
+        or volume_size_gb < manifest["hardware"]["volume_disk_gb"]
+        or provider_id != volume_id
+        or provider_data_center != data_center_id
+        or type(provider_size) is not int
+        or provider_size < volume_size_gb
+    ):
+        raise GateError("RunPod network volume does not match the predecessor seed")
+    bridge = {
+        "schema_version": 1,
+        "bridge_revision": PREDECESSOR_READINESS_BRIDGE_REVISION,
+        "current_profile_id": manifest["profile_id"],
+        "predecessor_profile_id": PREDECESSOR_PROFILE_ID,
+        "predecessor_manifest_commit": PREDECESSOR_MANIFEST_COMMIT,
+        "predecessor_manifest_digest": PREDECESSOR_MANIFEST_DIGEST,
+        "predecessor_receipt_digest": receipt["receipt_digest"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+        "snapshot_file_contract": manifest["model"]["snapshot_files"],
+        "dependencies": manifest["runtime"]["dependencies"],
+        "network_volume_id": provider_id,
+        "network_volume_data_center_id": provider_data_center,
+        "network_volume_size_gb": provider_size,
+        "seed_only": True,
+        "remote_current_attestation_required": True,
+        "verified_at": current_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    bridge["bridge_digest"] = _receipt_digest(bridge)
+    return bridge
+
+
+def retention_checkpoint_evidence_digest(evidence: Mapping[str, Any]) -> str:
+    """Return the canonical digest of integrated checkpoint evidence."""
+
+    material = {key: value for key, value in evidence.items() if key != "evidence_digest"}
+    return "sha256:" + hashlib.sha256(canonical_json(material)).hexdigest()
+
+
+RETENTION_CHECKPOINT_STORAGE_EVIDENCE_KEYS = (
+    "checkpoint_storage_scope",
+    "checkpoint_storage_root",
+    "checkpoint_storage_root_device",
+    "checkpoint_storage_checkpoint_device",
+    "checkpoint_storage_root_inode",
+    "checkpoint_inode_before_reopen",
+    "checkpoint_inode_after_reopen",
+    "checkpoint_persist_process_pid",
+    "checkpoint_resume_process_pid",
+    "checkpoint_resume_parent_process_pid",
+    "checkpoint_reopened_after_fsync",
+    "checkpoint_source_device",
+    "checkpoint_authentication_revision",
+    "checkpoint_authentication_mechanism_digest",
+    "checkpoint_generation",
+    "checkpoint_authenticated_private_resume",
+)
+
+
+def retention_checkpoint_storage_evidence_digest(
+    evidence: Mapping[str, Any],
+) -> str:
+    """Digest the exact persistent-storage and fresh-process checkpoint facts."""
+
+    material = {key: evidence.get(key) for key in RETENTION_CHECKPOINT_STORAGE_EVIDENCE_KEYS}
+    return "sha256:" + hashlib.sha256(canonical_json(material)).hexdigest()
+
+
+def build_live_stage_activation(
+    manifest: Mapping[str, Any],
+    *,
+    head_commit: str,
+    workload_bundle_digest: str,
+    workload_bundle_size_bytes: int,
+    workload_bundle_path: str,
+    bundle_stage_receipt_digest: str,
+    bootstrap_source_digest: str,
+    volume_readiness_receipt_digest: str,
+    torch_retention_evidence_digest: str,
+    dependency_lock_digest: str,
+    dependency_quarantine_evidence_digest: str,
+    dependency_private_tree_digest: str,
+    code_materialization_evidence_digest: str,
+    code_private_tree_digest: str,
+    network_volume_id: str,
+    data_center_id: str,
+    volume_size_gb: int,
+) -> dict[str, Any]:
+    """Build the exact activation body that releases a staged screen workload."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    if dependency_lock_digest != manifest["materialization"]["dependency_lock"]["digest"]:
+        raise GateError("live-stage dependency lock digest is invalid")
+    if (
+        not isinstance(head_commit, str)
+        or len(head_commit) != 40
+        or any(character not in "0123456789abcdef" for character in head_commit)
+    ):
+        raise GateError("live-stage activation HEAD commit is invalid")
+    expected_bundle_path = (
+        f"/workspace/equinox-state/workload-bundles/{manifest['profile_id']}/"
+        f"{_required_sha256(workload_bundle_digest, 'workload bundle digest')[7:]}.tar.xz"
+    )
+    if (
+        workload_bundle_path != expected_bundle_path
+        or type(workload_bundle_size_bytes) is not int
+        or not 0 < workload_bundle_size_bytes <= MAXIMUM_WORKLOAD_BUNDLE_BYTES
+        or not isinstance(network_volume_id, str)
+        or not network_volume_id
+        or not isinstance(data_center_id, str)
+        or not data_center_id
+        or type(volume_size_gb) is not int
+        or volume_size_gb < manifest["hardware"]["volume_disk_gb"]
+    ):
+        raise GateError("live-stage activation handoff identity is invalid")
+    body = {
+        "revision": manifest["screen"]["live_stage_activation_revision"],
+        "profile_id": manifest["profile_id"],
+        "head_commit": head_commit,
+        "source_contract_digest": expected_source_contract_digest(manifest),
+        "bootstrap_source_digest": _required_sha256(
+            bootstrap_source_digest,
+            "bootstrap source digest",
+        ),
+        "workload_bundle_digest": workload_bundle_digest,
+        "workload_bundle_size_bytes": workload_bundle_size_bytes,
+        "workload_bundle_path": workload_bundle_path,
+        "bundle_stage_receipt_digest": _required_sha256(
+            bundle_stage_receipt_digest,
+            "bundle stage receipt digest",
+        ),
+        "volume_readiness_receipt_digest": _required_sha256(
+            volume_readiness_receipt_digest,
+            "volume readiness receipt digest",
+        ),
+        "torch_retention_evidence_digest": _required_sha256(
+            torch_retention_evidence_digest,
+            "Torch retention evidence digest",
+        ),
+        "dependency_lock_digest": _required_sha256(
+            dependency_lock_digest,
+            "dependency lock digest",
+        ),
+        "dependency_quarantine_revision": manifest["materialization"]["dependency_lock"][
+            "revision"
+        ],
+        "dependency_quarantine_evidence_digest": _required_sha256(
+            dependency_quarantine_evidence_digest,
+            "dependency quarantine evidence digest",
+        ),
+        "dependency_private_tree_digest": _required_sha256(
+            dependency_private_tree_digest,
+            "dependency private tree digest",
+        ),
+        "code_materialization_revision": manifest["materialization"]["code"]["revision"],
+        "code_materialization_evidence_digest": _required_sha256(
+            code_materialization_evidence_digest,
+            "code materialization evidence digest",
+        ),
+        "code_private_tree_digest": _required_sha256(
+            code_private_tree_digest,
+            "code private tree digest",
+        ),
+        "network_volume_id": network_volume_id,
+        "network_volume_data_center_id": data_center_id,
+        "network_volume_size_gb": volume_size_gb,
+    }
+    body["activation_digest"] = "sha256:" + hashlib.sha256(canonical_json(body)).hexdigest()
+    return body
+
+
+def verify_retention_checkpoint_evidence(
+    manifest: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    *,
+    head_commit: str,
+    workload_bundle_digest: str,
+    workload_bundle_size_bytes: int,
+    workload_bundle_path: str,
+    bundle_stage_receipt_digest: str,
+    bootstrap_source_digest: str,
+    volume_readiness_receipt_digest: str,
+    dependency_lock_digest: str,
+    dependency_quarantine_evidence_digest: str,
+    dependency_private_tree_digest: str,
+    code_materialization_evidence_digest: str,
+    code_private_tree_digest: str,
+    network_volume_id: str,
+    data_center_id: str,
+    volume_size_gb: int,
+) -> dict[str, Any]:
+    """Verify a flat-bundle real AdamW checkpoint proof against one exact handoff."""
+
+    _expect_exact(dict(manifest), _EXPECTED_MANIFEST, "manifest")
+    if dependency_lock_digest != manifest["materialization"]["dependency_lock"]["digest"]:
+        raise GateError("retention checkpoint dependency lock digest is invalid")
+    required_keys = {
+        "schema_version",
+        "evidence_revision",
+        "status",
+        "test_id",
+        "profile_id",
+        "head_commit",
+        "source_contract_digest",
+        "workload_bundle_digest",
+        "workload_bundle_size_bytes",
+        "workload_bundle_path",
+        "bundle_stage_receipt_digest",
+        "bootstrap_source_digest",
+        "volume_readiness_receipt_digest",
+        "dependency_lock_digest",
+        "dependency_quarantine_revision",
+        "dependency_quarantine_evidence_digest",
+        "dependency_private_tree_digest",
+        "code_materialization_revision",
+        "code_materialization_evidence_digest",
+        "code_private_tree_digest",
+        "network_volume_id",
+        "network_volume_data_center_id",
+        "network_volume_size_gb",
+        "torch_version",
+        "torch_cuda_version",
+        "cuda_available",
+        "gpu_name",
+        "gpu_total_memory_bytes",
+        "bf16_supported",
+        "probe_sha256",
+        "trainer_sha256",
+        "environment_sha256",
+        "source_sha256",
+        "checkpoint_sha256",
+        "checkpoint_size_bytes",
+        "restored_weight_before_resume_step",
+        "advanced_weight_after_resume_step",
+        "effective_policy_update_count_before_resume_step",
+        "effective_policy_update_count_after_resume_step",
+        "retained_observation_after_resume_step",
+        "optimizer_state_entries_after_resume_step",
+        "optimizer_state_digest_before_persist",
+        "optimizer_state_digest_after_restore",
+        "optimizer_state_digest_after_resume_step",
+        "optimizer_parameter_device",
+        "optimizer_state_devices_before_persist",
+        "optimizer_state_devices_after_restore",
+        "checkpoint_storage_scope",
+        "checkpoint_storage_root",
+        "checkpoint_storage_root_device",
+        "checkpoint_storage_checkpoint_device",
+        "checkpoint_storage_root_inode",
+        "checkpoint_inode_before_reopen",
+        "checkpoint_inode_after_reopen",
+        "checkpoint_source_device",
+        "checkpoint_persist_process_pid",
+        "checkpoint_resume_process_pid",
+        "checkpoint_resume_parent_process_pid",
+        "checkpoint_reopened_after_fsync",
+        "checkpoint_storage_evidence_digest",
+        "checkpoint_authentication_revision",
+        "checkpoint_authentication_mechanism_digest",
+        "checkpoint_generation",
+        "checkpoint_manifest_digest",
+        "checkpoint_authenticated_private_resume",
+        "evidence_digest",
+    }
+    if not isinstance(evidence, Mapping) or set(evidence) != required_keys:
+        raise GateError("retention checkpoint evidence has an invalid field set")
+    if (
+        not isinstance(head_commit, str)
+        or len(head_commit) != 40
+        or any(character not in "0123456789abcdef" for character in head_commit)
+    ):
+        raise GateError("retention checkpoint expected HEAD commit is invalid")
+    expected_bundle_path = (
+        f"/workspace/equinox-state/workload-bundles/{manifest['profile_id']}/"
+        f"{_required_sha256(workload_bundle_digest, 'workload bundle digest')[7:]}.tar.xz"
+    )
+    if workload_bundle_path != expected_bundle_path:
+        raise GateError("retention checkpoint workload bundle path is invalid")
+    if (
+        type(workload_bundle_size_bytes) is not int
+        or not 0 < workload_bundle_size_bytes <= MAXIMUM_WORKLOAD_BUNDLE_BYTES
+        or type(volume_size_gb) is not int
+        or volume_size_gb < manifest["hardware"]["volume_disk_gb"]
+        or not isinstance(network_volume_id, str)
+        or not network_volume_id
+        or not isinstance(data_center_id, str)
+        or not data_center_id
+    ):
+        raise GateError("retention checkpoint handoff identity is invalid")
+    expected_identity = {
+        "schema_version": 3,
+        "evidence_revision": RETENTION_CHECKPOINT_EVIDENCE_REVISION,
+        "status": "passed",
+        "test_id": (
+            "test_transaction_round_trips_real_optimizer_checkpoint_when_torch_is_available"
+        ),
+        "profile_id": manifest["profile_id"],
+        "head_commit": head_commit,
+        "source_contract_digest": expected_source_contract_digest(manifest),
+        "workload_bundle_digest": workload_bundle_digest,
+        "workload_bundle_size_bytes": workload_bundle_size_bytes,
+        "workload_bundle_path": workload_bundle_path,
+        "bundle_stage_receipt_digest": _required_sha256(
+            bundle_stage_receipt_digest,
+            "bundle stage receipt digest",
+        ),
+        "bootstrap_source_digest": _required_sha256(
+            bootstrap_source_digest,
+            "bootstrap source digest",
+        ),
+        "volume_readiness_receipt_digest": _required_sha256(
+            volume_readiness_receipt_digest,
+            "volume readiness receipt digest",
+        ),
+        "dependency_lock_digest": _required_sha256(
+            dependency_lock_digest,
+            "dependency lock digest",
+        ),
+        "dependency_quarantine_revision": manifest["materialization"]["dependency_lock"][
+            "revision"
+        ],
+        "dependency_quarantine_evidence_digest": _required_sha256(
+            dependency_quarantine_evidence_digest,
+            "dependency quarantine evidence digest",
+        ),
+        "dependency_private_tree_digest": _required_sha256(
+            dependency_private_tree_digest,
+            "dependency private tree digest",
+        ),
+        "code_materialization_revision": manifest["materialization"]["code"]["revision"],
+        "code_materialization_evidence_digest": _required_sha256(
+            code_materialization_evidence_digest,
+            "code materialization evidence digest",
+        ),
+        "code_private_tree_digest": _required_sha256(
+            code_private_tree_digest,
+            "code private tree digest",
+        ),
+        "network_volume_id": network_volume_id,
+        "network_volume_data_center_id": data_center_id,
+        "network_volume_size_gb": volume_size_gb,
+        "torch_version": manifest["runtime"]["torch_version"],
+        "torch_cuda_version": expected_cuda_version(manifest),
+        "cuda_available": True,
+        "gpu_name": manifest["hardware"]["gpu_id"],
+        "bf16_supported": True,
+        "probe_sha256": (
+            "sha256:" + manifest["source_contract"]["files"]["retention_checkpoint_probe.py"]
+        ),
+        "trainer_sha256": (
+            "sha256:"
+            + manifest["source_contract"]["files"]["repository_repair_large_model_trainer.py"]
+        ),
+        "environment_sha256": (
+            "sha256:" + manifest["source_contract"]["files"]["repository_repair_env.py"]
+        ),
+        "source_sha256": {
+            name: f"sha256:{digest}"
+            for name, digest in manifest["source_contract"]["files"].items()
+        },
+        "effective_policy_update_count_before_resume_step": 1,
+        "effective_policy_update_count_after_resume_step": 2,
+        "retained_observation_after_resume_step": {"exact_rate": 0.75},
+        "optimizer_parameter_device": "cuda:0",
+        "optimizer_state_devices_before_persist": {
+            "exp_avg": ["cuda:0"],
+            "exp_avg_sq": ["cuda:0"],
+            "step": ["cpu"],
+        },
+        "optimizer_state_devices_after_restore": {
+            "exp_avg": ["cuda:0"],
+            "exp_avg_sq": ["cuda:0"],
+            "step": ["cpu"],
+        },
+        "checkpoint_storage_scope": "runpod-network-volume",
+        "checkpoint_reopened_after_fsync": True,
+        "checkpoint_authentication_revision": CHECKPOINT_AUTHENTICATION_REVISION,
+        "checkpoint_authentication_mechanism_digest": (
+            checkpoint_authentication_mechanism_digest()
+        ),
+        "checkpoint_generation": 1,
+        "checkpoint_authenticated_private_resume": True,
+    }
+    for key, expected in expected_identity.items():
+        try:
+            _expect_exact(evidence.get(key), expected, f"retention checkpoint evidence {key}")
+        except GateError as error:
+            raise GateError(f"retention checkpoint evidence {key} is invalid") from error
+    if (
+        type(evidence.get("gpu_total_memory_bytes")) is not int
+        or evidence["gpu_total_memory_bytes"] < manifest["hardware"]["minimum_cuda_memory_bytes"]
+    ):
+        raise GateError("retention checkpoint evidence GPU memory is invalid")
+    for key in (
+        "checkpoint_sha256",
+        "checkpoint_manifest_digest",
+        "optimizer_state_digest_before_persist",
+        "optimizer_state_digest_after_restore",
+        "optimizer_state_digest_after_resume_step",
+        "checkpoint_storage_evidence_digest",
+        "evidence_digest",
+    ):
+        _required_sha256(evidence.get(key), f"retention checkpoint evidence {key}")
+    checkpoint_size = evidence.get("checkpoint_size_bytes")
+    storage_root = evidence.get("checkpoint_storage_root")
+    storage_root_parts = PurePosixPath(storage_root).parts if isinstance(storage_root, str) else ()
+    storage_root_device = evidence.get("checkpoint_storage_root_device")
+    checkpoint_device = evidence.get("checkpoint_storage_checkpoint_device")
+    checkpoint_source_device = evidence.get("checkpoint_source_device")
+    storage_root_inode = evidence.get("checkpoint_storage_root_inode")
+    checkpoint_inode_before = evidence.get("checkpoint_inode_before_reopen")
+    checkpoint_inode_after = evidence.get("checkpoint_inode_after_reopen")
+    persist_pid = evidence.get("checkpoint_persist_process_pid")
+    resume_pid = evidence.get("checkpoint_resume_process_pid")
+    resume_parent_pid = evidence.get("checkpoint_resume_parent_process_pid")
+    optimizer_entries = evidence.get("optimizer_state_entries_after_resume_step")
+    before = evidence.get("restored_weight_before_resume_step")
+    after = evidence.get("advanced_weight_after_resume_step")
+    if (
+        type(checkpoint_size) is not int
+        or checkpoint_size <= 0
+        or len(storage_root_parts) != 4
+        or storage_root_parts[:3] != ("/", "workspace", "equinox-runs")
+        or storage_root_parts[3] in {"", ".", ".."}
+        or type(storage_root_device) is not int
+        or storage_root_device <= 0
+        or checkpoint_device != storage_root_device
+        or checkpoint_source_device != checkpoint_device
+        or type(storage_root_inode) is not int
+        or storage_root_inode <= 0
+        or type(checkpoint_inode_before) is not int
+        or checkpoint_inode_before <= 0
+        or checkpoint_inode_after != checkpoint_inode_before
+        or type(persist_pid) is not int
+        or persist_pid <= 1
+        or type(resume_pid) is not int
+        or resume_pid <= 1
+        or resume_pid == persist_pid
+        or resume_parent_pid != persist_pid
+        or type(optimizer_entries) is not int
+        or optimizer_entries <= 0
+        or not isinstance(before, list)
+        or len(before) != 1
+        or not isinstance(before[0], int | float)
+        or isinstance(before[0], bool)
+        or not math.isfinite(float(before[0]))
+        or not isinstance(after, list)
+        or len(after) != 1
+        or not isinstance(after[0], int | float)
+        or isinstance(after[0], bool)
+        or not math.isfinite(float(after[0]))
+        or before == after
+        or evidence["optimizer_state_digest_before_persist"]
+        != evidence["optimizer_state_digest_after_restore"]
+        or evidence["optimizer_state_digest_after_restore"]
+        == evidence["optimizer_state_digest_after_resume_step"]
+    ):
+        raise GateError("retention checkpoint persistence evidence is invalid")
+    if evidence[
+        "checkpoint_storage_evidence_digest"
+    ] != retention_checkpoint_storage_evidence_digest(evidence):
+        raise GateError("retention checkpoint storage evidence digest is invalid")
+    if evidence["evidence_digest"] != retention_checkpoint_evidence_digest(evidence):
+        raise GateError("retention checkpoint evidence digest is invalid")
+    return {
+        "profile_id": manifest["profile_id"],
+        "head_commit": evidence["head_commit"],
+        "source_contract_digest": evidence["source_contract_digest"],
+        "workload_bundle_digest": evidence["workload_bundle_digest"],
+        "bundle_stage_receipt_digest": evidence["bundle_stage_receipt_digest"],
+        "bootstrap_source_digest": evidence["bootstrap_source_digest"],
+        "volume_readiness_receipt_digest": evidence["volume_readiness_receipt_digest"],
+        "checkpoint_sha256": evidence["checkpoint_sha256"],
+        "checkpoint_authentication_mechanism_digest": evidence[
+            "checkpoint_authentication_mechanism_digest"
+        ],
+        "evidence_digest": evidence["evidence_digest"],
     }
 
 
@@ -1082,8 +2550,11 @@ def verify_pilot_authorization(
         "optimization_seed": manifest["screen_limits"]["optimization_seed"],
         "capacity_smoke_completed": True,
         "gradient_checkpointing_enabled": True,
+        "determinism": manifest["pilot"]["determinism"],
         "pinned_snapshot_digest": expected_snapshot_digest(manifest),
         "source_contract_digest": expected_source_contract_digest(manifest),
+        "live_stage_activation_revision": manifest["screen"]["live_stage_activation_revision"],
+        "preparation_evidence_complete": True,
     }
     for key, expected in expected_result_identity.items():
         if screen_result.get(key) != expected:
@@ -1215,29 +2686,56 @@ def verify_pilot_authorization(
     if embedded_digest is not None and embedded_digest != observed_digest:
         raise GateError("screen result self-reported digest does not match its content")
 
-    expected_receipt_identity = {
-        "provider": manifest["hardware"]["provider"],
-        "profile_id": manifest["profile_id"],
-        "model_id": manifest["model"]["id"],
-        "model_revision": manifest["model"]["revision"],
-        "screen_workload_revision": manifest["screen"]["workload_revision"],
-        "gpu_id": manifest["hardware"]["gpu_id"],
+    expected_receipt_keys = {
+        "provider_name",
+        "provider_handle",
+        "provider_cli_version",
+        "resource_profile",
+        "workload",
+        "result",
+        "started_at",
+        "completed_at",
+        "teardown_confirmed",
     }
-    for key, expected in expected_receipt_identity.items():
-        if provider_receipt.get(key) != expected:
-            raise GateError(f"provider receipt {key} does not match the larger-model profile")
-    if provider_receipt.get("result_digest") != observed_digest:
+    if set(provider_receipt) != expected_receipt_keys:
+        raise GateError("provider receipt has an invalid field set")
+    if provider_receipt.get("provider_name") != "RunPod":
+        raise GateError("provider receipt provider_name does not identify RunPod")
+    provider_version = provider_receipt.get("provider_cli_version")
+    if not isinstance(provider_version, str) or not provider_version:
+        raise GateError("provider receipt provider_cli_version is invalid")
+    receipt_result = provider_receipt.get("result")
+    if not isinstance(receipt_result, Mapping) or dict(receipt_result) != dict(screen_result):
         raise GateError("provider receipt does not cover the exact screen result")
     if provider_receipt.get("teardown_confirmed") is not True:
         raise GateError("provider teardown is not confirmed")
+    workload = provider_receipt.get("workload")
+    if not isinstance(workload, Mapping):
+        raise GateError("provider receipt workload is invalid")
+    expected_workload_identity = {
+        "id": manifest["screen"]["workload"],
+        "revision": manifest["screen"]["workload_revision"],
+        "static_branch_width": manifest["screen"]["branch_width"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+    }
+    for key, expected in expected_workload_identity.items():
+        if workload.get(key) != expected:
+            raise GateError(
+                f"provider receipt workload {key} does not match the larger-model profile"
+            )
     resource_profile = provider_receipt.get("resource_profile")
     if not isinstance(resource_profile, Mapping):
         raise GateError("provider receipt resource profile is invalid")
-    expected_image_identity = {
+    expected_resource_identity = {
+        "profile_id": manifest["profile_id"],
+        "gpu_id": manifest["hardware"]["gpu_id"],
         "image": manifest["runtime"]["image"],
         "image_digest": manifest["runtime"]["image_digest"],
+        "manifest_digest": ("sha256:" + hashlib.sha256(canonical_json(manifest)).hexdigest()),
+        "source_contract_digest": expected_source_contract_digest(manifest),
     }
-    for key, expected in expected_image_identity.items():
+    for key, expected in expected_resource_identity.items():
         if resource_profile.get(key) != expected:
             raise GateError(
                 f"provider receipt resource profile {key} does not match the larger-model profile"
@@ -1245,6 +2743,19 @@ def verify_pilot_authorization(
     network_volume_id = resource_profile.get("network_volume_id")
     if not isinstance(network_volume_id, str) or not network_volume_id:
         raise GateError("provider receipt does not bind a RunPod network volume")
+    network_volume_data_center_id = resource_profile.get("network_volume_data_center_id")
+    network_volume_size_gb = resource_profile.get("network_volume_size_gb")
+    source_head_commit = resource_profile.get("source_head_commit")
+    if (
+        not isinstance(network_volume_data_center_id, str)
+        or not network_volume_data_center_id
+        or type(network_volume_size_gb) is not int
+        or network_volume_size_gb < manifest["hardware"]["volume_disk_gb"]
+        or not isinstance(source_head_commit, str)
+        or len(source_head_commit) != 40
+        or any(character not in "0123456789abcdef" for character in source_head_commit)
+    ):
+        raise GateError("provider receipt live-stage source or volume identity is invalid")
     bundle_handoff_revision = resource_profile.get("bundle_handoff_revision")
     if bundle_handoff_revision != BUNDLE_HANDOFF_REVISION:
         raise GateError("provider receipt bundle handoff revision is invalid")
@@ -1260,6 +2771,43 @@ def verify_pilot_authorization(
         resource_profile.get("bootstrap_source_digest"),
         "provider receipt bootstrap source digest",
     )
+    volume_readiness_receipt_digest = _required_sha256(
+        resource_profile.get("volume_readiness_receipt_digest"),
+        "provider receipt volume readiness receipt digest",
+    )
+    torch_retention_evidence_digest = _required_sha256(
+        resource_profile.get("torch_retention_evidence_digest"),
+        "provider receipt Torch retention evidence digest",
+    )
+    dependency_lock_digest = _required_sha256(
+        resource_profile.get("dependency_lock_digest"),
+        "provider receipt dependency lock digest",
+    )
+    if dependency_lock_digest != manifest["materialization"]["dependency_lock"]["digest"]:
+        raise GateError("provider receipt dependency lock digest is invalid")
+    dependency_quarantine_evidence_digest = _required_sha256(
+        resource_profile.get("dependency_quarantine_evidence_digest"),
+        "provider receipt dependency quarantine evidence digest",
+    )
+    dependency_private_tree_digest = _required_sha256(
+        resource_profile.get("dependency_private_tree_digest"),
+        "provider receipt dependency private tree digest",
+    )
+    code_materialization_evidence_digest = _required_sha256(
+        resource_profile.get("code_materialization_evidence_digest"),
+        "provider receipt code materialization evidence digest",
+    )
+    code_private_tree_digest = _required_sha256(
+        resource_profile.get("code_private_tree_digest"),
+        "provider receipt code private tree digest",
+    )
+    if (
+        resource_profile.get("dependency_quarantine_revision")
+        != manifest["materialization"]["dependency_lock"]["revision"]
+        or resource_profile.get("code_materialization_revision")
+        != manifest["materialization"]["code"]["revision"]
+    ):
+        raise GateError("provider receipt private materialization revision is invalid")
     workload_bundle_size_bytes = resource_profile.get("workload_bundle_size_bytes")
     if (
         type(workload_bundle_size_bytes) is not int
@@ -1275,11 +2823,113 @@ def verify_pilot_authorization(
     )
     if workload_bundle_path != expected_bundle_path:
         raise GateError("provider receipt workload bundle path is invalid")
+    activation = build_live_stage_activation(
+        manifest,
+        head_commit=source_head_commit,
+        workload_bundle_digest=workload_bundle_digest,
+        workload_bundle_size_bytes=workload_bundle_size_bytes,
+        workload_bundle_path=workload_bundle_path,
+        bundle_stage_receipt_digest=bundle_stage_receipt_digest,
+        bootstrap_source_digest=bootstrap_source_digest,
+        volume_readiness_receipt_digest=volume_readiness_receipt_digest,
+        torch_retention_evidence_digest=torch_retention_evidence_digest,
+        dependency_lock_digest=dependency_lock_digest,
+        dependency_quarantine_evidence_digest=(dependency_quarantine_evidence_digest),
+        dependency_private_tree_digest=dependency_private_tree_digest,
+        code_materialization_evidence_digest=code_materialization_evidence_digest,
+        code_private_tree_digest=code_private_tree_digest,
+        network_volume_id=network_volume_id,
+        data_center_id=network_volume_data_center_id,
+        volume_size_gb=network_volume_size_gb,
+    )
+    if (
+        resource_profile.get("live_stage_activation_revision") != activation["revision"]
+        or resource_profile.get("live_stage_activation_digest") != activation["activation_digest"]
+    ):
+        raise GateError("provider receipt live-stage activation evidence is invalid")
+    for key, expected in {
+        "source_head_commit": source_head_commit,
+        "live_stage_activation_digest": activation["activation_digest"],
+        "volume_readiness_receipt_digest": volume_readiness_receipt_digest,
+        "torch_retention_evidence_digest": torch_retention_evidence_digest,
+        "dependency_lock_digest": dependency_lock_digest,
+        "dependency_quarantine_revision": manifest["materialization"]["dependency_lock"][
+            "revision"
+        ],
+        "dependency_quarantine_evidence_digest": (dependency_quarantine_evidence_digest),
+        "dependency_private_tree_digest": dependency_private_tree_digest,
+        "code_materialization_revision": manifest["materialization"]["code"]["revision"],
+        "code_materialization_evidence_digest": code_materialization_evidence_digest,
+        "code_private_tree_digest": code_private_tree_digest,
+    }.items():
+        if screen_result.get(key) != expected:
+            raise GateError(f"screen result {key} does not match the provider handoff")
+
+    volume_readiness_receipt = screen_result.get("volume_readiness_receipt")
+    if not isinstance(volume_readiness_receipt, Mapping):
+        raise GateError("screen result volume readiness receipt is invalid")
+    verified_volume = verify_volume_readiness_receipt(
+        manifest,
+        volume_readiness_receipt,
+        {
+            "id": network_volume_id,
+            "dataCenterId": network_volume_data_center_id,
+            "size": network_volume_size_gb,
+        },
+        now=_utc_timestamp(
+            provider_receipt.get("completed_at"),
+            "receipt completed_at",
+        ),
+    )
+    if verified_volume["receipt_digest"] != volume_readiness_receipt_digest:
+        raise GateError("screen result volume readiness receipt digest is invalid")
+    for key, expected in {
+        "dependency_lock_digest": dependency_lock_digest,
+        "dependency_quarantine_evidence_digest": (dependency_quarantine_evidence_digest),
+        "dependency_private_tree_digest": dependency_private_tree_digest,
+        "code_materialization_evidence_digest": code_materialization_evidence_digest,
+        "code_private_tree_digest": code_private_tree_digest,
+    }.items():
+        if verified_volume.get(key) != expected:
+            raise GateError(f"volume readiness receipt {key} does not match the provider handoff")
+    retention_checkpoint_evidence = screen_result.get("retention_checkpoint_evidence")
+    if not isinstance(retention_checkpoint_evidence, Mapping):
+        raise GateError("screen result retention checkpoint evidence is invalid")
+    verified_retention = verify_retention_checkpoint_evidence(
+        manifest,
+        retention_checkpoint_evidence,
+        head_commit=source_head_commit,
+        workload_bundle_digest=workload_bundle_digest,
+        workload_bundle_size_bytes=workload_bundle_size_bytes,
+        workload_bundle_path=workload_bundle_path,
+        bundle_stage_receipt_digest=bundle_stage_receipt_digest,
+        bootstrap_source_digest=bootstrap_source_digest,
+        volume_readiness_receipt_digest=volume_readiness_receipt_digest,
+        dependency_lock_digest=dependency_lock_digest,
+        dependency_quarantine_evidence_digest=(dependency_quarantine_evidence_digest),
+        dependency_private_tree_digest=dependency_private_tree_digest,
+        code_materialization_evidence_digest=code_materialization_evidence_digest,
+        code_private_tree_digest=code_private_tree_digest,
+        network_volume_id=network_volume_id,
+        data_center_id=network_volume_data_center_id,
+        volume_size_gb=network_volume_size_gb,
+    )
+    if verified_retention["evidence_digest"] != torch_retention_evidence_digest:
+        raise GateError("screen result Torch retention evidence digest is invalid")
+    checkpoint_mechanism_digest = verified_retention["checkpoint_authentication_mechanism_digest"]
+    if (
+        screen_result.get("checkpoint_authentication_mechanism_digest")
+        != checkpoint_mechanism_digest
+    ):
+        raise GateError("screen result checkpoint authentication mechanism digest is invalid")
     provider_handle = provider_receipt.get("provider_handle")
     if not isinstance(provider_handle, str) or not provider_handle.startswith("runpod://pods/"):
         raise GateError("provider receipt has no valid RunPod handle")
 
+    started_at = _utc_timestamp(provider_receipt.get("started_at"), "receipt started_at")
     completed_at = _utc_timestamp(provider_receipt.get("completed_at"), "receipt completed_at")
+    if started_at > completed_at:
+        raise GateError("provider receipt completion precedes its start")
     current_time = now or datetime.now(UTC)
     if current_time.tzinfo is None or current_time.utcoffset() is None:
         raise GateError("authorization time must be timezone-aware")
@@ -1305,6 +2955,8 @@ def verify_pilot_authorization(
         "image": manifest["runtime"]["image"],
         "image_digest": manifest["runtime"]["image_digest"],
         "network_volume_id": network_volume_id,
+        "network_volume_data_center_id": network_volume_data_center_id,
+        "network_volume_size_gb": network_volume_size_gb,
         "bundle_handoff_revision": bundle_handoff_revision,
         "workload_bundle_digest": workload_bundle_digest,
         "workload_bundle_size_bytes": workload_bundle_size_bytes,
@@ -1312,6 +2964,22 @@ def verify_pilot_authorization(
         "workload_bundle_path": workload_bundle_path,
         "bundle_stage_receipt_digest": bundle_stage_receipt_digest,
         "bootstrap_source_digest": bootstrap_source_digest,
+        "source_head_commit": source_head_commit,
+        "live_stage_activation_revision": activation["revision"],
+        "live_stage_activation_digest": activation["activation_digest"],
+        "volume_readiness_receipt_digest": volume_readiness_receipt_digest,
+        "torch_retention_evidence_digest": torch_retention_evidence_digest,
+        "checkpoint_authentication_mechanism_digest": checkpoint_mechanism_digest,
+        "dependency_lock_digest": dependency_lock_digest,
+        "dependency_quarantine_revision": manifest["materialization"]["dependency_lock"][
+            "revision"
+        ],
+        "dependency_quarantine_evidence_digest": (dependency_quarantine_evidence_digest),
+        "dependency_private_tree_digest": dependency_private_tree_digest,
+        "code_materialization_revision": manifest["materialization"]["code"]["revision"],
+        "code_materialization_evidence_digest": code_materialization_evidence_digest,
+        "code_private_tree_digest": code_private_tree_digest,
+        "retention_checkpoint_sha256": verified_retention["checkpoint_sha256"],
         "provider_handle": provider_handle,
         "screen_completed_at": provider_receipt["completed_at"],
         "authorized_at": current_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -1349,14 +3017,91 @@ def main(argv: Sequence[str] | None = None) -> int:
     authorize_parser = subparsers.add_parser("authorize")
     authorize_parser.add_argument("screen_result", type=Path)
     authorize_parser.add_argument("provider_receipt", type=Path)
-    create_volume_parser = subparsers.add_parser("create-volume-receipt")
-    create_volume_parser.add_argument("--volume-id", required=True)
-    create_volume_parser.add_argument("--data-center-id", required=True)
-    create_volume_parser.add_argument("--volume-size-gb", required=True, type=int)
-    create_volume_parser.add_argument("--snapshot", type=Path)
+    for command in ("create-volume-receipt", "create-attested-volume-receipt"):
+        create_volume_parser = subparsers.add_parser(command)
+        create_volume_parser.add_argument("--volume-id", required=True)
+        create_volume_parser.add_argument("--data-center-id", required=True)
+        create_volume_parser.add_argument("--volume-size-gb", required=True, type=int)
+        create_volume_parser.add_argument("--snapshot", type=Path)
+        create_volume_parser.add_argument(
+            "--dependency-quarantine-evidence",
+            required=True,
+            type=Path,
+        )
+        create_volume_parser.add_argument(
+            "--dependency-lock-digest",
+            required=True,
+        )
+        create_volume_parser.add_argument(
+            "--dependency-quarantine-evidence-digest",
+            required=True,
+        )
+        create_volume_parser.add_argument(
+            "--dependency-private-tree-digest",
+            required=True,
+        )
+        create_volume_parser.add_argument(
+            "--code-materialization-evidence",
+            required=True,
+            type=Path,
+        )
+        create_volume_parser.add_argument(
+            "--code-materialization-evidence-digest",
+            required=True,
+        )
+        create_volume_parser.add_argument(
+            "--code-private-tree-digest",
+            required=True,
+        )
     verify_volume_parser = subparsers.add_parser("verify-volume-receipt")
     verify_volume_parser.add_argument("receipt", type=Path)
     verify_volume_parser.add_argument("provider_volume", type=Path)
+    bridge_parser = subparsers.add_parser("bridge-predecessor-volume-receipt")
+    bridge_parser.add_argument("receipt", type=Path)
+    bridge_parser.add_argument("provider_volume", type=Path)
+    bridge_parser.add_argument("--predecessor-manifest", required=True, type=Path)
+    verify_retention_parser = subparsers.add_parser("verify-retention-evidence")
+    verify_retention_parser.add_argument("evidence", type=Path)
+    verify_retention_parser.add_argument("--head-commit", required=True)
+    verify_retention_parser.add_argument("--workload-bundle-digest", required=True)
+    verify_retention_parser.add_argument(
+        "--workload-bundle-size-bytes",
+        required=True,
+        type=int,
+    )
+    verify_retention_parser.add_argument("--workload-bundle-path", required=True)
+    verify_retention_parser.add_argument(
+        "--bundle-stage-receipt-digest",
+        required=True,
+    )
+    verify_retention_parser.add_argument("--bootstrap-source-digest", required=True)
+    verify_retention_parser.add_argument(
+        "--volume-readiness-receipt-digest",
+        required=True,
+    )
+    verify_retention_parser.add_argument(
+        "--dependency-quarantine-evidence-digest",
+        required=True,
+    )
+    verify_retention_parser.add_argument(
+        "--dependency-lock-digest",
+        required=True,
+    )
+    verify_retention_parser.add_argument(
+        "--dependency-private-tree-digest",
+        required=True,
+    )
+    verify_retention_parser.add_argument(
+        "--code-materialization-evidence-digest",
+        required=True,
+    )
+    verify_retention_parser.add_argument(
+        "--code-private-tree-digest",
+        required=True,
+    )
+    verify_retention_parser.add_argument("--volume-id", required=True)
+    verify_retention_parser.add_argument("--data-center-id", required=True)
+    verify_retention_parser.add_argument("--volume-size-gb", required=True, type=int)
     arguments = parser.parse_args(argv)
 
     try:
@@ -1397,7 +3142,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _read_json_object(arguments.screen_result, "screen result"),
                 _read_json_object(arguments.provider_receipt, "provider receipt"),
             )
-        elif arguments.command == "create-volume-receipt":
+        elif arguments.command in {
+            "create-volume-receipt",
+            "create-attested-volume-receipt",
+        }:
             snapshot = arguments.snapshot or (
                 Path(manifest["artifact_readiness"]["cache_directory"])
                 / "hub"
@@ -1421,17 +3169,78 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data_center_id=arguments.data_center_id,
                 volume_size_gb=arguments.volume_size_gb,
                 dependency_versions=versions,
+                dependency_lock_digest=arguments.dependency_lock_digest,
+                dependency_quarantine_evidence=_read_json_object(
+                    arguments.dependency_quarantine_evidence,
+                    "dependency quarantine evidence",
+                ),
+                dependency_quarantine_evidence_digest=(
+                    arguments.dependency_quarantine_evidence_digest
+                ),
+                dependency_private_tree_digest=(arguments.dependency_private_tree_digest),
+                code_materialization_evidence=_read_json_object(
+                    arguments.code_materialization_evidence,
+                    "code materialization evidence",
+                ),
+                code_materialization_evidence_digest=(
+                    arguments.code_materialization_evidence_digest
+                ),
+                code_private_tree_digest=arguments.code_private_tree_digest,
             )
-        else:
+        elif arguments.command in {
+            "verify-volume-receipt",
+            "bridge-predecessor-volume-receipt",
+        }:
             raw_volume = (
                 sys.stdin.buffer.read()
                 if str(arguments.provider_volume) == "-"
                 else arguments.provider_volume.read_bytes()
             )
-            output = verify_volume_readiness_receipt(
+            if arguments.command == "verify-volume-receipt":
+                output = verify_volume_readiness_receipt(
+                    manifest,
+                    _read_json_object(arguments.receipt, "volume readiness receipt"),
+                    raw_volume,
+                )
+            else:
+                output = verify_predecessor_readiness_bridge(
+                    manifest,
+                    _read_json_object(
+                        arguments.predecessor_manifest,
+                        "predecessor manifest",
+                    ),
+                    _read_json_object(
+                        arguments.receipt,
+                        "predecessor volume readiness receipt",
+                    ),
+                    raw_volume,
+                )
+        else:
+            output = verify_retention_checkpoint_evidence(
                 manifest,
-                _read_json_object(arguments.receipt, "volume readiness receipt"),
-                raw_volume,
+                _read_json_object(
+                    arguments.evidence,
+                    "Torch retention checkpoint evidence",
+                ),
+                head_commit=arguments.head_commit,
+                workload_bundle_digest=arguments.workload_bundle_digest,
+                workload_bundle_size_bytes=arguments.workload_bundle_size_bytes,
+                workload_bundle_path=arguments.workload_bundle_path,
+                bundle_stage_receipt_digest=arguments.bundle_stage_receipt_digest,
+                bootstrap_source_digest=arguments.bootstrap_source_digest,
+                volume_readiness_receipt_digest=(arguments.volume_readiness_receipt_digest),
+                dependency_lock_digest=arguments.dependency_lock_digest,
+                dependency_quarantine_evidence_digest=(
+                    arguments.dependency_quarantine_evidence_digest
+                ),
+                dependency_private_tree_digest=(arguments.dependency_private_tree_digest),
+                code_materialization_evidence_digest=(
+                    arguments.code_materialization_evidence_digest
+                ),
+                code_private_tree_digest=arguments.code_private_tree_digest,
+                network_volume_id=arguments.volume_id,
+                data_center_id=arguments.data_center_id,
+                volume_size_gb=arguments.volume_size_gb,
             )
     except (GateError, OSError) as error:
         parser.error(str(error))

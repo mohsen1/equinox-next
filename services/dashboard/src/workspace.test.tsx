@@ -3,8 +3,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProofDetailPage, ProofsPage } from "./pages/proofs";
-import { ResearchRunPage, RunsPage } from "./pages/runs";
+import {
+  integratedObserverStages,
+  observerExecutionStatus,
+  ResearchRunPage,
+  RunsPage,
+} from "./pages/runs";
 import { BrowserRouter, Route, Routes } from "./router";
+import type { ResearchComputeExecution } from "./types";
 
 function response(body: unknown) {
   return {
@@ -47,6 +53,8 @@ function largerModelEligibilityExecution(eligible: boolean) {
         optimizer_state_restored: true,
         test_split_isolated: true,
       },
+      artifact_set_manifest_digest: `sha256:${"a".repeat(64)}`,
+      artifact_set_committed: true,
       elapsed_seconds: 521,
     },
     proof_id: null,
@@ -376,14 +384,186 @@ describe("Runs and Proofs workspaces", () => {
       expect(eligibilitySection?.textContent).toContain(
         "Policy mutationNone · verified",
       );
-      expect(container.querySelector(".observer-stage")?.textContent).toContain(
-        "ScreenLoad · sample · admit",
-      );
+      expect(observerStageLabels(container)).toEqual([
+        "Prepare",
+        "Stage bundle",
+        "Verify runtime/model",
+        "Screen",
+        "Teardown",
+        "Publish",
+      ]);
+      expect(
+        container.querySelector('[aria-label="Publish: Complete"]'),
+      ).not.toBeNull();
+      expect(container.textContent).toContain("Artifact setsha256:aaaaa");
+      expect(container.textContent).toContain("committed");
       expect(headings).not.toContain("Progress");
       expect(headings).not.toContain("Validation");
       expect(headings).not.toContain("Result");
     },
   );
+
+  it("shows exact integrated stage and digest evidence without claiming publication", async () => {
+    const timestamp = new Date().toISOString();
+    const bundleDigest = `sha256:${"b".repeat(64)}`;
+    const stageDigest = `sha256:${"s".repeat(64)}`;
+    const sourceDigest = `sha256:${"c".repeat(64)}`;
+    const execution = {
+      execution_id: "runpod-proof-integrated-observer",
+      name: "Integrated 7B screen and training",
+      workload_id: "repository-repair-larger-model-pilot",
+      model_id: "Qwen/Qwen2.5-Coder-7B-Instruct",
+      branch_width: 4,
+      complexity_strategy: "adaptive",
+      status: "RUNNING",
+      provider_name: "RunPod",
+      provider_handle: "runpod://pods/integrated-observer",
+      resource_profile: {
+        gpu_id: "NVIDIA H100 80GB HBM3",
+        cloud_type: "SECURE",
+      },
+      observer_evidence: {
+        phase: "verifying_runtime",
+        message: "Verifying runtime and pinned model snapshot.",
+        profile_id: "qwen2.5-coder-7b-runpod-h100@6",
+        source_contract_digest: sourceDigest,
+        workload_bundle_digest: bundleDigest,
+        workload_bundle_size_bytes: 2_500_000,
+        workload_bundle_path:
+          "/workspace/equinox-state/workload-bundles/qwen-7b/bundle.tar.xz",
+        bundle_stage_receipt_digest: stageDigest,
+        network_volume_id: "network-volume-7b",
+        network_volume_data_center_id: "EU-RO-1",
+        network_volume_size_gb: 80,
+      },
+      progress: {
+        phase: "verifying_runtime",
+        message: "Verifying runtime and pinned model snapshot.",
+      },
+      proof_id: null,
+      receipt_digest: null,
+      failure_receipt_digest: null,
+      started_at: timestamp,
+      updated_at: timestamp,
+      completed_at: null,
+      teardown_confirmed: false,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response(execution)),
+    );
+    window.history.replaceState(
+      null,
+      "",
+      "/runs/research/runpod-proof-integrated-observer",
+    );
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <BrowserRouter>
+          <Routes>
+            <Route
+              path="/runs/research/:executionId"
+              element={<ResearchRunPage />}
+            />
+          </Routes>
+        </BrowserRouter>,
+      );
+      await Promise.resolve();
+    });
+
+    const lifecycle = container.querySelector(".observer-stage");
+    expect(observerStageLabels(container)).toEqual([
+      "Prepare",
+      "Stage bundle",
+      "Verify runtime/model",
+      "Screen",
+      "Run",
+      "Teardown",
+      "Publish",
+    ]);
+    expect(
+      lifecycle?.querySelector('[aria-label="Verify runtime/model: Current"]'),
+    ).not.toBeNull();
+    expect(container.textContent).toContain(
+      "Verifying runtime and pinned model snapshot.",
+    );
+    expect(container.querySelector(`[title="${bundleDigest}"]`)).not.toBeNull();
+    expect(container.querySelector(`[title="${stageDigest}"]`)).not.toBeNull();
+    expect(container.querySelector(`[title="${sourceDigest}"]`)).not.toBeNull();
+    expect(container.textContent).toContain("Bundle size2.5 MB");
+    expect(container.textContent).toContain(
+      "/workspace/equinox-state/workload-bundles/qwen-7b/bundle.tar.xz",
+    );
+    expect(container.textContent).not.toContain("Mock");
+  });
+
+  it("keeps an unreceipted training result in publication", () => {
+    const training = {
+      ...largerModelEligibilityExecution(true),
+      workload_id: "repository-repair-larger-model-pilot",
+      status: "SUCCEEDED",
+      proof_id: null,
+      receipt_digest: null,
+      artifact_publication_required: true,
+      progress: {
+        ...largerModelEligibilityExecution(true).progress,
+        artifact_set_committed: false,
+      },
+    } as ResearchComputeExecution;
+
+    expect(observerExecutionStatus(training)).toBe("FINALIZING");
+    expect(integratedObserverStages(training).at(-1)).toMatchObject({
+      label: "Publish",
+      state: "current",
+    });
+  });
+
+  it("keeps legacy successes successful and marks their evidence non-atomic", async () => {
+    const legacy = {
+      ...largerModelEligibilityExecution(true),
+      workload_id: "revision30-post-freeze-external-adapter-evaluation",
+      status: "SUCCEEDED",
+      artifact_publication_required: false,
+      progress: {
+        phase: "complete",
+      },
+    } as ResearchComputeExecution;
+
+    expect(observerExecutionStatus(legacy)).toBe("SUCCEEDED");
+    expect(integratedObserverStages(legacy).at(-1)).toMatchObject({
+      label: "Publish",
+      state: "complete",
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response(legacy)),
+    );
+    window.history.replaceState(
+      null,
+      "",
+      `/runs/research/${legacy.execution_id}`,
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <BrowserRouter>
+          <Routes>
+            <Route
+              path="/runs/research/:executionId"
+              element={<ResearchRunPage />}
+            />
+          </Routes>
+        </BrowserRouter>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Legacy · non-atomic");
+    expect(container.textContent).not.toContain("Publication pending");
+  });
 
   it("labels missing evidence as incomplete after an eligibility screen fails", async () => {
     const failed = {
@@ -534,6 +714,8 @@ describe("Runs and Proofs workspaces", () => {
                 final_reward: 1,
                 reward_gain: 1,
                 hypothesis_passed: true,
+                meaningful_post_training: true,
+                post_training_outcome: "MEANINGFUL_POST_TRAINING",
               },
               hardware: {
                 provider: "RunPod",
@@ -568,6 +750,7 @@ describe("Runs and Proofs workspaces", () => {
       "/proofs/research_proof_test",
     );
     expect(container.textContent).toContain("NVIDIA A40");
+    expect(container.textContent).toContain("Meaningful");
     expect(container.textContent).toContain("Released");
   });
 
@@ -587,7 +770,9 @@ describe("Runs and Proofs workspaces", () => {
             initial_reward: 0,
             final_reward: 1,
             reward_gain: 1,
-            hypothesis_passed: true,
+            hypothesis_passed: false,
+            meaningful_post_training: false,
+            post_training_outcome: "NEGATIVE_EXPERIMENT_COMPLETED",
           },
           hardware: {
             provider: "RunPod",
@@ -615,6 +800,7 @@ describe("Runs and Proofs workspaces", () => {
           },
           curriculum: {
             promotion_count: 2,
+            dynamic_complexity_progressed: true,
             reached_level: 2,
             maximum_level: 3,
             updates_completed: 49,
@@ -625,6 +811,9 @@ describe("Runs and Proofs workspaces", () => {
             receipt_digest: "sha256:receipt",
             failure_receipt_digest: priorFailureDigest,
             teardown_confirmed: true,
+            artifact_set_manifest_digest: null,
+            artifact_set_committed: false,
+            artifact_publication_status: "legacy_non_atomic",
           },
           teardown_confirmed: true,
         }),
@@ -659,5 +848,14 @@ describe("Runs and Proofs workspaces", () => {
     ).not.toBeNull();
     expect(container.textContent).toContain("$0.11 est.");
     expect(container.textContent).toContain("Confirmed");
+    expect(container.textContent).toContain("Negative result");
+    expect(container.textContent).toContain("Level 2 of 3 · progressed");
+    expect(container.textContent).toContain("Legacy · non-atomic");
   });
 });
+
+function observerStageLabels(container: HTMLElement): Array<string | null> {
+  return [
+    ...container.querySelectorAll(".observer-stage-item > span:first-child"),
+  ].map((label) => label.textContent);
+}

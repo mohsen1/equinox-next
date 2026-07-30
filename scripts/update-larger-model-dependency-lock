@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+exec uv pip compile \
+  "$repository_root/research/runpod/larger-model-dependencies.in" \
+  --excludes "$repository_root/research/runpod/larger-model-dependencies.exclude" \
+  --output-file "$repository_root/research/runpod/larger-model-dependencies.lock" \
+  --python-version 3.12 \
+  --python-platform x86_64-manylinux_2_28 \
+  --exclude-newer 2026-07-29T00:00:00Z \
+  --generate-hashes \
+  --only-binary=:all: \
+  --no-annotate \
+  --custom-compile-command scripts/update-larger-model-dependency-lock

@@ -13,16 +13,21 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import hmac
 import importlib
 import importlib.metadata
 import json
 import math
 import os
 import random
+import re
+import secrets
 import shutil
+import stat
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -87,8 +92,28 @@ DEFAULT_TARGET_RUNTIME_SECONDS = 7_200
 MAXIMUM_TARGET_RUNTIME_SECONDS = 21_600
 DEFAULT_MAXIMUM_RESUME_GAP_SECONDS = 2_700
 DEFAULT_MAX_FINAL_EVALUATION_RESERVE_SECONDS = 2_700
-WORKLOAD_REVISION = "runpod-repository-repair-transactional-retention@1"
-OBJECTIVE_ID = "verified-repair-chain-transactional-retention-policy-gradient@18"
+CHECKPOINT_AUTHENTICATION_REVISION = "launch-bound-checkpoint-manifest@1"
+CHECKPOINT_MANIFEST_FILENAME = "checkpoint-authentication.json"
+ADAPTER_ROOT_DESCRIPTOR_ENVIRONMENT = "EQUINOX_ADAPTER_ROOT_FD"
+CHECKPOINT_AUTHENTICATION_MECHANISM = {
+    "revision": CHECKPOINT_AUTHENTICATION_REVISION,
+    "manifest_schema_version": 1,
+    "pointer_schema_version": 2,
+    "file_validation": "dirfd-nofollow-bounded-single-link-regular@1",
+    "private_materialization": "digest-verified-private-copy@1",
+    "training_state_load": "torch-weights-only@1",
+    "replay_binding": "runner-private-generation-and-manifest-digest@1",
+}
+MAXIMUM_CHECKPOINT_FILES = 32
+MAXIMUM_CHECKPOINT_FILE_BYTES = 16 * 1024 * 1024 * 1024
+MAXIMUM_CHECKPOINT_TOTAL_BYTES = 24 * 1024 * 1024 * 1024
+MAXIMUM_PENDING_TRAINING_EXAMPLES = 8_192
+MAXIMUM_GENERATED_ACTION_RESPONSE_BYTES = 1024 * 1024
+DETERMINISTIC_RUNTIME_REVISION = "eager-math-sdp-deterministic@1"
+ATTENTION_IMPLEMENTATION = "eager"
+CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+WORKLOAD_REVISION = "runpod-repository-repair-transactional-retention@2"
+OBJECTIVE_ID = "verified-repair-chain-transactional-retention-policy-gradient@19"
 DEPENDENCIES = (
     "transformers==5.14.1",
     "peft==0.19.1",
@@ -120,11 +145,12 @@ ADVANTAGE_STANDARD_DEVIATION_FLOOR = 0.1
 MAXIMUM_ABSOLUTE_ADVANTAGE = 1.0
 MINIMUM_INFORMATIVE_GROUPS_PER_POLICY_UPDATE = 2
 MAXIMUM_FRONTIER_PROBE_OFFSET = 2
+TRAINING_LEVEL_ALLOCATION_REVISION = "retained-promotion-3-1-to-2-2@1"
 TRAINING_MICROBATCH_SIZE = 2
 MASTERY_THRESHOLD = 0.50
 MINIMUM_PROTOCOL_VALIDITY_RATE = 0.99
 MAXIMUM_CONSECUTIVE_UNINFORMATIVE_GROUPS = 12
-MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS = 2
+MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS = 4
 MAXIMUM_RECENT_MALFORMED_ACTION_RATE = 0.05
 MAXIMUM_CONSECUTIVE_MALFORMED_WINDOWS = 2
 TRANSACTIONAL_RETENTION_REVISION = "adapter-optimizer-policy-lineage@1"
@@ -227,7 +253,10 @@ def workload_attempt_from_environment() -> int:
     )
 
 
-def configure_from_environment() -> RuntimeConfiguration:
+def configure_from_environment(
+    *,
+    allow_zero_test_examples: bool = False,
+) -> RuntimeConfiguration:
     workload_attempt = workload_attempt_from_environment()
     model_id = os.environ.get("EQUINOX_RL_MODEL_ID", DEFAULT_MODEL_ID)
     if model_id not in SUPPORTED_MODELS:
@@ -260,7 +289,7 @@ def configure_from_environment() -> RuntimeConfiguration:
     test_examples = positive_environment_integer(
         "EQUINOX_RL_TEST_EXAMPLES",
         DEFAULT_TEST_EXAMPLES,
-        minimum=4,
+        minimum=0 if allow_zero_test_examples else 4,
         maximum=maximum_test_examples,
     )
     training_tasks_per_update = positive_environment_integer(
@@ -345,6 +374,91 @@ class WeightedAction:
     generated: GeneratedAction
     weight: float
     optimizer_input_group_id: str | None = None
+
+
+def serialize_weighted_action_for_checkpoint(example: WeightedAction) -> dict[str, Any]:
+    """Encode one pending optimizer example using only weights-only-safe primitives."""
+
+    if not isinstance(example, WeightedAction):
+        raise TypeError("checkpoint pending example must be a WeightedAction")
+    return {
+        "response": example.generated.response,
+        "input_ids": list(example.generated.input_ids),
+        "attention_mask": list(example.generated.attention_mask),
+        "completion_mask": list(example.generated.completion_mask),
+        "weight": example.weight,
+        "optimizer_input_group_id": example.optimizer_input_group_id,
+    }
+
+
+def deserialize_weighted_action_from_checkpoint(value: object) -> WeightedAction:
+    """Validate and decode one primitive-only pending optimizer example."""
+
+    if not isinstance(value, dict) or set(value) != {
+        "response",
+        "input_ids",
+        "attention_mask",
+        "completion_mask",
+        "weight",
+        "optimizer_input_group_id",
+    }:
+        raise ValueError("checkpoint pending example field set is invalid")
+    response = value["response"]
+    weight = value["weight"]
+    group_id = value["optimizer_input_group_id"]
+    if (
+        not isinstance(response, str)
+        or len(response.encode("utf-8")) > MAXIMUM_GENERATED_ACTION_RESPONSE_BYTES
+        or not isinstance(weight, int | float)
+        or isinstance(weight, bool)
+        or not math.isfinite(float(weight))
+        or not 0.0 <= float(weight) <= 1.0
+        or not isinstance(group_id, str)
+        or not group_id
+        or len(group_id) > 512
+    ):
+        raise ValueError("checkpoint pending example scalar values are invalid")
+
+    token_vectors: dict[str, tuple[int, ...]] = {}
+    for name in ("input_ids", "attention_mask", "completion_mask"):
+        raw_vector = value[name]
+        if (
+            not isinstance(raw_vector, list)
+            or len(raw_vector) > MAX_INPUT_TOKENS + MAX_NEW_TOKENS
+            or any(type(token) is not int or token < 0 or token > 2**31 - 1 for token in raw_vector)
+        ):
+            raise ValueError(f"checkpoint pending example {name} is invalid")
+        token_vectors[name] = tuple(raw_vector)
+    if not (
+        len(token_vectors["input_ids"])
+        == len(token_vectors["attention_mask"])
+        == len(token_vectors["completion_mask"])
+    ):
+        raise ValueError("checkpoint pending example token vectors do not align")
+    return WeightedAction(
+        generated=GeneratedAction(
+            response=response,
+            input_ids=token_vectors["input_ids"],
+            attention_mask=token_vectors["attention_mask"],
+            completion_mask=token_vectors["completion_mask"],
+        ),
+        weight=float(weight),
+        optimizer_input_group_id=group_id,
+    )
+
+
+def serialize_pending_training_examples(
+    examples: list[WeightedAction],
+) -> list[dict[str, Any]]:
+    if len(examples) > MAXIMUM_PENDING_TRAINING_EXAMPLES:
+        raise ValueError("too many pending training examples for one checkpoint")
+    return [serialize_weighted_action_for_checkpoint(example) for example in examples]
+
+
+def deserialize_pending_training_examples(value: object) -> list[WeightedAction]:
+    if not isinstance(value, list) or len(value) > MAXIMUM_PENDING_TRAINING_EXAMPLES:
+        raise ValueError("checkpoint pending training examples are invalid")
+    return [deserialize_weighted_action_from_checkpoint(example) for example in value]
 
 
 @dataclass
@@ -604,6 +718,540 @@ def discarded_collection_accounting(
     )
 
 
+@dataclass(frozen=True)
+class CheckpointCommit:
+    checkpoint_name: str
+    generation: int
+    manifest_digest: str
+
+
+@dataclass(frozen=True)
+class AuthenticatedCheckpoint:
+    checkpoint_name: str
+    generation: int
+    manifest_digest: str
+    private_directory: str
+    source_training_state_device: int
+    source_training_state_inode: int
+    source_training_state_size_bytes: int
+    source_training_state_digest: str
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _tagged_sha256(payload: bytes) -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def checkpoint_authentication_mechanism_digest() -> str:
+    return _tagged_sha256(_canonical_json_bytes(CHECKPOINT_AUTHENTICATION_MECHANISM))
+
+
+def _checkpoint_hmac(key: bytes, material: dict[str, Any]) -> str:
+    return (
+        "hmac-sha256:"
+        + hmac.new(
+            key,
+            _canonical_json_bytes(material),
+            hashlib.sha256,
+        ).hexdigest()
+    )
+
+
+def _validate_checkpoint_key(key: bytes) -> bytes:
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise RuntimeError("checkpoint authentication key must contain 32 bytes")
+    return key
+
+
+def checkpoint_authentication_key_from_environment() -> bytes:
+    raw = os.environ.get("EQUINOX_CHECKPOINT_AUTHENTICATION_KEY", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", raw):
+        raise RuntimeError("checkpoint authentication key is missing or malformed")
+    return bytes.fromhex(raw)
+
+
+def checkpoint_authentication_identity(
+    *,
+    model_revision: str,
+) -> dict[str, str]:
+    names = {
+        "run_identity": "EQUINOX_RUN_IDENTITY",
+        "profile_id": "EQUINOX_LARGER_MODEL_PROFILE_ID",
+        "authorization_digest": "EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST",
+        "source_head_commit": "EQUINOX_SOURCE_HEAD_COMMIT",
+        "workload_bundle_digest": "EQUINOX_BUNDLE_SHA256",
+    }
+    identity = {key: os.environ.get(environment, "") for key, environment in names.items()}
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{15,191}", identity["run_identity"]):
+        raise RuntimeError("checkpoint run identity is missing or malformed")
+    if not re.fullmatch(r"[A-Za-z0-9._@-]{1,191}", identity["profile_id"]):
+        raise RuntimeError("checkpoint profile identity is missing or malformed")
+    for name in ("authorization_digest", "workload_bundle_digest"):
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", identity[name]):
+            raise RuntimeError(f"checkpoint {name} is missing or malformed")
+    if not re.fullmatch(r"[0-9a-f]{40}", identity["source_head_commit"]):
+        raise RuntimeError("checkpoint source commit is missing or malformed")
+    if not isinstance(model_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", model_revision):
+        raise RuntimeError("checkpoint model revision is malformed")
+    return {
+        **identity,
+        "workload_revision": WORKLOAD_REVISION,
+        "model_revision": model_revision,
+        "objective_id": OBJECTIVE_ID,
+    }
+
+
+def expected_checkpoint_from_environment(
+    workload_attempt: int,
+) -> tuple[int | None, str | None]:
+    raw_generation = os.environ.get("EQUINOX_EXPECTED_CHECKPOINT_GENERATION")
+    raw_digest = os.environ.get("EQUINOX_EXPECTED_CHECKPOINT_MANIFEST_SHA256")
+    if workload_attempt == 1:
+        if raw_generation is not None or raw_digest is not None:
+            raise RuntimeError("first attempt received unexpected checkpoint replay state")
+        return None, None
+    if workload_attempt != 2:
+        raise RuntimeError("checkpoint resume is restricted to the sole retry")
+    if (
+        not isinstance(raw_generation, str)
+        or not raw_generation.isascii()
+        or not raw_generation.isdigit()
+        or int(raw_generation) < 1
+        or not isinstance(raw_digest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", raw_digest)
+    ):
+        raise RuntimeError("retry checkpoint replay binding is missing or malformed")
+    return int(raw_generation), raw_digest
+
+
+def authenticated_adapter_root_from_environment(adapter_path: str) -> tuple[str, int]:
+    """Bind the runtime adapter path to the inherited bootstrap-owned descriptor."""
+
+    raw_descriptor = os.environ.get(ADAPTER_ROOT_DESCRIPTOR_ENVIRONMENT, "")
+    if (
+        not isinstance(adapter_path, str)
+        or not raw_descriptor.isascii()
+        or not raw_descriptor.isdigit()
+    ):
+        raise RuntimeError("authenticated adapter root descriptor is missing or malformed")
+    descriptor = int(raw_descriptor)
+    if descriptor < 3 or adapter_path != f"/proc/self/fd/{descriptor}":
+        raise RuntimeError("adapter path is not the authenticated descriptor path")
+    try:
+        descriptor_metadata = os.fstat(descriptor)
+        path_metadata = os.stat(adapter_path)
+    except OSError as error:
+        raise RuntimeError("authenticated adapter root is unavailable") from error
+    if (
+        not stat.S_ISDIR(descriptor_metadata.st_mode)
+        or not stat.S_ISDIR(path_metadata.st_mode)
+        or descriptor_metadata.st_dev != path_metadata.st_dev
+        or descriptor_metadata.st_ino != path_metadata.st_ino
+    ):
+        raise RuntimeError("adapter path does not match its authenticated descriptor")
+    return adapter_path, descriptor
+
+
+def _open_nofollow_directory(path: str) -> int:
+    return os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+
+
+def _read_regular_at_with_metadata(
+    directory_descriptor: int,
+    name: str,
+    *,
+    maximum_bytes: int,
+) -> tuple[bytes, os.stat_result]:
+    if not isinstance(name, str) or not name or "/" in name or "\\" in name or name in {".", ".."}:
+        raise RuntimeError("checkpoint file name is unsafe")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0),
+        dir_fd=directory_descriptor,
+    )
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size < 0
+            or before.st_size > maximum_bytes
+        ):
+            raise RuntimeError("checkpoint entry is not a bounded single-link regular file")
+        chunks: list[bytes] = []
+        observed_bytes = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, maximum_bytes + 1 - observed_bytes))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            observed_bytes += len(chunk)
+            if observed_bytes > maximum_bytes:
+                raise RuntimeError("checkpoint entry exceeds its byte limit")
+        after = os.fstat(descriptor)
+        if (
+            observed_bytes != before.st_size
+            or before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+        ):
+            raise RuntimeError("checkpoint entry changed while it was read")
+        return b"".join(chunks), after
+    finally:
+        os.close(descriptor)
+
+
+def _read_regular_at(
+    directory_descriptor: int,
+    name: str,
+    *,
+    maximum_bytes: int,
+) -> bytes:
+    payload, _ = _read_regular_at_with_metadata(
+        directory_descriptor,
+        name,
+        maximum_bytes=maximum_bytes,
+    )
+    return payload
+
+
+def _read_canonical_json_at(
+    directory_descriptor: int,
+    name: str,
+    *,
+    maximum_bytes: int,
+) -> dict[str, Any]:
+    payload = _read_regular_at(
+        directory_descriptor,
+        name,
+        maximum_bytes=maximum_bytes,
+    )
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"checkpoint {name} is not valid JSON") from error
+    if not isinstance(value, dict) or payload != _canonical_json_bytes(value) + b"\n":
+        raise RuntimeError(f"checkpoint {name} is not canonical JSON")
+    return value
+
+
+def _checkpoint_file_inventory(
+    directory_descriptor: int,
+    *,
+    require_training_state: bool = True,
+) -> list[dict[str, Any]]:
+    with os.scandir(directory_descriptor) as iterator:
+        entries = sorted(iterator, key=lambda entry: entry.name)
+    inventory: list[dict[str, Any]] = []
+    total_bytes = 0
+    for entry in entries:
+        if entry.name == CHECKPOINT_MANIFEST_FILENAME:
+            continue
+        metadata = entry.stat(follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError("checkpoint directory contains a non-regular entry")
+        payload = _read_regular_at(
+            directory_descriptor,
+            entry.name,
+            maximum_bytes=MAXIMUM_CHECKPOINT_FILE_BYTES,
+        )
+        total_bytes += len(payload)
+        if (
+            len(inventory) + 1 > MAXIMUM_CHECKPOINT_FILES
+            or total_bytes > MAXIMUM_CHECKPOINT_TOTAL_BYTES
+        ):
+            raise RuntimeError("checkpoint file inventory exceeds its limits")
+        inventory.append(
+            {
+                "path": entry.name,
+                "size_bytes": len(payload),
+                "sha256": _tagged_sha256(payload),
+            }
+        )
+    required = {
+        "adapter_config.json",
+        "adapter_model.safetensors",
+    }
+    if require_training_state:
+        required.add("training-state.pt")
+    if not required.issubset({item["path"] for item in inventory}):
+        raise RuntimeError("checkpoint file inventory is incomplete")
+    return inventory
+
+
+def _atomic_canonical_json(path: str, value: dict[str, Any]) -> None:
+    pending = path + f".pending-{secrets.token_hex(16)}"
+    payload = _canonical_json_bytes(value) + b"\n"
+    descriptor = os.open(
+        pending,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o400,
+    )
+    try:
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(descriptor, payload[offset:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        os.replace(pending, path)
+    finally:
+        if os.path.exists(pending):
+            os.unlink(pending)
+
+
+def _checkpoint_manifest(
+    *,
+    key: bytes,
+    identity: dict[str, str],
+    checkpoint_name: str,
+    generation: int,
+    files: list[dict[str, Any]],
+) -> dict[str, Any]:
+    material: dict[str, Any] = {
+        "schema_version": 1,
+        "revision": CHECKPOINT_AUTHENTICATION_REVISION,
+        "identity": identity,
+        "checkpoint": checkpoint_name,
+        "generation": generation,
+        "files": files,
+    }
+    return {**material, "hmac": _checkpoint_hmac(key, material)}
+
+
+def _checkpoint_pointer(
+    *,
+    key: bytes,
+    identity: dict[str, str],
+    checkpoint_name: str,
+    generation: int,
+    manifest_digest: str,
+) -> dict[str, Any]:
+    material: dict[str, Any] = {
+        "schema_version": 2,
+        "revision": CHECKPOINT_AUTHENTICATION_REVISION,
+        "run_identity": identity["run_identity"],
+        "checkpoint": checkpoint_name,
+        "generation": generation,
+        "checkpoint_manifest_digest": manifest_digest,
+    }
+    return {**material, "hmac": _checkpoint_hmac(key, material)}
+
+
+def _verify_hmac_object(
+    value: dict[str, Any],
+    *,
+    key: bytes,
+    description: str,
+) -> None:
+    observed = value.get("hmac")
+    material = {name: item for name, item in value.items() if name != "hmac"}
+    if (
+        not isinstance(observed, str)
+        or not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", observed)
+        or not hmac.compare_digest(observed, _checkpoint_hmac(key, material))
+    ):
+        raise RuntimeError(f"{description} authentication failed")
+
+
+def _copy_checkpoint_to_private(
+    directory_descriptor: int,
+    *,
+    files: list[dict[str, Any]],
+    run_identity: str,
+    manifest_digest: str,
+) -> tuple[str, os.stat_result]:
+    private_base = tempfile.mkdtemp(prefix=f"equinox-checkpoint-{run_identity}-")
+    training_state_metadata: os.stat_result | None = None
+    try:
+        for expected in files:
+            payload, source_metadata = _read_regular_at_with_metadata(
+                directory_descriptor,
+                expected["path"],
+                maximum_bytes=MAXIMUM_CHECKPOINT_FILE_BYTES,
+            )
+            if len(payload) != expected["size_bytes"] or not hmac.compare_digest(
+                _tagged_sha256(payload), expected["sha256"]
+            ):
+                raise RuntimeError("checkpoint changed before private materialization")
+            destination = os.path.join(private_base, expected["path"])
+            descriptor = os.open(
+                destination,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o400,
+            )
+            try:
+                offset = 0
+                while offset < len(payload):
+                    offset += os.write(descriptor, payload[offset:])
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            if expected["path"] == "training-state.pt":
+                training_state_metadata = source_metadata
+        if training_state_metadata is None:
+            raise RuntimeError("checkpoint training state was not materialized")
+        marker = {
+            "schema_version": 1,
+            "checkpoint_manifest_digest": manifest_digest,
+        }
+        _atomic_canonical_json(
+            os.path.join(private_base, CHECKPOINT_MANIFEST_FILENAME),
+            marker,
+        )
+        fsync_directory(private_base)
+        os.chmod(private_base, 0o500)
+        return private_base, training_state_metadata
+    except BaseException:
+        shutil.rmtree(private_base, ignore_errors=True)
+        raise
+
+
+def load_authenticated_checkpoint(
+    *,
+    checkpoints_root: str,
+    authentication_key: bytes,
+    authentication_identity: dict[str, str],
+    expected_generation: int,
+    expected_manifest_digest: str,
+) -> AuthenticatedCheckpoint:
+    key = _validate_checkpoint_key(authentication_key)
+    if (
+        type(expected_generation) is not int
+        or expected_generation < 1
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_manifest_digest)
+    ):
+        raise RuntimeError("checkpoint replay binding is invalid")
+    root_descriptor = _open_nofollow_directory(checkpoints_root)
+    checkpoint_descriptor: int | None = None
+    try:
+        pointer = _read_canonical_json_at(
+            root_descriptor,
+            "latest.json",
+            maximum_bytes=16 * 1024,
+        )
+        if set(pointer) != {
+            "schema_version",
+            "revision",
+            "run_identity",
+            "checkpoint",
+            "generation",
+            "checkpoint_manifest_digest",
+            "hmac",
+        }:
+            raise RuntimeError("checkpoint pointer field set is invalid")
+        _verify_hmac_object(pointer, key=key, description="checkpoint pointer")
+        checkpoint_name = pointer.get("checkpoint")
+        if (
+            pointer.get("schema_version") != 2
+            or pointer.get("revision") != CHECKPOINT_AUTHENTICATION_REVISION
+            or pointer.get("run_identity") != authentication_identity["run_identity"]
+            or not isinstance(checkpoint_name, str)
+            or not re.fullmatch(r"update-[0-9]{4,12}", checkpoint_name)
+            or pointer.get("generation") != expected_generation
+            or pointer.get("checkpoint_manifest_digest") != expected_manifest_digest
+        ):
+            raise RuntimeError("checkpoint pointer identity or generation is invalid")
+        checkpoint_descriptor = os.open(
+            checkpoint_name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_descriptor,
+        )
+        manifest_payload = _read_regular_at(
+            checkpoint_descriptor,
+            CHECKPOINT_MANIFEST_FILENAME,
+            maximum_bytes=1024 * 1024,
+        )
+        if _tagged_sha256(manifest_payload) != expected_manifest_digest:
+            raise RuntimeError("checkpoint manifest digest is invalid")
+        try:
+            manifest = json.loads(manifest_payload)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("checkpoint manifest is not valid JSON") from error
+        if (
+            not isinstance(manifest, dict)
+            or manifest_payload != _canonical_json_bytes(manifest) + b"\n"
+            or set(manifest)
+            != {
+                "schema_version",
+                "revision",
+                "identity",
+                "checkpoint",
+                "generation",
+                "files",
+                "hmac",
+            }
+        ):
+            raise RuntimeError("checkpoint manifest field set is invalid")
+        _verify_hmac_object(manifest, key=key, description="checkpoint manifest")
+        if (
+            manifest.get("schema_version") != 1
+            or manifest.get("revision") != CHECKPOINT_AUTHENTICATION_REVISION
+            or manifest.get("identity") != authentication_identity
+            or manifest.get("checkpoint") != checkpoint_name
+            or manifest.get("generation") != expected_generation
+            or not isinstance(manifest.get("files"), list)
+        ):
+            raise RuntimeError("checkpoint manifest identity or generation is invalid")
+        observed_files = _checkpoint_file_inventory(checkpoint_descriptor)
+        if observed_files != manifest["files"]:
+            raise RuntimeError("checkpoint file inventory does not match its manifest")
+        private_directory, training_state_metadata = _copy_checkpoint_to_private(
+            checkpoint_descriptor,
+            files=observed_files,
+            run_identity=authentication_identity["run_identity"],
+            manifest_digest=expected_manifest_digest,
+        )
+        return AuthenticatedCheckpoint(
+            checkpoint_name=checkpoint_name,
+            generation=expected_generation,
+            manifest_digest=expected_manifest_digest,
+            private_directory=private_directory,
+            source_training_state_device=training_state_metadata.st_dev,
+            source_training_state_inode=training_state_metadata.st_ino,
+            source_training_state_size_bytes=training_state_metadata.st_size,
+            source_training_state_digest=next(
+                item["sha256"] for item in observed_files if item["path"] == "training-state.pt"
+            ),
+        )
+    finally:
+        if checkpoint_descriptor is not None:
+            os.close(checkpoint_descriptor)
+        os.close(root_descriptor)
+
+
 def checkpoint_target_disposition(
     target: str,
     *,
@@ -660,14 +1308,47 @@ def persist_checkpoint(
     state: dict[str, Any],
     save_adapter: Callable[[str], None],
     save_state: Callable[[dict[str, Any], str], None],
+    generation: int,
+    authentication_key: bytes,
+    authentication_identity: dict[str, str],
+    expected_previous_generation: int | None = None,
+    expected_previous_manifest_digest: str | None = None,
     after_step: Callable[[str], None] | None = None,
-) -> None:
+) -> CheckpointCommit:
+    key = _validate_checkpoint_key(authentication_key)
+    if (
+        not re.fullmatch(r"update-[0-9]{4,12}", checkpoint_name)
+        or type(generation) is not int
+        or generation < 1
+        or latest_checkpoint_path != os.path.join(checkpoints_root, "latest.json")
+    ):
+        raise RuntimeError("checkpoint persistence identity is invalid")
     os.makedirs(checkpoints_root, exist_ok=True)
     target = os.path.join(checkpoints_root, checkpoint_name)
     previous = None
-    if os.path.isfile(latest_checkpoint_path):
-        with open(latest_checkpoint_path, encoding="utf-8") as handle:
-            previous = json.load(handle).get("checkpoint")
+    pointer_exists = os.path.lexists(latest_checkpoint_path)
+    if pointer_exists:
+        if (
+            expected_previous_generation is None
+            or expected_previous_manifest_digest is None
+            or generation != expected_previous_generation + 1
+        ):
+            raise RuntimeError("checkpoint persistence replay predecessor is missing")
+        previous_checkpoint = load_authenticated_checkpoint(
+            checkpoints_root=checkpoints_root,
+            authentication_key=key,
+            authentication_identity=authentication_identity,
+            expected_generation=expected_previous_generation,
+            expected_manifest_digest=expected_previous_manifest_digest,
+        )
+        previous = previous_checkpoint.checkpoint_name
+        shutil.rmtree(previous_checkpoint.private_directory, ignore_errors=True)
+    elif (
+        expected_previous_generation is not None
+        or expected_previous_manifest_digest is not None
+        or generation != 1
+    ):
+        raise RuntimeError("checkpoint persistence predecessor is inconsistent")
     target_disposition = checkpoint_target_disposition(
         target,
         checkpoint_name=checkpoint_name,
@@ -687,35 +1368,70 @@ def persist_checkpoint(
     else:
         os.makedirs(target)
         save_adapter(target)
+        target_descriptor = _open_nofollow_directory(target)
+        try:
+            _checkpoint_file_inventory_without_state = {
+                item["path"]
+                for item in _checkpoint_file_inventory(
+                    target_descriptor,
+                    require_training_state=False,
+                )
+            }
+        finally:
+            os.close(target_descriptor)
+        if not {
+            "adapter_config.json",
+            "adapter_model.safetensors",
+        }.issubset(_checkpoint_file_inventory_without_state):
+            raise RuntimeError("adapter checkpoint persistence is incomplete")
         fsync_tree(target)
         fsync_directory(checkpoints_root)
         if after_step is not None:
             after_step("adapter_saved")
     temporary_state = os.path.join(target, "training-state.pt.pending")
+    if os.path.lexists(temporary_state):
+        raise RuntimeError("checkpoint pending state path already exists")
     save_state(state, temporary_state)
     fsync_file(temporary_state)
     os.replace(temporary_state, os.path.join(target, "training-state.pt"))
     fsync_directory(target)
     if after_step is not None:
         after_step("state_persisted")
-    if not rewrite_live_state:
-        temporary_pointer = latest_checkpoint_path + ".pending"
-        with open(temporary_pointer, "w", encoding="utf-8") as handle:
-            json.dump(
-                {"schema_version": 1, "checkpoint": checkpoint_name},
-                handle,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_pointer, latest_checkpoint_path)
-        fsync_directory(checkpoints_root)
-        if after_step is not None:
-            after_step("pointer_persisted")
+    target_descriptor = _open_nofollow_directory(target)
+    try:
+        files = _checkpoint_file_inventory(target_descriptor)
+    finally:
+        os.close(target_descriptor)
+    manifest = _checkpoint_manifest(
+        key=key,
+        identity=authentication_identity,
+        checkpoint_name=checkpoint_name,
+        generation=generation,
+        files=files,
+    )
+    manifest_path = os.path.join(target, CHECKPOINT_MANIFEST_FILENAME)
+    _atomic_canonical_json(manifest_path, manifest)
+    manifest_payload = _canonical_json_bytes(manifest) + b"\n"
+    manifest_digest = _tagged_sha256(manifest_payload)
+    fsync_directory(target)
+    pointer = _checkpoint_pointer(
+        key=key,
+        identity=authentication_identity,
+        checkpoint_name=checkpoint_name,
+        generation=generation,
+        manifest_digest=manifest_digest,
+    )
+    _atomic_canonical_json(latest_checkpoint_path, pointer)
+    fsync_directory(checkpoints_root)
+    if after_step is not None:
+        after_step("pointer_persisted")
     remove_stale_checkpoint_targets(checkpoints_root, checkpoint_name)
     fsync_directory(checkpoints_root)
+    return CheckpointCommit(
+        checkpoint_name=checkpoint_name,
+        generation=generation,
+        manifest_digest=manifest_digest,
+    )
 
 
 def persist_named_adapter(
@@ -895,23 +1611,66 @@ def adaptive_frontier_probe_decision(
     return prior_probe_level, "heterogeneous_saturation_hold_probe"
 
 
+def training_level_allocation_contract() -> dict[str, Any]:
+    return {
+        "revision": TRAINING_LEVEL_ALLOCATION_REVISION,
+        "before_first_retained_promotion": {
+            "active_frontier_tasks": 3,
+            "nearest_probe_tasks": 1,
+        },
+        "after_first_retained_promotion": {
+            "active_frontier_tasks": 2,
+            "adaptive_probe_tasks": 2,
+        },
+    }
+
+
+def training_level_allocation_transition_evidence(
+    promotions: list[dict[str, Any]],
+    *,
+    observed_updates: int,
+) -> dict[str, Any]:
+    first_promotion_update: int | None = None
+    if promotions:
+        raw_update = promotions[0].get("update")
+        if type(raw_update) is not int or raw_update < 1:
+            raise RuntimeError("the first retained promotion update is invalid")
+        first_promotion_update = raw_update
+    first_post_promotion_allocation_update = (
+        first_promotion_update + 1
+        if first_promotion_update is not None and observed_updates >= first_promotion_update + 1
+        else None
+    )
+    return {
+        "revision": TRAINING_LEVEL_ALLOCATION_REVISION,
+        "first_retained_promotion_update": first_promotion_update,
+        "first_post_promotion_allocation_update": (first_post_promotion_allocation_update),
+        "transition_observed": first_post_promotion_allocation_update is not None,
+    }
+
+
 def training_level_allocation(
     current_level: int,
     task_count: int,
     *,
     probe_level: int | None = None,
+    retained_promotion_count: int,
     maximum_level: int = MAXIMUM_COMPLEXITY_LEVEL,
 ) -> list[int]:
     if not 0 <= current_level <= maximum_level:
         raise ValueError("current level is outside the curriculum")
     if task_count < 1:
         raise ValueError("task count must be positive")
+    if type(retained_promotion_count) is not int or retained_promotion_count < 0:
+        raise ValueError("retained promotion count must be non-negative")
     if current_level == maximum_level:
         if probe_level not in (None, current_level):
             raise ValueError("the maximum curriculum level cannot have a harder probe")
         return [current_level] * task_count
     if probe_level is None:
         probe_level = current_level + 1
+    if retained_promotion_count == 0 and probe_level != current_level + 1:
+        raise ValueError("pre-promotion training must use the nearest probe")
     if not (
         current_level
         < probe_level
@@ -922,7 +1681,10 @@ def training_level_allocation(
     ):
         raise ValueError("frontier probe level is outside the adaptive probe range")
     allocation = [current_level] * task_count
-    probe_task_count = min(task_count // 2, task_count - 1)
+    if retained_promotion_count == 0:
+        probe_task_count = min(max(1, task_count // 4), task_count - 1)
+    else:
+        probe_task_count = min(task_count // 2, task_count - 1)
     if probe_task_count:
         allocation[-probe_task_count:] = [probe_level] * probe_task_count
     return sorted(allocation)
@@ -1515,12 +2277,51 @@ def post_training_claim_strength(
     *,
     final_evaluation_complete: bool,
     probative_post_training: bool,
+    hypothesis_passed: bool | None = None,
 ) -> str:
     if not final_evaluation_complete:
         return "INCOMPLETE_FINAL_EVALUATION"
     if not probative_post_training:
         return "NONPROBATIVE_RESERVE_STOP"
+    if hypothesis_passed is False:
+        return "NEGATIVE_RESULT"
     return "EXPLORATORY_SINGLE_SEED"
+
+
+def post_training_outcome_classification(
+    *,
+    hypothesis_passed: bool,
+    final_evaluation_complete: bool,
+    probative_post_training: bool,
+    promotion_count: int,
+) -> dict[str, Any]:
+    """Separate operational completion from meaningful learning and curriculum claims."""
+
+    if (
+        type(hypothesis_passed) is not bool
+        or type(final_evaluation_complete) is not bool
+        or type(probative_post_training) is not bool
+    ):
+        raise TypeError("post-training classification flags must be booleans")
+    if type(promotion_count) is not int or promotion_count < 0:
+        raise ValueError("post-training promotion count must be non-negative")
+    if hypothesis_passed and (not final_evaluation_complete or not probative_post_training):
+        raise ValueError(
+            "meaningful post-training requires a complete final evaluation that is probative"
+        )
+    return {
+        "meaningful_post_training": hypothesis_passed,
+        "post_training_outcome": (
+            "MEANINGFUL_POST_TRAINING"
+            if hypothesis_passed
+            else (
+                "NEGATIVE_EXPERIMENT_COMPLETED"
+                if final_evaluation_complete and probative_post_training
+                else "INCONCLUSIVE_EXPERIMENT_COMPLETED"
+            )
+        ),
+        "dynamic_complexity_progressed": promotion_count >= 1,
+    }
 
 
 def resumed_crash_tail_actions_unaccounted(
@@ -1895,7 +2696,9 @@ def pending_optimizer_batch_from_resume(
     if state is None:
         return [], 0, [], []
     try:
-        pending_training_examples = list(state.get("pending_training_examples", []))
+        pending_training_examples = deserialize_pending_training_examples(
+            state.get("pending_training_examples", [])
+        )
         pending_policy_example_count = state.get("pending_policy_example_count", 0)
         pending_informative_group_ids = list(state.get("pending_informative_group_ids", []))
         pending_optimizer_input_group_ids = list(state.get("pending_optimizer_input_group_ids", []))
@@ -2505,7 +3308,7 @@ def validate_resume_state(
     model_revision: str,
 ) -> tuple[float, int, float, float]:
     if (
-        state.get("schema_version") != 4
+        state.get("schema_version") != 5
         or state.get("branch_evidence_complete") is not True
         or state.get("branch_evidence_limit") != MAXIMUM_BRANCH_EVIDENCE_SNAPSHOTS
         or state.get("branch_evidence_payload_limit_bytes") != MAXIMUM_BRANCH_EVIDENCE_PAYLOAD_BYTES
@@ -2622,6 +3425,65 @@ def ensure_dependencies() -> None:
         raise RuntimeError("pinned research dependency versions were not installed exactly")
 
 
+def require_cublas_workspace_config() -> str:
+    """Require the deterministic cuBLAS workspace policy before CUDA is used."""
+
+    observed = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if observed != CUBLAS_WORKSPACE_CONFIG:
+        raise RuntimeError(
+            "CUBLAS_WORKSPACE_CONFIG must be set to "
+            f"{CUBLAS_WORKSPACE_CONFIG!r} before the paid runtime starts"
+        )
+    return observed
+
+
+def configure_deterministic_torch_runtime(torch_module: Any) -> dict[str, Any]:
+    """Select and prove the fail-closed eager/math-SDP runtime."""
+
+    cublas_workspace_config = require_cublas_workspace_config()
+    torch_module.backends.cuda.matmul.allow_tf32 = False
+    torch_module.backends.cudnn.allow_tf32 = False
+    torch_module.backends.cudnn.benchmark = False
+    torch_module.backends.cudnn.deterministic = True
+    torch_module.backends.cuda.enable_flash_sdp(False)
+    torch_module.backends.cuda.enable_mem_efficient_sdp(False)
+    torch_module.backends.cuda.enable_math_sdp(True)
+    torch_module.use_deterministic_algorithms(True, warn_only=False)
+    evidence = {
+        "revision": DETERMINISTIC_RUNTIME_REVISION,
+        "attention_implementation": ATTENTION_IMPLEMENTATION,
+        "cublas_workspace_config": cublas_workspace_config,
+        "deterministic_algorithms": (torch_module.are_deterministic_algorithms_enabled()),
+        "deterministic_algorithms_warn_only": (
+            torch_module.is_deterministic_algorithms_warn_only_enabled()
+        ),
+        "flash_sdp_enabled": torch_module.backends.cuda.flash_sdp_enabled(),
+        "memory_efficient_sdp_enabled": (torch_module.backends.cuda.mem_efficient_sdp_enabled()),
+        "math_sdp_enabled": torch_module.backends.cuda.math_sdp_enabled(),
+        "cudnn_benchmark": torch_module.backends.cudnn.benchmark,
+        "cudnn_deterministic": torch_module.backends.cudnn.deterministic,
+        "tf32": bool(
+            torch_module.backends.cuda.matmul.allow_tf32 or torch_module.backends.cudnn.allow_tf32
+        ),
+    }
+    expected = {
+        "revision": DETERMINISTIC_RUNTIME_REVISION,
+        "attention_implementation": ATTENTION_IMPLEMENTATION,
+        "cublas_workspace_config": CUBLAS_WORKSPACE_CONFIG,
+        "deterministic_algorithms": True,
+        "deterministic_algorithms_warn_only": False,
+        "flash_sdp_enabled": False,
+        "memory_efficient_sdp_enabled": False,
+        "math_sdp_enabled": True,
+        "cudnn_benchmark": False,
+        "cudnn_deterministic": True,
+        "tf32": False,
+    }
+    if evidence != expected:
+        raise RuntimeError("the deterministic Torch runtime could not be established")
+    return evidence
+
+
 def run_experiment(runtime: RuntimeConfiguration) -> None:
     started = time.monotonic()
     attempt_started_at_unix_seconds = time.time()
@@ -2641,6 +3503,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         StoppingCriteriaList,
     )
 
+    deterministic_runtime = configure_deterministic_torch_runtime(torch)
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for repository repair post-training")
 
@@ -2672,7 +3535,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "policy_batching": "durable_cross_update_verified_fix_accumulation",
         "frontier_probe_offset": MAXIMUM_FRONTIER_PROBE_OFFSET,
         "frontier_probe_routing": "mixed_correctness_branch_contrast_feedback",
-        "training_level_allocation": "current_and_adaptive_probe_even_split",
+        "training_level_allocation": training_level_allocation_contract(),
         "task_sampling": "cumulative_validation_failure_structural_analogues",
         "curriculum_feedback_source": ("disabled_adapter_fixed_and_disjoint_rotating_validation"),
         "contrast_streak_reset": "new_validation_supported_training_family",
@@ -2704,15 +3567,11 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "target_runtime_seconds": target_seconds,
         "maximum_resume_gap_seconds": runtime.maximum_resume_gap_seconds,
         "validation_window_seed_stride": VALIDATION_WINDOW_SEED_STRIDE,
+        "deterministic_runtime": deterministic_runtime,
     }
     random.seed(experiment_seed)
     torch.manual_seed(experiment_seed)
     torch.cuda.manual_seed_all(experiment_seed)
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    torch.use_deterministic_algorithms(True, warn_only=True)
     device = torch.device("cuda")
     emit_progress(
         "model_loading",
@@ -2725,6 +3584,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         test_examples=runtime.test_examples,
         mastery_windows=runtime.mastery_windows,
         teacher_data_used=False,
+        deterministic_runtime=deterministic_runtime,
     )
     tokenizer = AutoTokenizer.from_pretrained(
         runtime.model_id,
@@ -2737,24 +3597,50 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         revision=runtime.model_revision,
         dtype=torch.bfloat16,
         use_safetensors=True,
+        attn_implementation=ATTENTION_IMPLEMENTATION,
     ).to(device)
     adapter_path = os.environ.get("EQUINOX_ADAPTER_PATH")
+    if adapter_path:
+        adapter_path, _ = authenticated_adapter_root_from_environment(adapter_path)
     checkpoints_root = os.path.join(adapter_path, "checkpoints") if adapter_path else None
     latest_checkpoint_path = (
         os.path.join(checkpoints_root, "latest.json") if checkpoints_root else None
     )
     checkpoint_directory: str | None = None
-    if latest_checkpoint_path and os.path.isfile(latest_checkpoint_path):
-        with open(latest_checkpoint_path, encoding="utf-8") as handle:
-            checkpoint_metadata = json.load(handle)
-        checkpoint_name = checkpoint_metadata.get("checkpoint")
-        if (
-            not isinstance(checkpoint_name, str)
-            or not checkpoint_name.startswith("update-")
-            or "/" in checkpoint_name
-        ):
-            raise RuntimeError("training checkpoint pointer is invalid")
-        checkpoint_directory = os.path.join(checkpoints_root, checkpoint_name)
+    authenticated_checkpoint: AuthenticatedCheckpoint | None = None
+    checkpoint_authentication_key: bytes | None = None
+    checkpoint_identity: dict[str, str] | None = None
+    checkpoint_generation = 0
+    checkpoint_manifest_digest: str | None = None
+    if checkpoints_root:
+        checkpoint_authentication_key = checkpoint_authentication_key_from_environment()
+        checkpoint_identity = checkpoint_authentication_identity(
+            model_revision=runtime.model_revision,
+        )
+        expected_generation, expected_manifest_digest = expected_checkpoint_from_environment(
+            runtime.workload_attempt
+        )
+        pointer_exists = os.path.lexists(latest_checkpoint_path)
+        if runtime.workload_attempt == 1:
+            if pointer_exists:
+                raise RuntimeError("first attempt found an unexpected checkpoint")
+        else:
+            if (
+                not pointer_exists
+                or expected_generation is None
+                or expected_manifest_digest is None
+            ):
+                raise RuntimeError("retry requires an authenticated checkpoint")
+            authenticated_checkpoint = load_authenticated_checkpoint(
+                checkpoints_root=checkpoints_root,
+                authentication_key=checkpoint_authentication_key,
+                authentication_identity=checkpoint_identity,
+                expected_generation=expected_generation,
+                expected_manifest_digest=expected_manifest_digest,
+            )
+            checkpoint_directory = authenticated_checkpoint.private_directory
+            checkpoint_generation = authenticated_checkpoint.generation
+            checkpoint_manifest_digest = authenticated_checkpoint.manifest_digest
     if checkpoint_directory:
         model = PeftModel.from_pretrained(
             base_model,
@@ -2791,8 +3677,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         resume_state = torch.load(
             os.path.join(checkpoint_directory, "training-state.pt"),
             map_location=device,
-            weights_only=False,
+            weights_only=True,
         )
+        if (
+            not isinstance(resume_state, dict)
+            or resume_state.get("checkpoint_generation") != checkpoint_generation
+        ):
+            raise RuntimeError("training checkpoint generation is invalid")
         (
             prior_elapsed_seconds,
             attempt_count,
@@ -2807,6 +3698,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             model_revision=runtime.model_revision,
         )
         optimizer.load_state_dict(resume_state["optimizer"])
+        shutil.rmtree(checkpoint_directory, ignore_errors=True)
     else:
         if runtime.workload_attempt != 1:
             raise RuntimeError("a retry requires a valid training checkpoint")
@@ -3482,16 +4374,22 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         torch.cuda.set_rng_state_all(resume_state["cuda_rng_states"])
 
     def persist_training_checkpoint(update: int) -> None:
+        nonlocal checkpoint_generation
+        nonlocal checkpoint_manifest_digest
         if not checkpoints_root or not latest_checkpoint_path:
             return
+        if checkpoint_authentication_key is None or checkpoint_identity is None:
+            raise RuntimeError("checkpoint authentication context is unavailable")
         persisted_branch_completion_tokens = validate_sampled_completion_token_accounting(
             branch_snapshots,
             total_sampled_completion_tokens=total_sampled_completion_tokens,
             discarded_sampled_completion_tokens=discarded_sampled_completion_tokens,
         )
         checkpoint_name = f"update-{update:04d}"
+        next_checkpoint_generation = checkpoint_generation + 1
         state = {
-            "schema_version": 4,
+            "schema_version": 5,
+            "checkpoint_generation": next_checkpoint_generation,
             "workload_revision": WORKLOAD_REVISION,
             "model_revision": runtime.model_revision,
             "objective_id": OBJECTIVE_ID,
@@ -3528,7 +4426,9 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "effective_policy_update_count": effective_policy_update_count,
             "retained_policy_update_count": retained_policy_update_count,
             "retention_rollback_count": retention_rollback_count,
-            "pending_training_examples": pending_training_examples,
+            "pending_training_examples": serialize_pending_training_examples(
+                pending_training_examples
+            ),
             "pending_policy_example_count": pending_policy_example_count,
             "pending_informative_group_ids": pending_informative_group_ids,
             "pending_optimizer_input_group_ids": pending_optimizer_input_group_ids,
@@ -3568,7 +4468,7 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             "torch_rng_state": torch.get_rng_state(),
             "cuda_rng_states": torch.cuda.get_rng_state_all(),
         }
-        persist_checkpoint(
+        commit = persist_checkpoint(
             checkpoints_root=checkpoints_root,
             latest_checkpoint_path=latest_checkpoint_path,
             checkpoint_name=checkpoint_name,
@@ -3578,6 +4478,27 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
                 safe_serialization=True,
             ),
             save_state=torch.save,
+            generation=next_checkpoint_generation,
+            authentication_key=checkpoint_authentication_key,
+            authentication_identity=checkpoint_identity,
+            expected_previous_generation=(
+                checkpoint_generation if checkpoint_generation > 0 else None
+            ),
+            expected_previous_manifest_digest=checkpoint_manifest_digest,
+        )
+        checkpoint_generation = commit.generation
+        checkpoint_manifest_digest = commit.manifest_digest
+        emit_progress(
+            "checkpointing",
+            "Authenticated checkpoint committed.",
+            runtime_configuration=runtime,
+            preserve_context=True,
+            checkpoint_generation=checkpoint_generation,
+            checkpoint_manifest_digest=checkpoint_manifest_digest,
+            checkpoint_name=commit.checkpoint_name,
+            update=update,
+            current_level=level,
+            elapsed_seconds=round(cumulative_elapsed_seconds(), 3),
         )
 
     def rollback_unvalidated_retention(update: int, *, reason: str) -> bool:
@@ -3644,12 +4565,24 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             training_complete = True
             persist_training_checkpoint(updates_completed)
             break
+        pre_first_retained_promotion = len(promotions) == 0
+        allocation_probe_level = (
+            min(MAXIMUM_COMPLEXITY_LEVEL, level + 1)
+            if pre_first_retained_promotion
+            else frontier_probe_level
+        )
         training_allocation = training_level_allocation(
             level,
             runtime.training_tasks_per_update,
-            probe_level=frontier_probe_level,
+            probe_level=allocation_probe_level,
+            retained_promotion_count=len(promotions),
         )
-        frontier_probe_level_used = frontier_probe_level
+        frontier_probe_level_used = allocation_probe_level
+        training_allocation_phase = (
+            "before_first_retained_promotion_3_to_1"
+            if pre_first_retained_promotion
+            else "after_first_retained_promotion_2_to_2"
+        )
         tasks_by_level: dict[int, list[RepairTask]] = {}
         for task_level in sorted(set(training_allocation)):
             tasks_by_level[task_level] = failure_directed_training_tasks(
@@ -3934,6 +4867,14 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
             active_complexity=asdict(COMPLEXITY_LEVELS[level]),
             curriculum_decision={
                 "reason": "active_level_frontier_with_mastered_level_replay",
+                "training_level_allocation_revision": (TRAINING_LEVEL_ALLOCATION_REVISION),
+                "training_level_allocation_phase": training_allocation_phase,
+                "training_level_allocation_transition": (
+                    training_level_allocation_transition_evidence(
+                        promotions,
+                        observed_updates=update,
+                    )
+                ),
                 "training_level_allocation": training_allocation,
                 "frontier_probe_levels": sorted(
                     candidate_level
@@ -4986,6 +5927,12 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "experiment_completed": True,
         "post_training_completed": True,
         "hypothesis_passed": hypothesis_passed,
+        **post_training_outcome_classification(
+            hypothesis_passed=hypothesis_passed,
+            final_evaluation_complete=final_evaluation_complete,
+            probative_post_training=probative_post_training,
+            promotion_count=len(promotions),
+        ),
         "workload": "repository-repair-restored-continuation-post-training",
         "workload_revision": WORKLOAD_REVISION,
         "algorithm": "verified-fix-group-conditioned-policy-gradient",
@@ -5036,11 +5983,8 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "trainable_parameters": trainable_parameters,
         "seed": experiment_seed,
         "determinism": {
+            **deterministic_runtime,
             "cuda_seeded_all_devices": True,
-            "deterministic_algorithms": "warn_on_unavailable_kernel",
-            "cudnn_benchmark": False,
-            "cudnn_deterministic": True,
-            "tf32": False,
         },
         "mastery_threshold": MASTERY_THRESHOLD,
         "mastery_windows": runtime.mastery_windows,
@@ -5058,6 +6002,13 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "maximum_sampled_complexity_level": maximum_sampled_complexity_level,
         "promotion_count": len(promotions),
         "promotions": promotions,
+        "training_level_allocation_contract": training_level_allocation_contract(),
+        "training_level_allocation_transition": (
+            training_level_allocation_transition_evidence(
+                promotions,
+                observed_updates=updates_completed,
+            )
+        ),
         "best_validation": best_validation,
         "rollback_applied": rollback_applied,
         "retention_transaction_revision": ACTIVE_RETENTION_TRANSACTION_REVISION,
@@ -5172,11 +6123,20 @@ def run_experiment(runtime: RuntimeConfiguration) -> None:
         "training_state_checkpointed": bool(
             latest_checkpoint_path and os.path.isfile(latest_checkpoint_path)
         ),
+        "checkpoint_authentication_revision": (
+            CHECKPOINT_AUTHENTICATION_REVISION if checkpoints_root else None
+        ),
+        "checkpoint_authentication_mechanism_digest": (
+            checkpoint_authentication_mechanism_digest() if checkpoints_root else None
+        ),
+        "checkpoint_generation": checkpoint_generation if checkpoints_root else None,
+        "checkpoint_manifest_digest": (checkpoint_manifest_digest if checkpoints_root else None),
         "optimization_seed_count": 1,
         "probative_post_training": probative_post_training,
         "claim_strength": post_training_claim_strength(
             final_evaluation_complete=final_evaluation_complete,
             probative_post_training=probative_post_training,
+            hypothesis_passed=hypothesis_passed,
         ),
         "retention_passed": retention_passed,
         "restored_branching_observed": restored_branching_observed,

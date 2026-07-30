@@ -197,7 +197,7 @@ export function buildBranchFlow(
       selected: actionId === selectedActionId,
       data: {
         actionId,
-        title: `Prefix ${position + 1}`,
+        title: `Prefix ${step.index + 1}`,
         detail: stepOutcome(step),
         action: step.action,
         passed: step.accepted,
@@ -245,8 +245,8 @@ export function buildBranchFlow(
           actionId,
           title:
             stepPosition === 0
-              ? `Sibling ${sibling.index + 1} · 1`
-              : `Step ${stepPosition + 1}`,
+              ? `Sibling ${sibling.index + 1} · ${step.index + 1}`
+              : `Step ${step.index + 1}`,
           detail: stepOutcome(step),
           action: step.action,
           reward: step.terminal ? siblingReturn(sibling) : undefined,
@@ -313,8 +313,8 @@ function buildIndependentBranchFlow(
           actionId,
           title:
             stepPosition === 0
-              ? `Trajectory ${sibling.index + 1} · 1`
-              : `Step ${stepPosition + 1}`,
+              ? `Trajectory ${sibling.index + 1} · ${step.index + 1}`
+              : `Step ${step.index + 1}`,
           detail: stepOutcome(step),
           action: step.action,
           reward: step.terminal ? siblingReturn(sibling) : undefined,
@@ -609,7 +609,7 @@ function MultiStepBranchOutline({
           </tr>
         </thead>
         <tbody>
-          {snapshot.shared_prefix?.steps.map((step, index) => {
+          {snapshot.shared_prefix?.steps.map((step) => {
             const actionId = prefixActionId(step);
             return (
               <BranchStepRow
@@ -617,14 +617,14 @@ function MultiStepBranchOutline({
                 lane="Shared"
                 actionId={actionId}
                 step={step}
-                displayIndex={index + 1}
+                displayIndex={step.index + 1}
                 selected={actionId === selectedActionId}
                 select={() => selectAction(actionId)}
               />
             );
           })}
           {snapshot.siblings.flatMap((sibling) =>
-            (sibling.steps ?? []).map((step, index) => {
+            (sibling.steps ?? []).map((step) => {
               const actionId = siblingActionId(sibling, step);
               return (
                 <BranchStepRow
@@ -634,7 +634,7 @@ function MultiStepBranchOutline({
                   }`}
                   actionId={actionId}
                   step={step}
-                  displayIndex={index + 1}
+                  displayIndex={step.index + 1}
                   reward={step.terminal ? siblingReturn(sibling) : undefined}
                   selected={actionId === selectedActionId}
                   select={() => selectAction(actionId, sibling.index)}
@@ -723,12 +723,16 @@ function BranchInspector({
       snapshot.optimizer_update?.attempted_policy_update_index,
   );
   const reward = sibling ? siblingReturn(sibling) : (step?.reward ?? 0);
-  const status = step?.accepted
-    ? step.terminal && !step.verifier_passed
-      ? "FAILED"
-      : "VERIFIED"
+  const status = step
+    ? !step.accepted
+      ? "REJECTED"
+      : step.terminal
+        ? step.verifier_passed
+          ? "VERIFIED"
+          : "FAILED"
+        : "ACCEPTED"
     : sibling?.passed
-      ? "SUCCEEDED"
+      ? "VERIFIED"
       : "FAILED";
   return (
     <aside
@@ -816,8 +820,34 @@ function BranchInspector({
               <pre>{step.observation}</pre>
             </section>
             <details>
-              <summary>State</summary>
-              <code>{step.state_digest_after}</code>
+              <summary>Evidence</summary>
+              <dl className="branch-evidence-facts">
+                <CodeFact label="Snapshot" value={snapshot.snapshot_id} />
+                <CodeFact label="Step" value={step.step_id} />
+                <CodeFact
+                  label="State before"
+                  value={step.state_digest_before}
+                />
+                <CodeFact label="State after" value={step.state_digest_after} />
+                {snapshot.checkpoint?.payload_digest ? (
+                  <CodeFact
+                    label="Checkpoint"
+                    value={snapshot.checkpoint.payload_digest}
+                  />
+                ) : null}
+                {snapshot.initial_state?.payload_digest ? (
+                  <CodeFact
+                    label="Initial state"
+                    value={snapshot.initial_state.payload_digest}
+                  />
+                ) : null}
+                {sibling?.trajectory_digest ? (
+                  <CodeFact
+                    label="Trajectory"
+                    value={sibling.trajectory_digest}
+                  />
+                ) : null}
+              </dl>
             </details>
             {sibling?.reward_components ? (
               <details>
@@ -1085,6 +1115,24 @@ function BranchInspector({
               <span>Raw response</span>
               <pre>{sibling.response || "Empty response"}</pre>
             </section>
+            {sibling.trajectory_digest ? (
+              <details>
+                <summary>Evidence</summary>
+                <dl className="branch-evidence-facts">
+                  <CodeFact label="Snapshot" value={snapshot.snapshot_id} />
+                  <CodeFact
+                    label="Trajectory"
+                    value={sibling.trajectory_digest}
+                  />
+                  {snapshot.checkpoint?.payload_digest ? (
+                    <CodeFact
+                      label="Checkpoint"
+                      value={snapshot.checkpoint.payload_digest}
+                    />
+                  ) : null}
+                </dl>
+              </details>
+            ) : null}
           </div>
         </>
       ) : null}
@@ -1126,19 +1174,19 @@ function branchNavigation(
     }));
   }
   const items: BranchSelection[] =
-    snapshot.shared_prefix?.steps.map((step, index) => ({
+    snapshot.shared_prefix?.steps.map((step) => ({
       actionId: prefixActionId(step),
-      title: `Shared prefix · step ${index + 1}`,
+      title: `Shared prefix · step ${step.index + 1}`,
       sibling: null,
       step,
     })) ?? [];
   if (selectedSibling) {
     items.push(
-      ...(selectedSibling.steps ?? []).map((step, index) => ({
+      ...(selectedSibling.steps ?? []).map((step) => ({
         actionId: siblingActionId(selectedSibling, step),
         title: `${
           independent ? "Trajectory" : "Sibling"
-        } ${selectedSibling.index + 1} · step ${index + 1}`,
+        } ${selectedSibling.index + 1} · step ${step.index + 1}`,
         sibling: selectedSibling,
         step,
       })),
@@ -1220,6 +1268,17 @@ function Fact({ label, value }: { label: string; value: string }) {
     <div>
       <dt>{label}</dt>
       <dd>{value}</dd>
+    </div>
+  );
+}
+
+function CodeFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>
+        <code title={value}>{value}</code>
+      </dd>
     </div>
   );
 }

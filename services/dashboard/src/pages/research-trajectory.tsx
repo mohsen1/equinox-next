@@ -26,8 +26,13 @@ import {
   StatusBadge,
 } from "../components";
 import { Link, useParams, useSearchParams } from "../router";
+import {
+  dynamicComplexityProgressLabel,
+  postTrainingOutcomeLabel,
+} from "../runs-helpers";
 import type {
   ResearchBranchSnapshot,
+  ResearchComputeExecution,
   ResearchLevelObservation,
   ResearchTrajectory,
   ResearchTrajectoryCheckpoint,
@@ -302,6 +307,7 @@ export function ResearchTrajectoryPage() {
             <div className="research-trajectory-toolbar">
               <div className="trajectory-toolbar-main">
                 <div className="trajectory-result">
+                  <TrajectoryRunOutcome run={run} />
                   {trajectory.initial_exact_rate != null &&
                   trajectory.final_exact_rate != null ? (
                     <span>
@@ -446,6 +452,44 @@ export function ResearchTrajectoryPage() {
           </div>
         ) : null}
       </AsyncState>
+    </>
+  );
+}
+
+export function TrajectoryRunOutcome({
+  run,
+}: {
+  run: ResearchComputeExecution;
+}) {
+  const { progress } = run;
+  const hasOutcome =
+    typeof progress.post_training_outcome === "string" ||
+    typeof progress.meaningful_post_training === "boolean";
+  const complexityProgressed =
+    typeof progress.dynamic_complexity_progressed === "boolean"
+      ? progress.dynamic_complexity_progressed
+      : null;
+
+  if (!hasOutcome && complexityProgressed === null) return null;
+  return (
+    <>
+      {hasOutcome ? (
+        <span>
+          {postTrainingOutcomeLabel(
+            progress.post_training_outcome,
+            progress.meaningful_post_training,
+          )}
+        </span>
+      ) : null}
+      {complexityProgressed !== null ? (
+        <span>
+          {complexityProgressed
+            ? `Complexity ${dynamicComplexityProgressLabel(
+                complexityProgressed,
+              ).toLowerCase()}`
+            : "No complexity progression"}
+        </span>
+      ) : null}
     </>
   );
 }

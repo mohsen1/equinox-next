@@ -18,6 +18,10 @@ import {
   formatSignedReward,
 } from "../format";
 import {
+  dynamicComplexityProgressLabel,
+  postTrainingOutcomeLabel,
+} from "../runs-helpers";
+import {
   decodeProofDetail,
   decodeProofsResponse,
   type ProofsResponse,
@@ -73,6 +77,10 @@ export function ProofsPage() {
 }
 
 function ProofRow({ proof }: { proof: ResearchProofSummary }) {
+  const hasOutcome =
+    typeof proof.learning.post_training_outcome === "string" ||
+    typeof proof.learning.meaningful_post_training === "boolean" ||
+    typeof proof.learning.claim_strength === "string";
   return (
     <Link className="proof-row" to={`/proofs/${proof.proof_id}`}>
       <span className="proof-identity">
@@ -87,8 +95,15 @@ function ProofRow({ proof }: { proof: ResearchProofSummary }) {
         {formatRelativeTime(proof.completed_at)}
       </time>
       <span className="proof-learning">
-        {formatReward(proof.learning.initial_reward)} →{" "}
-        {formatReward(proof.learning.final_reward)}
+        {hasOutcome
+          ? postTrainingOutcomeLabel(
+              proof.learning.post_training_outcome,
+              proof.learning.meaningful_post_training,
+              proof.learning.claim_strength ?? null,
+            )
+          : `${formatReward(proof.learning.initial_reward)} → ${formatReward(
+              proof.learning.final_reward,
+            )}`}
         <small>{formatSignedReward(proof.learning.reward_gain)}</small>
       </span>
       <span className="proof-hardware">
@@ -162,6 +177,12 @@ function ProofEvidence({ proof }: { proof: ResearchProofDetail }) {
     typeof reached === "number"
       ? `Level ${reached}${typeof maximum === "number" ? ` of ${maximum}` : ""}`
       : "Unavailable";
+  const curriculumProgress =
+    typeof proof.curriculum.dynamic_complexity_progressed === "boolean"
+      ? `${curriculum} · ${dynamicComplexityProgressLabel(
+          proof.curriculum.dynamic_complexity_progressed,
+        ).toLowerCase()}`
+      : curriculum;
 
   return (
     <>
@@ -181,13 +202,12 @@ function ProofEvidence({ proof }: { proof: ResearchProofDetail }) {
               value: formatSignedReward(proof.learning.reward_gain),
             },
             {
-              label: "Claim",
-              value:
-                proof.learning.claim_strength === "EXPLORATORY_SINGLE_SEED"
-                  ? "Exploratory · one seed"
-                  : proof.learning.claim_strength
-                    ? friendlyStatus(proof.learning.claim_strength)
-                    : "Not recorded",
+              label: "Post-training",
+              value: postTrainingOutcomeLabel(
+                proof.learning.post_training_outcome,
+                proof.learning.meaningful_post_training,
+                proof.learning.claim_strength ?? null,
+              ),
             },
           ]}
         />
@@ -273,7 +293,7 @@ function ProofEvidence({ proof }: { proof: ResearchProofDetail }) {
         <Section title="Curriculum">
           <KeyValue
             items={[
-              { label: "Progression", value: curriculum },
+              { label: "Progression", value: curriculumProgress },
               {
                 label: "Promotions",
                 value: proof.curriculum.promotion_count ?? "Unavailable",
@@ -344,6 +364,29 @@ function ProofEvidence({ proof }: { proof: ResearchProofDetail }) {
                 label: "Teardown",
                 value: proof.teardown_confirmed ? "Confirmed" : "Unconfirmed",
               },
+              {
+                label: "Publication",
+                value:
+                  proof.evidence.artifact_publication_status ===
+                  "legacy_non_atomic"
+                    ? "Legacy · non-atomic"
+                    : proof.evidence.artifact_set_committed
+                      ? "Committed"
+                      : "Not committed",
+              },
+              ...(proof.evidence.artifact_set_manifest_digest
+                ? [
+                    {
+                      label: "Artifact set",
+                      value: (
+                        <MachineId
+                          value={proof.evidence.artifact_set_manifest_digest}
+                        />
+                      ),
+                      span: true,
+                    },
+                  ]
+                : []),
             ]}
           />
         </Section>

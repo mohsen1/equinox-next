@@ -38,7 +38,7 @@ except ModuleNotFoundError:
 SCREEN_SCHEMA_VERSION = 1
 SCREEN_LEVELS = ("0",)
 SCREEN_SHARED_PREFIX_CHECKPOINT_STRATEGY = "repository_root_observed@1"
-SCREEN_RUNTIME_TEST_EXAMPLES = 4
+SCREEN_RUNTIME_TEST_EXAMPLES = 0
 SCREEN_FINAL_EVALUATION_RESERVE_SECONDS = 0
 ROOT_CHECKPOINT_PHASE_INSTRUCTION = (
     "Observe the repository root before branching. If no repository path has been "
@@ -176,6 +176,32 @@ def fail_closed_prompt_tokenizer(tokenizer: Any) -> FailClosedPromptTokenizer:
     return FailClosedPromptTokenizer(tokenizer)
 
 
+def load_from_verified_snapshot(
+    original_load: Any,
+    evidence: ScreenEvidence,
+    manifest: dict[str, Any],
+    model_id: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    """Redirect an exact pinned-identity request to the immutable verified copy."""
+
+    if (
+        model_id != manifest["model"]["id"]
+        or kwargs.get("revision") != manifest["model"]["revision"]
+    ):
+        raise RuntimeError("model loader identity drifted from eligibility profile")
+    if kwargs.get("local_files_only") is False:
+        raise RuntimeError("network model loading is forbidden")
+    if not evidence.pinned_snapshot_ready or not evidence.pinned_snapshot_path:
+        raise RuntimeError("the verified local snapshot is unavailable")
+    local_kwargs = dict(kwargs)
+    local_kwargs["local_files_only"] = True
+    local_kwargs.pop("cache_dir", None)
+    local_kwargs.pop("revision", None)
+    return original_load(evidence.pinned_snapshot_path, *args, **local_kwargs)
+
+
 @dataclass
 class BaselineOutcome:
     level: int
@@ -211,6 +237,12 @@ class ScreenEvidence:
     pinned_snapshot_ready: bool = False
     pinned_snapshot_path: str | None = None
     pinned_snapshot_digest: str | None = None
+    volume_readiness_receipt: dict[str, Any] | None = None
+    retention_checkpoint_evidence: dict[str, Any] | None = None
+    live_stage_activation: dict[str, Any] | None = None
+    dependency_quarantine_evidence: dict[str, Any] | None = None
+    code_materialization_evidence: dict[str, Any] | None = None
+    preparation_evidence_complete: bool = False
     cache_free_bytes: int = 0
     offline_mode_active: bool = False
     test_split_accessed: bool = False
@@ -224,6 +256,7 @@ class ScreenEvidence:
     base_bf16_parameter_count: int = 0
     trainable_parameter_count: int = 0
     model_parameter_count_with_adapter: int = 0
+    deterministic_runtime: dict[str, Any] | None = None
     capacity_smoke_completed_at: float | None = None
     baseline_completed_at: float | None = None
     runtime_configuration: Any | None = None
@@ -375,14 +408,14 @@ def _snapshot_candidates(manifest: dict[str, Any]) -> tuple[Path, ...]:
 def verify_pinned_snapshot(
     manifest: dict[str, Any],
 ) -> tuple[bool, str | None, str | None]:
-    """Hash the complete pinned snapshot without contacting the hub."""
+    """Verify once into a private snapshot that the model loader can safely reuse."""
 
     for snapshot in _snapshot_candidates(manifest):
         try:
-            verification = gate.verify_local_snapshot(manifest, snapshot)
+            verification = gate.materialize_verified_snapshot(manifest, snapshot)
         except gate.GateError:
             continue
-        return True, str(snapshot), verification["snapshot_digest"]
+        return True, verification["snapshot_path"], verification["snapshot_digest"]
     return False, None, None
 
 
@@ -412,6 +445,34 @@ def verify_prewarmed_dependencies(
     return observed
 
 
+def _read_json_object(path: Path, name: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"{name} is unavailable or invalid") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{name} must be a JSON object")
+    return payload
+
+
+def _required_environment(name: str) -> str:
+    value = os.environ.get(name)
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"integrated preparation is missing {name}")
+    return value
+
+
+def _required_positive_environment_integer(name: str) -> int:
+    value = _required_environment(name)
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise RuntimeError(f"integrated preparation {name} is invalid") from error
+    if parsed <= 0:
+        raise RuntimeError(f"integrated preparation {name} is invalid")
+    return parsed
+
+
 def capture_cuda_evidence(evidence: ScreenEvidence, torch_module: Any) -> None:
     """Capture hardware facts after synchronizing outstanding CUDA work."""
 
@@ -432,8 +493,10 @@ def verify_pre_model_readiness(
     *,
     torch_module: Any | None = None,
     snapshot_verifier: Any | None = None,
+    version_reader: Any = importlib.metadata.version,
+    dependency_importer: Any = importlib.import_module,
 ) -> bool:
-    """Check cheap runtime invariants before hashing the pinned 15 GB snapshot."""
+    """Consume exact bootstrap evidence and recheck the live paid runtime."""
 
     if torch_module is None:
         import torch
@@ -445,20 +508,178 @@ def verify_pre_model_readiness(
     evidence.bf16_supported = hardware.bf16_supported
     evidence.offline_mode_active = offline_mode_active()
     if not evidence.offline_mode_active:
-        return False
+        raise RuntimeError("the paid screen is not in exact offline model mode")
 
-    (
-        evidence.pinned_snapshot_ready,
-        evidence.pinned_snapshot_path,
-        evidence.pinned_snapshot_digest,
-    ) = (snapshot_verifier or verify_pinned_snapshot)(manifest)
-    if evidence.pinned_snapshot_path is not None:
-        evidence.cache_free_bytes = shutil.disk_usage(evidence.pinned_snapshot_path).free
-        evidence.pinned_snapshot_ready = (
-            evidence.pinned_snapshot_ready
-            and evidence.cache_free_bytes >= manifest["hardware"]["minimum_free_cache_bytes"]
-        )
-    return evidence.pinned_snapshot_ready
+    volume_id = _required_environment("EQUINOX_RUNPOD_NETWORK_VOLUME_ID")
+    data_center_id = _required_environment("EQUINOX_RUNPOD_NETWORK_VOLUME_DATA_CENTER_ID")
+    volume_size_gb = _required_positive_environment_integer("EQUINOX_RUNPOD_NETWORK_VOLUME_SIZE_GB")
+    receipt_path = Path(_required_environment("EQUINOX_VOLUME_READINESS_RECEIPT_PATH"))
+    retention_path = Path(_required_environment("EQUINOX_TORCH_RETENTION_EVIDENCE_PATH"))
+    dependency_evidence_path = Path(
+        _required_environment("EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_PATH")
+    )
+    dependency_evidence_digest = _required_environment(
+        "EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_SHA256"
+    )
+    dependency_lock_digest = _required_environment("EQUINOX_DEPENDENCY_LOCK_SHA256")
+    if dependency_lock_digest != manifest["materialization"]["dependency_lock"]["digest"]:
+        raise RuntimeError("integrated preparation dependency lock digest is invalid")
+    dependency_private_tree_digest = _required_environment("EQUINOX_DEPENDENCY_PRIVATE_TREE_SHA256")
+    code_evidence_path = Path(_required_environment("EQUINOX_CODE_MATERIALIZATION_EVIDENCE_PATH"))
+    code_evidence_digest = _required_environment("EQUINOX_CODE_MATERIALIZATION_EVIDENCE_SHA256")
+    code_private_tree_digest = _required_environment("EQUINOX_CODE_PRIVATE_TREE_SHA256")
+    head_commit = _required_environment("EQUINOX_SOURCE_HEAD_COMMIT")
+    workload_bundle_digest = _required_environment("EQUINOX_BUNDLE_SHA256")
+    workload_bundle_size_bytes = _required_positive_environment_integer("EQUINOX_BUNDLE_SIZE_BYTES")
+    workload_bundle_path = _required_environment("EQUINOX_BUNDLE_VOLUME_PATH")
+    bundle_stage_receipt_digest = _required_environment("EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256")
+    bootstrap_source_digest = _required_environment("EQUINOX_BOOTSTRAP_SOURCE_SHA256")
+    dependency_evidence = _read_json_object(
+        dependency_evidence_path,
+        "dependency quarantine evidence",
+    )
+    code_evidence = _read_json_object(
+        code_evidence_path,
+        "code materialization evidence",
+    )
+    dependency_verification = gate.verify_dependency_quarantine_evidence(
+        manifest,
+        dependency_evidence,
+        workload_bundle_path=workload_bundle_path,
+    )
+    code_verification = gate.verify_code_materialization_evidence(
+        manifest,
+        code_evidence,
+        workload_bundle_digest=workload_bundle_digest,
+        workload_bundle_size_bytes=workload_bundle_size_bytes,
+        workload_bundle_path=workload_bundle_path,
+    )
+    for observed, expected, name in (
+        (
+            dependency_verification["evidence_digest"],
+            dependency_evidence_digest,
+            "dependency quarantine evidence digest",
+        ),
+        (
+            dependency_verification["private_tree_digest"],
+            dependency_private_tree_digest,
+            "dependency private tree digest",
+        ),
+        (
+            code_verification["evidence_digest"],
+            code_evidence_digest,
+            "code materialization evidence digest",
+        ),
+        (
+            code_verification["private_tree_digest"],
+            code_private_tree_digest,
+            "code private tree digest",
+        ),
+    ):
+        if observed != expected:
+            raise RuntimeError(f"integrated preparation {name} is inconsistent")
+    receipt = _read_json_object(receipt_path, "volume readiness receipt")
+    receipt_verification = gate.verify_volume_readiness_receipt(
+        manifest,
+        receipt,
+        {
+            "id": volume_id,
+            "dataCenterId": data_center_id,
+            "size": volume_size_gb,
+        },
+    )
+    for key, expected in {
+        "dependency_lock_digest": dependency_lock_digest,
+        "dependency_quarantine_evidence_digest": dependency_evidence_digest,
+        "dependency_private_tree_digest": dependency_private_tree_digest,
+        "code_materialization_evidence_digest": code_evidence_digest,
+        "code_private_tree_digest": code_private_tree_digest,
+    }.items():
+        if receipt_verification.get(key) != expected:
+            raise RuntimeError(f"volume readiness receipt {key} is inconsistent")
+    dependency_versions = verify_prewarmed_dependencies(
+        manifest,
+        version_reader=version_reader,
+    )
+    gate.verify_dependency_import_smoke(
+        manifest,
+        importer=dependency_importer,
+        dependency_root=Path(dependency_evidence["private_root"]),
+    )
+    if receipt["dependencies"] != dependency_versions:
+        raise RuntimeError("the live dependency versions do not match the attested volume receipt")
+
+    ready, snapshot_path, verified_digest = (snapshot_verifier or verify_pinned_snapshot)(manifest)
+    if (
+        ready is not True
+        or not isinstance(snapshot_path, str)
+        or not snapshot_path
+        or verified_digest != receipt_verification["snapshot_digest"]
+    ):
+        raise RuntimeError("the pinned model snapshot recheck did not match its receipt")
+    evidence.cache_free_bytes = shutil.disk_usage(
+        manifest["artifact_readiness"]["cache_directory"]
+    ).free
+    if evidence.cache_free_bytes < manifest["hardware"]["minimum_free_cache_bytes"]:
+        raise RuntimeError("the mounted model cache does not have the required free capacity")
+    evidence.pinned_snapshot_ready = True
+    evidence.pinned_snapshot_path = snapshot_path
+    evidence.pinned_snapshot_digest = receipt_verification["snapshot_digest"]
+
+    retention = _read_json_object(
+        retention_path,
+        "Torch retention checkpoint evidence",
+    )
+    retention_verification = gate.verify_retention_checkpoint_evidence(
+        manifest,
+        retention,
+        head_commit=head_commit,
+        workload_bundle_digest=workload_bundle_digest,
+        workload_bundle_size_bytes=workload_bundle_size_bytes,
+        workload_bundle_path=workload_bundle_path,
+        bundle_stage_receipt_digest=bundle_stage_receipt_digest,
+        bootstrap_source_digest=bootstrap_source_digest,
+        volume_readiness_receipt_digest=receipt_verification["receipt_digest"],
+        dependency_lock_digest=dependency_lock_digest,
+        dependency_quarantine_evidence_digest=dependency_evidence_digest,
+        dependency_private_tree_digest=dependency_private_tree_digest,
+        code_materialization_evidence_digest=code_evidence_digest,
+        code_private_tree_digest=code_private_tree_digest,
+        network_volume_id=volume_id,
+        data_center_id=data_center_id,
+        volume_size_gb=volume_size_gb,
+    )
+    activation = gate.build_live_stage_activation(
+        manifest,
+        head_commit=head_commit,
+        workload_bundle_digest=workload_bundle_digest,
+        workload_bundle_size_bytes=workload_bundle_size_bytes,
+        workload_bundle_path=workload_bundle_path,
+        bundle_stage_receipt_digest=bundle_stage_receipt_digest,
+        bootstrap_source_digest=bootstrap_source_digest,
+        volume_readiness_receipt_digest=receipt_verification["receipt_digest"],
+        torch_retention_evidence_digest=retention_verification["evidence_digest"],
+        dependency_lock_digest=dependency_lock_digest,
+        dependency_quarantine_evidence_digest=dependency_evidence_digest,
+        dependency_private_tree_digest=dependency_private_tree_digest,
+        code_materialization_evidence_digest=code_evidence_digest,
+        code_private_tree_digest=code_private_tree_digest,
+        network_volume_id=volume_id,
+        data_center_id=data_center_id,
+        volume_size_gb=volume_size_gb,
+    )
+    if (
+        _required_environment("EQUINOX_LIVE_STAGE_ACTIVATION_SHA256")
+        != activation["activation_digest"]
+    ):
+        raise RuntimeError("the live-stage activation digest does not match preparation")
+    evidence.volume_readiness_receipt = receipt
+    evidence.retention_checkpoint_evidence = retention
+    evidence.live_stage_activation = activation
+    evidence.dependency_quarantine_evidence = dependency_evidence
+    evidence.code_materialization_evidence = code_evidence
+    evidence.preparation_evidence_complete = True
+    return True
 
 
 def _nested_equal(left: Any, right: Any, torch_module: Any) -> bool:
@@ -911,6 +1132,40 @@ def build_screen_result(
         and evidence.optimizer_step_calls >= 1
         and not evidence.policy_mutation_detected
     )
+    preparation_evidence_complete = (
+        evidence.preparation_evidence_complete
+        and isinstance(evidence.volume_readiness_receipt, dict)
+        and isinstance(evidence.retention_checkpoint_evidence, dict)
+        and isinstance(evidence.live_stage_activation, dict)
+        and isinstance(evidence.dependency_quarantine_evidence, dict)
+        and isinstance(evidence.code_materialization_evidence, dict)
+        and evidence.volume_readiness_receipt.get("receipt_digest")
+        == evidence.retention_checkpoint_evidence.get("volume_readiness_receipt_digest")
+        and evidence.retention_checkpoint_evidence.get("evidence_digest")
+        == evidence.live_stage_activation.get("torch_retention_evidence_digest")
+        and evidence.retention_checkpoint_evidence.get("checkpoint_authentication_mechanism_digest")
+        == gate.checkpoint_authentication_mechanism_digest()
+        and all(
+            evidence.volume_readiness_receipt.get(key)
+            == evidence.retention_checkpoint_evidence.get(key)
+            == evidence.live_stage_activation.get(key)
+            for key in (
+                "dependency_lock_digest",
+                "dependency_quarantine_evidence_digest",
+                "dependency_private_tree_digest",
+                "code_materialization_evidence_digest",
+                "code_private_tree_digest",
+            )
+        )
+        and evidence.dependency_quarantine_evidence.get("evidence_digest")
+        == evidence.live_stage_activation.get("dependency_quarantine_evidence_digest")
+        and evidence.dependency_quarantine_evidence.get("private_tree_digest")
+        == evidence.live_stage_activation.get("dependency_private_tree_digest")
+        and evidence.code_materialization_evidence.get("evidence_digest")
+        == evidence.live_stage_activation.get("code_materialization_evidence_digest")
+        and evidence.code_materialization_evidence.get("private_tree_digest")
+        == evidence.live_stage_activation.get("code_private_tree_digest")
+    )
     gate_results = {
         "baseline_checkpoint_rate": baseline_gate,
         "action_protocol_validity": action_gate,
@@ -922,10 +1177,14 @@ def build_screen_result(
         "pinned_snapshot_ready": evidence.pinned_snapshot_ready,
         "offline_mode_active": evidence.offline_mode_active,
         "hardware_verified": _hardware_verified(evidence, manifest),
+        "deterministic_runtime_verified": (
+            evidence.deterministic_runtime == manifest["pilot"]["determinism"]
+        ),
         "pilot_runtime_feasible": pilot_runtime_gate,
         "policy_unchanged": policy_unchanged,
         "optimizer_state_restored": evidence.optimizer_state_restored,
         "test_split_isolated": not evidence.test_split_accessed,
+        "preparation_evidence_complete": preparation_evidence_complete,
     }
     if set(gate_results) != set(gate.REQUIRED_GATE_RESULTS):
         raise RuntimeError("eligibility result gates drifted from the authorization contract")
@@ -945,6 +1204,64 @@ def build_screen_result(
             else manifest["screen_limits"]["optimization_seed"]
         ),
         "source_contract_digest": gate.expected_source_contract_digest(manifest),
+        "source_head_commit": (
+            evidence.live_stage_activation.get("head_commit")
+            if evidence.live_stage_activation is not None
+            else None
+        ),
+        "live_stage_activation_revision": (
+            evidence.live_stage_activation.get("revision")
+            if evidence.live_stage_activation is not None
+            else None
+        ),
+        "live_stage_activation_digest": (
+            evidence.live_stage_activation.get("activation_digest")
+            if evidence.live_stage_activation is not None
+            else None
+        ),
+        "volume_readiness_receipt_digest": (
+            evidence.volume_readiness_receipt.get("receipt_digest")
+            if evidence.volume_readiness_receipt is not None
+            else None
+        ),
+        "torch_retention_evidence_digest": (
+            evidence.retention_checkpoint_evidence.get("evidence_digest")
+            if evidence.retention_checkpoint_evidence is not None
+            else None
+        ),
+        "checkpoint_authentication_mechanism_digest": (
+            evidence.retention_checkpoint_evidence.get("checkpoint_authentication_mechanism_digest")
+            if evidence.retention_checkpoint_evidence is not None
+            else None
+        ),
+        "dependency_quarantine_revision": manifest["materialization"]["dependency_lock"][
+            "revision"
+        ],
+        "dependency_lock_digest": manifest["materialization"]["dependency_lock"]["digest"],
+        "dependency_quarantine_evidence_digest": (
+            evidence.live_stage_activation.get("dependency_quarantine_evidence_digest")
+            if evidence.live_stage_activation is not None
+            else None
+        ),
+        "dependency_private_tree_digest": (
+            evidence.live_stage_activation.get("dependency_private_tree_digest")
+            if evidence.live_stage_activation is not None
+            else None
+        ),
+        "code_materialization_revision": manifest["materialization"]["code"]["revision"],
+        "code_materialization_evidence_digest": (
+            evidence.live_stage_activation.get("code_materialization_evidence_digest")
+            if evidence.live_stage_activation is not None
+            else None
+        ),
+        "code_private_tree_digest": (
+            evidence.live_stage_activation.get("code_private_tree_digest")
+            if evidence.live_stage_activation is not None
+            else None
+        ),
+        "volume_readiness_receipt": evidence.volume_readiness_receipt,
+        "retention_checkpoint_evidence": evidence.retention_checkpoint_evidence,
+        "preparation_evidence_complete": preparation_evidence_complete,
         "device": "cuda" if evidence.gpu_name is not None else "unavailable",
         "parameter_count": evidence.base_parameter_count,
         "base_bfloat16_parameter_count": evidence.base_bf16_parameter_count,
@@ -961,6 +1278,7 @@ def build_screen_result(
         "restored_parameter_tensors": evidence.restored_parameter_tensors,
         "capacity_smoke_completed": evidence.capacity_smoke_completed,
         "gradient_checkpointing_enabled": evidence.gradient_checkpointing_enabled,
+        "determinism": evidence.deterministic_runtime,
         "test_split_accessed": evidence.test_split_accessed,
         "branch_width": screen["branch_width"],
         "screen_levels": [int(level) for level in SCREEN_LEVELS],
@@ -1229,12 +1547,14 @@ def install_environment_hooks(
         task_count: int,
         *,
         probe_level: int | None = None,
+        retained_promotion_count: int = 0,
         maximum_level: int = frozen.MAXIMUM_COMPLEXITY_LEVEL,
     ) -> list[int]:
         original_training_allocation(
             current_level,
             task_count,
             probe_level=probe_level,
+            retained_promotion_count=retained_promotion_count,
             maximum_level=maximum_level,
         )
         if current_level != 0 or task_count != screen["training_tasks_per_update"]:
@@ -1358,25 +1678,27 @@ def install_model_hooks(evidence: ScreenEvidence, manifest: dict[str, Any]) -> N
         original_tokenizer_load = transformers.AutoTokenizer.from_pretrained
         original_model_load = transformers.AutoModelForCausalLM.from_pretrained
 
-        def require_identity(model_id: str, revision: Any) -> None:
-            if model_id != manifest["model"]["id"] or revision != manifest["model"]["revision"]:
-                raise RuntimeError("model loader identity drifted from eligibility profile")
-
         def offline_tokenizer_load(model_id: str, *args: Any, **kwargs: Any) -> Any:
-            require_identity(model_id, kwargs.get("revision"))
-            if kwargs.get("local_files_only") is False:
-                raise RuntimeError("network tokenizer loading is forbidden")
-            kwargs["local_files_only"] = True
-            kwargs["cache_dir"] = manifest["artifact_readiness"]["cache_directory"]
-            return fail_closed_prompt_tokenizer(original_tokenizer_load(model_id, *args, **kwargs))
+            return fail_closed_prompt_tokenizer(
+                load_from_verified_snapshot(
+                    original_tokenizer_load,
+                    evidence,
+                    manifest,
+                    model_id,
+                    args,
+                    kwargs,
+                )
+            )
 
         def offline_model_load(model_id: str, *args: Any, **kwargs: Any) -> Any:
-            require_identity(model_id, kwargs.get("revision"))
-            if kwargs.get("local_files_only") is False:
-                raise RuntimeError("network model loading is forbidden")
-            kwargs["local_files_only"] = True
-            kwargs["cache_dir"] = manifest["artifact_readiness"]["cache_directory"]
-            model = original_model_load(model_id, *args, **kwargs)
+            model = load_from_verified_snapshot(
+                original_model_load,
+                evidence,
+                manifest,
+                model_id,
+                args,
+                kwargs,
+            )
             evidence.base_parameter_count = sum(
                 parameter.numel() for parameter in model.parameters()
             )
@@ -1444,6 +1766,11 @@ def install_progress_hook(evidence: ScreenEvidence, manifest: dict[str, Any]) ->
         **values: Any,
     ) -> None:
         values.pop("test_split_accessed", None)
+        if phase == "model_loading":
+            observed_determinism = values.get("deterministic_runtime")
+            if observed_determinism != manifest["pilot"]["determinism"]:
+                raise RuntimeError("eligibility deterministic runtime evidence drifted")
+            evidence.deterministic_runtime = dict(observed_determinism)
         original_emit(
             phase,
             message,
@@ -1466,12 +1793,9 @@ def install_progress_hook(evidence: ScreenEvidence, manifest: dict[str, Any]) ->
             return
         if len(evidence.branch_collections) != manifest["screen"]["branch_groups"]:
             raise RuntimeError("training progress arrived before all screen groups completed")
-        try:
-            import torch
+        import torch
 
-            capture_cuda_evidence(evidence, torch)
-        except (ImportError, RuntimeError):
-            pass
+        capture_cuda_evidence(evidence, torch)
         raise EligibilityScreenComplete(build_screen_result(evidence, manifest))
 
     frozen.emit_progress = screen_progress
@@ -1481,9 +1805,13 @@ def prepare_runtime(
     evidence: ScreenEvidence,
     manifest: dict[str, Any],
 ) -> Any:
+    deterministic_runtime = manifest["pilot"]["determinism"]
+    if deterministic_runtime["cublas_workspace_config"] != frozen.CUBLAS_WORKSPACE_CONFIG:
+        raise RuntimeError("eligibility deterministic cuBLAS contract drifted")
+    frozen.require_cublas_workspace_config()
     disarm_empty_adapter_path()
     install_environment_hooks(evidence, manifest)
-    runtime = frozen.configure_from_environment()
+    runtime = frozen.configure_from_environment(allow_zero_test_examples=True)
     validate_runtime_configuration(runtime, manifest)
     evidence.runtime_configuration = runtime
     return runtime
@@ -1526,9 +1854,7 @@ def main() -> None:
     if "--validate-configuration" in sys.argv:
         return
 
-    if not verify_pre_model_readiness(evidence, manifest):
-        print(json.dumps(build_screen_result(evidence, manifest), sort_keys=True), flush=True)
-        return
+    verify_pre_model_readiness(evidence, manifest)
 
     install_model_hooks(evidence, manifest)
     install_progress_hook(evidence, manifest)

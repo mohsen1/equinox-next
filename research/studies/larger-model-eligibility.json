@@ -1,12 +1,24 @@
 {
   "schema_version": 1,
-  "profile_id": "qwen2.5-coder-7b-runpod-h100@8",
+  "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
   "model": {
     "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
     "revision": "c03e6d358207e414f1eca0bb1891e29f1db0e242",
     "parameter_count": 7615616512,
     "safetensors_bytes": 15231271864,
     "snapshot_files": {
+      ".gitattributes": {
+        "size_bytes": 1519,
+        "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
+      },
+      "LICENSE": {
+        "size_bytes": 11343,
+        "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+      },
+      "README.md": {
+        "size_bytes": 6392,
+        "sha256": "3c090be37f829adc1e4cdb78733667437732541470430ab2cd785d7f0d460077"
+      },
       "config.json": {
         "size_bytes": 663,
         "sha256": "c0242402ad6a13b331ea320feea8c7e3776ffb7a4eff0757b9cd667e116d9a28"
@@ -70,16 +82,37 @@
     "action_protocol_revision": "repository-repair-json-tools@8",
     "terminal_submission_contract": "accepted-passing-test-or-finish@1"
   },
+  "materialization": {
+    "code": {
+      "revision": "private-code-materialization@1",
+      "evidence_schema_version": 1
+    },
+    "dependency_lock": {
+      "path": "larger-model-dependencies.lock",
+      "digest": "sha256:bb143bf631b6509c07881a606dc96cd244099debdca09f8f700abc90dad2e34f",
+      "size_bytes": 30866,
+      "revision": "hash-locked-private-dependencies@1",
+      "evidence_schema_version": 2,
+      "installer_revision": "isolated-pip-binary-hash-lock@1",
+      "python_version": "3.12",
+      "platform_tag": "manylinux_2_28_x86_64",
+      "index_url": "https://pypi.org/simple",
+      "network_policy": "hash-locked-binary-wheels-during-authenticated-preparation-only"
+    }
+  },
   "source_contract": {
     "algorithm": "sha256",
     "files": {
+      "larger-model-dependencies.lock": "bb143bf631b6509c07881a606dc96cd244099debdca09f8f700abc90dad2e34f",
+      "repository_repair_env.py": "527050c5444a3731119773d4e0932840068fda9664654dce9bf0350edf56e40f",
       "repository_repair_env_v31.py": "703c5badc19513cf8a7766a1a1e63fa77dce49a2f0011d78d9f4b94b64132657",
       "repository_repair_env_v32.py": "fefade752e6bd82530835a5de493fffe7629a6c8963ae6f5fe7e3073dd1d2557",
       "repository_repair_env_v33.py": "02b57b074c72e81ae3c72ab82121d226656378ab47c8aa51215091a913c41285",
-      "repository_repair_large_model_eligibility.py": "309eac07fcd578827f1952963c5c2bd45fd3e5266b3f76239e8d0f9e570699c2",
-      "repository_repair_large_model_pilot.py": "20ef27a4a5d5b1edbc72188030436d4b0548a4c2799a21fde889d0a8d505dac5",
-      "repository_repair_large_model_study.py": "c2a3d95bbcca4306e40440fb9655f4b9e43b8bbc718ab3a664f0ae27548d866c",
-      "repository_repair_large_model_trainer.py": "f036790903caef7651f4c34f632372ff1fd97ab181093dc014a726a590bcc97d"
+      "repository_repair_large_model_eligibility.py": "8a1dc7161760a7cf8a2ca738bcfe4fa0e513b80df6ee073c874002d289800a18",
+      "repository_repair_large_model_pilot.py": "4f67ee3a3c6b90c9fc3b53f477f3981359a4d67d241ebf959999d9a22f41dd80",
+      "repository_repair_large_model_study.py": "9535783495e7584ad650e280a80e6aa03df6f91f27b74b6ef7859878d6f981f4",
+      "repository_repair_large_model_trainer.py": "50e71174e4a4c897009e99730e2c7bfd2abd5897b89196cdfc53ae0396791ee2",
+      "retention_checkpoint_probe.py": "4277e92188b53f41a5201ff6b01ffb9d4fdac925eb38462d0d9d930b62aa2e38"
     }
   },
   "hardware": {
@@ -105,15 +138,17 @@
   },
   "screen_limits": {
     "maximum_hourly_cost_usd": 4.0,
-    "maximum_total_cost_usd": 3.0,
-    "maximum_lifetime_seconds": 2580,
-    "boot_timeout_seconds": 360,
+    "maximum_total_cost_usd": 3.35,
+    "maximum_lifetime_seconds": 2880,
+    "conservative_billing_seconds": 3000,
+    "boot_timeout_seconds": 600,
     "model_load_timeout_seconds": 1200,
     "stale_progress_timeout_seconds": 600,
     "maximum_workload_attempts": 1,
     "target_runtime_seconds": 1500,
     "retry_reserve_seconds": 300,
     "maximum_final_evaluation_reserve_seconds": 300,
+    "artifact_retrieval_reserve_seconds": 60,
     "optimization_seed": 137
   },
   "pilot_limits": {
@@ -131,13 +166,14 @@
   },
   "screen": {
     "workload": "repository-repair-larger-model-eligibility-screen",
-    "workload_revision": "larger-model-eligibility-screen@8",
+    "workload_revision": "larger-model-eligibility-screen@10",
     "admission_levels": [
       0
     ],
     "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
     "localization_telemetry_strategy": "all_fault_sources_observed",
     "branch_width": 4,
+    "live_stage_activation_revision": "authenticated-proxy-stage-activation@2",
     "validation_examples": 8,
     "training_tasks_per_update": 8,
     "training_microbatch_size": 1,
@@ -164,8 +200,8 @@
     }
   },
   "pilot": {
-    "workload_revision": "runpod-repository-repair-large-model-pilot@6",
-    "objective_id": "verified-repair-chain-transactional-retention-policy-gradient@18",
+    "workload_revision": "runpod-repository-repair-large-model-pilot@7",
+    "objective_id": "verified-repair-chain-transactional-retention-policy-gradient@19",
     "reward_contract_revision": "correctness-gated-efficiency@1",
     "shared_prefix_checkpoint_strategy": "repository_root_observed@1",
     "localization_telemetry_strategy": "all_fault_sources_observed",
@@ -183,6 +219,31 @@
     "retention_transaction_revision": "adapter-optimizer-policy-lineage@1",
     "learning_rate": 1e-05,
     "reference_kl_coefficient": 1.0,
+    "maximum_consecutive_regression_windows": 4,
+    "determinism": {
+      "revision": "eager-math-sdp-deterministic@1",
+      "attention_implementation": "eager",
+      "cublas_workspace_config": ":4096:8",
+      "deterministic_algorithms": true,
+      "deterministic_algorithms_warn_only": false,
+      "flash_sdp_enabled": false,
+      "memory_efficient_sdp_enabled": false,
+      "math_sdp_enabled": true,
+      "cudnn_benchmark": false,
+      "cudnn_deterministic": true,
+      "tf32": false
+    },
+    "training_level_allocation": {
+      "revision": "retained-promotion-3-1-to-2-2@1",
+      "before_first_retained_promotion": {
+        "active_frontier_tasks": 3,
+        "nearest_probe_tasks": 1
+      },
+      "after_first_retained_promotion": {
+        "active_frontier_tasks": 2,
+        "adaptive_probe_tasks": 2
+      }
+    },
     "minimum_effective_policy_updates": 1,
     "final_evaluation_safety_factor": 1.5
   },
@@ -204,10 +265,12 @@
       "pinned_snapshot_ready",
       "offline_mode_active",
       "hardware_verified",
+      "deterministic_runtime_verified",
       "pilot_runtime_feasible",
       "policy_unchanged",
       "optimizer_state_restored",
-      "test_split_isolated"
+      "test_split_isolated",
+      "preparation_evidence_complete"
     ]
   }
 }

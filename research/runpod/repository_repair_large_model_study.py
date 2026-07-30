@@ -16,12 +16,12 @@ except ModuleNotFoundError:
     from . import repository_repair_large_model_trainer as trainer
 
 
-BASE_WORKLOAD_REVISION = "runpod-repository-repair-transactional-retention@1"
-BASE_OBJECTIVE_ID = "verified-repair-chain-transactional-retention-policy-gradient@18"
+BASE_WORKLOAD_REVISION = "runpod-repository-repair-transactional-retention@2"
+BASE_OBJECTIVE_ID = "verified-repair-chain-transactional-retention-policy-gradient@19"
 TRANSACTIONAL_RETENTION_REVISION = "adapter-optimizer-policy-lineage@1"
 SOURCE_SHA256 = {
     "repository_repair_large_model_trainer.py": (
-        "f036790903caef7651f4c34f632372ff1fd97ab181093dc014a726a590bcc97d"
+        "50e71174e4a4c897009e99730e2c7bfd2abd5897b89196cdfc53ae0396791ee2"
     ),
     "repository_repair_env.py": (
         "527050c5444a3731119773d4e0932840068fda9664654dce9bf0350edf56e40f"

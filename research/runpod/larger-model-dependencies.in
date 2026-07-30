@@ -1,0 +1,3 @@
+accelerate==1.14.0
+peft==0.19.1
+transformers==5.14.1

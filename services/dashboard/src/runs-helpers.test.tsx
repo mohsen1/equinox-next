@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   complexityForLevel,
+  dynamicComplexityProgressLabel,
   formatDuration,
   formatRateInterval,
   intervalValue,
   observerStages,
   phasePercentage,
+  postTrainingOutcomeLabel,
   resultItems,
   runPercentage,
 } from "./runs-helpers";
@@ -106,6 +108,42 @@ describe("run observer formatting", () => {
       value: "50.0% · partial",
     });
     expect(items.some((item) => item.label === "Test pairs")).toBe(false);
+  });
+
+  it("uses the authoritative post-training outcome and complexity fields", () => {
+    expect(
+      postTrainingOutcomeLabel(
+        "MEANINGFUL_POST_TRAINING",
+        true,
+        "EXPLORATORY_SINGLE_SEED",
+      ),
+    ).toBe("Meaningful");
+    expect(
+      postTrainingOutcomeLabel("NEGATIVE_EXPERIMENT_COMPLETED", false),
+    ).toBe("Negative result");
+    expect(
+      postTrainingOutcomeLabel("INCONCLUSIVE_EXPERIMENT_COMPLETED", false),
+    ).toBe("Inconclusive");
+    expect(dynamicComplexityProgressLabel(true)).toBe("Progressed");
+    expect(dynamicComplexityProgressLabel(false)).toBe("No progression");
+
+    const items = resultItems(
+      execution({
+        meaningful_post_training: false,
+        post_training_outcome: "NEGATIVE_EXPERIMENT_COMPLETED",
+        dynamic_complexity_progressed: true,
+      }),
+      "EXPLORATORY_SINGLE_SEED",
+    );
+    expect(items).toContainEqual({
+      label: "Post-training",
+      value: "Negative result",
+    });
+    expect(items).toContainEqual({
+      label: "Complexity",
+      value: "Progressed",
+    });
+    expect(items.some((item) => item.label === "Claim")).toBe(false);
   });
 
   it("keeps a resumed run in the learning stage", () => {

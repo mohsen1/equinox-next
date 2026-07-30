@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import json
+import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +29,248 @@ class FakeTokenizer:
 
 def profile() -> dict[str, object]:
     return copy.deepcopy(gate.load_manifest())
+
+
+def private_materialization_evidence(
+    manifest: dict[str, object],
+    bundle_digest: str,
+    bundle_path: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    versions: dict[str, str] = {}
+    lock_path = Path(gate.__file__).with_name("larger-model-dependencies.lock")
+    for line in lock_path.read_text(encoding="utf-8").splitlines():
+        if "==" not in line or line.startswith((" ", "#")):
+            continue
+        name, remainder = line.split("==", 1)
+        versions[name.replace("_", "-").replace(".", "-").lower()] = remainder.split()[0]
+    distributions = [
+        {
+            "name": name,
+            "version": version,
+            "record_path": f"{name}.dist-info/RECORD",
+            "record_digest": "sha256:" + "1" * 64,
+            "file_count": 1,
+            "files_digest": "sha256:" + "2" * 64,
+        }
+        for name, version in sorted(versions.items())
+    ]
+    dependency_tree_digest = "sha256:" + "3" * 64
+    dependency: dict[str, object] = {
+        "schema_version": 2,
+        "revision": manifest["materialization"]["dependency_lock"]["revision"],
+        "profile_id": manifest["profile_id"],
+        "lock_path": f"{bundle_path}::larger-model-dependencies.lock",
+        "lock_digest": manifest["materialization"]["dependency_lock"]["digest"],
+        "python_version": "3.12",
+        "platform_tag": "manylinux_2_28_x86_64",
+        "installer_revision": "isolated-pip-binary-hash-lock@1",
+        "index_url": "https://pypi.org/simple",
+        "private_root": (
+            "/tmp/equinox-quarantine/dependencies/" + dependency_tree_digest.removeprefix("sha256:")
+        ),
+        "install_tree_digest": dependency_tree_digest,
+        "private_tree_digest": dependency_tree_digest,
+        "record_closure_digest": (
+            "sha256:" + hashlib.sha256(gate.canonical_json(distributions)).hexdigest()
+        ),
+        "distributions": distributions,
+        "installed_file_count": len(distributions),
+        "installed_bytes": 1,
+        "ready": True,
+    }
+    dependency["evidence_digest"] = gate.materialization_evidence_digest(dependency)
+    files = [
+        {
+            "path": name,
+            "size_bytes": (
+                manifest["materialization"]["dependency_lock"]["size_bytes"]
+                if name == manifest["materialization"]["dependency_lock"]["path"]
+                else 1
+            ),
+            "sha256": f"sha256:{digest}",
+        }
+        for name, digest in sorted(manifest["source_contract"]["files"].items())
+    ]
+    code_tree_digest = "sha256:" + hashlib.sha256(gate.canonical_json(files)).hexdigest()
+    code: dict[str, object] = {
+        "schema_version": 1,
+        "revision": manifest["materialization"]["code"]["revision"],
+        "profile_id": manifest["profile_id"],
+        "bundle_digest": bundle_digest,
+        "bundle_size_bytes": 80_000,
+        "source_contract_digest": gate.expected_source_contract_digest(manifest),
+        "source_root": bundle_path,
+        "private_root": (
+            "/tmp/equinox-quarantine/code/" + code_tree_digest.removeprefix("sha256:")
+        ),
+        "source_tree_digest": code_tree_digest,
+        "private_tree_digest": code_tree_digest,
+        "files": files,
+        "installed_file_count": len(files),
+        "installed_bytes": sum(int(entry["size_bytes"]) for entry in files),
+        "ready": True,
+    }
+    code["evidence_digest"] = gate.materialization_evidence_digest(code)
+    return dependency, code
+
+
+def preparation_evidence(
+    manifest: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    bundle_digest = "sha256:" + "a" * 64
+    bundle_path = (
+        f"/workspace/equinox-state/workload-bundles/{manifest['profile_id']}/"
+        f"{bundle_digest[7:]}.tar.xz"
+    )
+    dependency_evidence, code_evidence = private_materialization_evidence(
+        manifest,
+        bundle_digest,
+        bundle_path,
+    )
+    receipt: dict[str, object] = {
+        "schema_version": 3,
+        "attestation_revision": gate.VOLUME_READINESS_ATTESTATION_REVISION,
+        "profile_id": manifest["profile_id"],
+        "model_id": manifest["model"]["id"],
+        "model_revision": manifest["model"]["revision"],
+        "manifest_digest": "sha256:" + hashlib.sha256(gate.canonical_json(manifest)).hexdigest(),
+        "network_volume_id": "volume-123",
+        "network_volume_data_center_id": "EU-RO-1",
+        "network_volume_size_gb": 50,
+        "snapshot_digest": gate.expected_snapshot_digest(manifest),
+        "dependencies": manifest["runtime"]["dependencies"],
+        "torch_version": manifest["runtime"]["torch_version"],
+        "torch_cuda_version": gate.expected_cuda_version(manifest),
+        "gpu_name": manifest["hardware"]["gpu_id"],
+        "gpu_total_memory_bytes": manifest["hardware"]["minimum_cuda_memory_bytes"],
+        "bf16_supported": True,
+        "dependency_quarantine_revision": manifest["materialization"]["dependency_lock"][
+            "revision"
+        ],
+        "dependency_lock_digest": manifest["materialization"]["dependency_lock"]["digest"],
+        "dependency_quarantine_evidence": dependency_evidence,
+        "dependency_quarantine_evidence_digest": dependency_evidence["evidence_digest"],
+        "dependency_private_tree_digest": dependency_evidence["private_tree_digest"],
+        "code_materialization_revision": manifest["materialization"]["code"]["revision"],
+        "code_materialization_evidence": code_evidence,
+        "code_materialization_evidence_digest": code_evidence["evidence_digest"],
+        "code_private_tree_digest": code_evidence["private_tree_digest"],
+        "prepared_at": "2026-07-29T11:00:00Z",
+        "ready": True,
+    }
+    receipt["receipt_digest"] = "sha256:" + hashlib.sha256(gate.canonical_json(receipt)).hexdigest()
+    retention: dict[str, object] = {
+        "schema_version": 3,
+        "evidence_revision": gate.RETENTION_CHECKPOINT_EVIDENCE_REVISION,
+        "status": "passed",
+        "test_id": (
+            "test_transaction_round_trips_real_optimizer_checkpoint_when_torch_is_available"
+        ),
+        "profile_id": manifest["profile_id"],
+        "head_commit": "5" * 40,
+        "source_contract_digest": gate.expected_source_contract_digest(manifest),
+        "workload_bundle_digest": bundle_digest,
+        "workload_bundle_size_bytes": 80_000,
+        "workload_bundle_path": bundle_path,
+        "bundle_stage_receipt_digest": "sha256:" + "b" * 64,
+        "bootstrap_source_digest": "sha256:" + "c" * 64,
+        "volume_readiness_receipt_digest": receipt["receipt_digest"],
+        "dependency_quarantine_revision": receipt["dependency_quarantine_revision"],
+        "dependency_lock_digest": receipt["dependency_lock_digest"],
+        "dependency_quarantine_evidence_digest": receipt["dependency_quarantine_evidence_digest"],
+        "dependency_private_tree_digest": receipt["dependency_private_tree_digest"],
+        "code_materialization_revision": receipt["code_materialization_revision"],
+        "code_materialization_evidence_digest": receipt["code_materialization_evidence_digest"],
+        "code_private_tree_digest": receipt["code_private_tree_digest"],
+        "network_volume_id": "volume-123",
+        "network_volume_data_center_id": "EU-RO-1",
+        "network_volume_size_gb": 50,
+        "torch_version": manifest["runtime"]["torch_version"],
+        "torch_cuda_version": gate.expected_cuda_version(manifest),
+        "cuda_available": True,
+        "gpu_name": manifest["hardware"]["gpu_id"],
+        "gpu_total_memory_bytes": manifest["hardware"]["minimum_cuda_memory_bytes"],
+        "bf16_supported": True,
+        "probe_sha256": (
+            "sha256:" + manifest["source_contract"]["files"]["retention_checkpoint_probe.py"]
+        ),
+        "trainer_sha256": (
+            "sha256:"
+            + manifest["source_contract"]["files"]["repository_repair_large_model_trainer.py"]
+        ),
+        "environment_sha256": (
+            "sha256:" + manifest["source_contract"]["files"]["repository_repair_env.py"]
+        ),
+        "source_sha256": {
+            name: f"sha256:{digest}"
+            for name, digest in manifest["source_contract"]["files"].items()
+        },
+        "checkpoint_sha256": "sha256:" + "d" * 64,
+        "checkpoint_size_bytes": 1024,
+        "restored_weight_before_resume_step": [0.99],
+        "advanced_weight_after_resume_step": [0.98],
+        "effective_policy_update_count_before_resume_step": 1,
+        "effective_policy_update_count_after_resume_step": 2,
+        "retained_observation_after_resume_step": {"exact_rate": 0.75},
+        "optimizer_state_entries_after_resume_step": 1,
+        "optimizer_state_digest_before_persist": "sha256:" + "e" * 64,
+        "optimizer_state_digest_after_restore": "sha256:" + "e" * 64,
+        "optimizer_state_digest_after_resume_step": "sha256:" + "f" * 64,
+        "optimizer_parameter_device": "cuda:0",
+        "optimizer_state_devices_before_persist": {
+            "exp_avg": ["cuda:0"],
+            "exp_avg_sq": ["cuda:0"],
+            "step": ["cpu"],
+        },
+        "optimizer_state_devices_after_restore": {
+            "exp_avg": ["cuda:0"],
+            "exp_avg_sq": ["cuda:0"],
+            "step": ["cpu"],
+        },
+        "checkpoint_storage_scope": "runpod-network-volume",
+        "checkpoint_storage_root": "/workspace/equinox-runs/proof-test",
+        "checkpoint_storage_root_device": 42,
+        "checkpoint_storage_checkpoint_device": 42,
+        "checkpoint_source_device": 42,
+        "checkpoint_storage_root_inode": 84,
+        "checkpoint_inode_before_reopen": 85,
+        "checkpoint_inode_after_reopen": 85,
+        "checkpoint_persist_process_pid": 100,
+        "checkpoint_resume_process_pid": 101,
+        "checkpoint_resume_parent_process_pid": 100,
+        "checkpoint_reopened_after_fsync": True,
+        "checkpoint_authentication_revision": "launch-bound-checkpoint-manifest@1",
+        "checkpoint_authentication_mechanism_digest": (
+            gate.checkpoint_authentication_mechanism_digest()
+        ),
+        "checkpoint_generation": 1,
+        "checkpoint_manifest_digest": "sha256:" + "9" * 64,
+        "checkpoint_authenticated_private_resume": True,
+    }
+    retention["checkpoint_storage_evidence_digest"] = (
+        gate.retention_checkpoint_storage_evidence_digest(retention)
+    )
+    retention["evidence_digest"] = gate.retention_checkpoint_evidence_digest(retention)
+    activation = gate.build_live_stage_activation(
+        manifest,
+        head_commit="5" * 40,
+        workload_bundle_digest=bundle_digest,
+        workload_bundle_size_bytes=80_000,
+        workload_bundle_path=bundle_path,
+        bundle_stage_receipt_digest="sha256:" + "b" * 64,
+        bootstrap_source_digest="sha256:" + "c" * 64,
+        volume_readiness_receipt_digest=str(receipt["receipt_digest"]),
+        torch_retention_evidence_digest=str(retention["evidence_digest"]),
+        dependency_lock_digest=str(receipt["dependency_lock_digest"]),
+        dependency_quarantine_evidence_digest=str(receipt["dependency_quarantine_evidence_digest"]),
+        dependency_private_tree_digest=str(receipt["dependency_private_tree_digest"]),
+        code_materialization_evidence_digest=str(receipt["code_materialization_evidence_digest"]),
+        code_private_tree_digest=str(receipt["code_private_tree_digest"]),
+        network_volume_id="volume-123",
+        data_center_id="EU-RO-1",
+        volume_size_gb=50,
+    )
+    return receipt, retention, activation
 
 
 def test_prompt_tokenizer_returns_full_in_budget_encoding_without_truncation() -> None:
@@ -119,6 +363,7 @@ def collection(
 
 def passing_evidence() -> eligibility.ScreenEvidence:
     manifest = gate.load_manifest()
+    receipt, retention, activation = preparation_evidence(manifest)
     return eligibility.ScreenEvidence(
         baseline_outcomes=baseline(),
         branch_collections=[
@@ -139,6 +384,12 @@ def passing_evidence() -> eligibility.ScreenEvidence:
         gradient_checkpointing_enabled=True,
         pinned_snapshot_ready=True,
         pinned_snapshot_digest=gate.expected_snapshot_digest(manifest),
+        volume_readiness_receipt=receipt,
+        retention_checkpoint_evidence=retention,
+        live_stage_activation=activation,
+        dependency_quarantine_evidence=receipt["dependency_quarantine_evidence"],
+        code_materialization_evidence=receipt["code_materialization_evidence"],
+        preparation_evidence_complete=True,
         offline_mode_active=True,
         gpu_name=manifest["hardware"]["gpu_id"],
         gpu_total_memory_bytes=manifest["hardware"]["minimum_cuda_memory_bytes"],
@@ -148,6 +399,7 @@ def passing_evidence() -> eligibility.ScreenEvidence:
         base_bf16_parameter_count=manifest["model"]["parameter_count"],
         trainable_parameter_count=40_000_000,
         model_parameter_count_with_adapter=manifest["model"]["parameter_count"] + 40_000_000,
+        deterministic_runtime=manifest["pilot"]["determinism"],
     )
 
 
@@ -208,20 +460,33 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
         manifest,
         result,
         {
-            "provider": "runpod",
+            "provider_name": "RunPod",
             "provider_handle": "runpod://pods/screen-123",
-            "profile_id": manifest["profile_id"],
-            "model_id": manifest["model"]["id"],
-            "model_revision": manifest["model"]["revision"],
-            "screen_workload_revision": manifest["screen"]["workload_revision"],
-            "gpu_id": manifest["hardware"]["gpu_id"],
-            "result_digest": gate.result_digest(result),
+            "provider_cli_version": "1.14.0",
             "teardown_confirmed": True,
+            "started_at": "2026-07-29T11:00:00Z",
             "completed_at": "2026-07-29T12:00:00Z",
+            "workload": {
+                "id": manifest["screen"]["workload"],
+                "revision": manifest["screen"]["workload_revision"],
+                "static_branch_width": manifest["screen"]["branch_width"],
+                "model_id": manifest["model"]["id"],
+                "model_revision": manifest["model"]["revision"],
+            },
+            "result": result,
             "resource_profile": {
+                "profile_id": manifest["profile_id"],
+                "gpu_id": manifest["hardware"]["gpu_id"],
                 "image": manifest["runtime"]["image"],
                 "image_digest": manifest["runtime"]["image_digest"],
+                "manifest_digest": (
+                    "sha256:" + hashlib.sha256(gate.canonical_json(manifest)).hexdigest()
+                ),
+                "source_contract_digest": gate.expected_source_contract_digest(manifest),
                 "network_volume_id": "volume-123",
+                "network_volume_data_center_id": "EU-RO-1",
+                "network_volume_size_gb": 50,
+                "source_head_commit": result["source_head_commit"],
                 "bundle_handoff_revision": gate.BUNDLE_HANDOFF_REVISION,
                 "workload_bundle_digest": workload_bundle_digest,
                 "workload_bundle_size_bytes": 80_000,
@@ -232,6 +497,21 @@ def test_passing_screen_result_matches_the_pilot_authorization_contract() -> Non
                 ),
                 "bundle_stage_receipt_digest": "sha256:" + "b" * 64,
                 "bootstrap_source_digest": "sha256:" + "c" * 64,
+                "volume_readiness_receipt_digest": result["volume_readiness_receipt_digest"],
+                "torch_retention_evidence_digest": result["torch_retention_evidence_digest"],
+                "dependency_quarantine_revision": result["dependency_quarantine_revision"],
+                "dependency_lock_digest": result["dependency_lock_digest"],
+                "dependency_quarantine_evidence_digest": result[
+                    "dependency_quarantine_evidence_digest"
+                ],
+                "dependency_private_tree_digest": result["dependency_private_tree_digest"],
+                "code_materialization_revision": result["code_materialization_revision"],
+                "code_materialization_evidence_digest": result[
+                    "code_materialization_evidence_digest"
+                ],
+                "code_private_tree_digest": result["code_private_tree_digest"],
+                "live_stage_activation_revision": result["live_stage_activation_revision"],
+                "live_stage_activation_digest": result["live_stage_activation_digest"],
             },
         },
         now=datetime(2026, 7, 29, 13, 0, tzinfo=UTC),
@@ -593,6 +873,161 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash(
     assert snapshot_hash_started is False
 
 
+def test_integrated_preparation_is_verified_before_science(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = gate.load_manifest()
+    receipt, retention, activation = preparation_evidence(manifest)
+    receipt_path = tmp_path / "volume-readiness-receipt.json"
+    retention_path = tmp_path / "torch-retention-evidence.json"
+    dependency_evidence_path = tmp_path / "dependency-quarantine-evidence.json"
+    code_evidence_path = tmp_path / "code-materialization-evidence.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    retention_path.write_text(json.dumps(retention), encoding="utf-8")
+    dependency_evidence_path.write_text(
+        json.dumps(receipt["dependency_quarantine_evidence"]),
+        encoding="utf-8",
+    )
+    code_evidence_path.write_text(
+        json.dumps(receipt["code_materialization_evidence"]),
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    for name, value in {
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "EQUINOX_RUNPOD_NETWORK_VOLUME_ID": "volume-123",
+        "EQUINOX_RUNPOD_NETWORK_VOLUME_DATA_CENTER_ID": "EU-RO-1",
+        "EQUINOX_RUNPOD_NETWORK_VOLUME_SIZE_GB": "50",
+        "EQUINOX_VOLUME_READINESS_RECEIPT_PATH": str(receipt_path),
+        "EQUINOX_TORCH_RETENTION_EVIDENCE_PATH": str(retention_path),
+        "EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_PATH": str(dependency_evidence_path),
+        "EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_SHA256": str(
+            receipt["dependency_quarantine_evidence_digest"]
+        ),
+        "EQUINOX_DEPENDENCY_LOCK_SHA256": str(receipt["dependency_lock_digest"]),
+        "EQUINOX_DEPENDENCY_PRIVATE_TREE_SHA256": str(receipt["dependency_private_tree_digest"]),
+        "EQUINOX_CODE_MATERIALIZATION_EVIDENCE_PATH": str(code_evidence_path),
+        "EQUINOX_CODE_MATERIALIZATION_EVIDENCE_SHA256": str(
+            receipt["code_materialization_evidence_digest"]
+        ),
+        "EQUINOX_CODE_PRIVATE_TREE_SHA256": str(receipt["code_private_tree_digest"]),
+        "EQUINOX_SOURCE_HEAD_COMMIT": "5" * 40,
+        "EQUINOX_BUNDLE_SHA256": "sha256:" + "a" * 64,
+        "EQUINOX_BUNDLE_SIZE_BYTES": "80000",
+        "EQUINOX_BUNDLE_VOLUME_PATH": (
+            f"/workspace/equinox-state/workload-bundles/{manifest['profile_id']}/{'a' * 64}.tar.xz"
+        ),
+        "EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256": "sha256:" + "b" * 64,
+        "EQUINOX_BOOTSTRAP_SOURCE_SHA256": "sha256:" + "c" * 64,
+        "EQUINOX_LIVE_STAGE_ACTIVATION_SHA256": str(activation["activation_digest"]),
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    class ExactCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def get_device_name(_index: int) -> str:
+            return manifest["hardware"]["gpu_id"]
+
+        @staticmethod
+        def get_device_properties(_index: int) -> object:
+            return SimpleNamespace(total_memory=manifest["hardware"]["minimum_cuda_memory_bytes"])
+
+        @staticmethod
+        def is_bf16_supported() -> bool:
+            return True
+
+    torch_module = SimpleNamespace(
+        __version__=manifest["runtime"]["torch_version"],
+        cuda=ExactCuda(),
+    )
+    monkeypatch.setattr(
+        eligibility,
+        "_snapshot_candidates",
+        lambda _manifest: (snapshot,),
+    )
+    snapshot_rechecks = 0
+
+    def verify_current_snapshot(
+        observed_manifest: dict[str, object],
+    ) -> tuple[bool, str, str]:
+        nonlocal snapshot_rechecks
+        snapshot_rechecks += 1
+        assert observed_manifest == manifest
+        return True, str(snapshot), gate.expected_snapshot_digest(manifest)
+
+    monkeypatch.setattr(
+        eligibility,
+        "verify_pinned_snapshot",
+        verify_current_snapshot,
+    )
+    monkeypatch.setattr(
+        eligibility.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=30_000_000_000),
+    )
+    evidence = eligibility.ScreenEvidence()
+
+    assert eligibility.verify_pre_model_readiness(
+        evidence,
+        manifest,
+        torch_module=torch_module,
+        version_reader=lambda package: manifest["runtime"]["dependencies"][package],
+        dependency_importer=lambda package: SimpleNamespace(
+            __version__=manifest["runtime"]["dependencies"][package],
+            __file__=(receipt["dependency_quarantine_evidence"]["private_root"] + f"/{package}.py"),
+        ),
+    )
+    assert evidence.preparation_evidence_complete is True
+    assert evidence.pinned_snapshot_digest == gate.expected_snapshot_digest(manifest)
+    assert evidence.volume_readiness_receipt == receipt
+    assert evidence.retention_checkpoint_evidence == retention
+    assert evidence.live_stage_activation == activation
+    assert snapshot_rechecks == 1
+
+    monkeypatch.delenv("EQUINOX_TORCH_RETENTION_EVIDENCE_PATH")
+    with pytest.raises(RuntimeError, match="missing EQUINOX_TORCH"):
+        eligibility.verify_pre_model_readiness(
+            eligibility.ScreenEvidence(),
+            manifest,
+            torch_module=torch_module,
+            version_reader=lambda package: manifest["runtime"]["dependencies"][package],
+            dependency_importer=lambda package: SimpleNamespace(
+                __version__=manifest["runtime"]["dependencies"][package],
+                __file__=(
+                    receipt["dependency_quarantine_evidence"]["private_root"] + f"/{package}.py"
+                ),
+            ),
+        )
+    assert snapshot_rechecks == 1
+
+    monkeypatch.setenv("EQUINOX_TORCH_RETENTION_EVIDENCE_PATH", str(retention_path))
+    monkeypatch.setattr(
+        eligibility,
+        "verify_pinned_snapshot",
+        lambda _manifest: (True, str(snapshot), "sha256:" + "0" * 64),
+    )
+    with pytest.raises(RuntimeError, match="snapshot recheck"):
+        eligibility.verify_pre_model_readiness(
+            eligibility.ScreenEvidence(),
+            manifest,
+            torch_module=torch_module,
+            version_reader=lambda package: manifest["runtime"]["dependencies"][package],
+            dependency_importer=lambda package: SimpleNamespace(
+                __version__=manifest["runtime"]["dependencies"][package],
+                __file__=(
+                    receipt["dependency_quarantine_evidence"]["private_root"] + f"/{package}.py"
+                ),
+            ),
+        )
+
+
 def test_baseline_stops_only_after_all_eight_l0_examples() -> None:
     manifest = gate.load_manifest()
     evidence = eligibility.ScreenEvidence(
@@ -701,6 +1136,7 @@ def test_snapshot_readiness_propagates_the_exact_snapshot_digest(
     model_cache = "models--" + manifest["model"]["id"].replace("/", "--")
     snapshot = tmp_path / "hub" / model_cache / "snapshots" / manifest["model"]["revision"]
     snapshot.mkdir(parents=True)
+    materialized = tmp_path / "private-verified-snapshot"
     expected_digest = gate.expected_snapshot_digest(manifest)
 
     def verify_exact(
@@ -711,25 +1147,65 @@ def test_snapshot_readiness_propagates_the_exact_snapshot_digest(
         assert observed_snapshot == snapshot
         assert gate.expected_snapshot_digest(observed_manifest) == expected_digest
         return {
-            "snapshot_path": str(snapshot),
+            "snapshot_path": str(materialized),
             "snapshot_digest": expected_digest,
         }
 
-    monkeypatch.setattr(eligibility.gate, "verify_local_snapshot", verify_exact)
+    monkeypatch.setattr(eligibility.gate, "materialize_verified_snapshot", verify_exact)
     assert eligibility.verify_pinned_snapshot(manifest) == (
         True,
-        str(snapshot),
+        str(materialized),
         expected_digest,
     )
 
     monkeypatch.setattr(
         eligibility.gate,
-        "verify_local_snapshot",
+        "materialize_verified_snapshot",
         lambda _manifest, _snapshot: (_ for _ in ()).throw(
             gate.GateError("snapshot digest mismatch")
         ),
     )
     assert eligibility.verify_pinned_snapshot(manifest) == (False, None, None)
+
+
+def test_model_loading_reuses_only_the_verified_private_snapshot() -> None:
+    manifest = gate.load_manifest()
+    evidence = eligibility.ScreenEvidence(
+        pinned_snapshot_ready=True,
+        pinned_snapshot_path="/tmp/equinox-verified-snapshot-test",
+    )
+    observed: dict[str, object] = {}
+
+    def original_load(model_path: str, *args: object, **kwargs: object) -> object:
+        observed.update({"model_path": model_path, "args": args, "kwargs": kwargs})
+        return object()
+
+    eligibility.load_from_verified_snapshot(
+        original_load,
+        evidence,
+        manifest,
+        manifest["model"]["id"],
+        ("positional",),
+        {
+            "revision": manifest["model"]["revision"],
+            "cache_dir": manifest["artifact_readiness"]["cache_directory"],
+        },
+    )
+
+    assert observed == {
+        "model_path": evidence.pinned_snapshot_path,
+        "args": ("positional",),
+        "kwargs": {"local_files_only": True},
+    }
+    with pytest.raises(RuntimeError, match="identity drifted"):
+        eligibility.load_from_verified_snapshot(
+            original_load,
+            evidence,
+            manifest,
+            "floating/model",
+            (),
+            {"revision": manifest["model"]["revision"]},
+        )
 
 
 def test_offline_mode_requires_both_huggingface_guards(
@@ -877,11 +1353,12 @@ def test_runtime_hooks_install_l0_root_checkpoint_v33_k4_screen_and_isolate_test
             manifest["screen"]["training_tasks_per_update"]
         ),
         "EQUINOX_RL_MAX_UPDATES": "1",
-        "EQUINOX_RL_TEST_EXAMPLES": "4",
+        "EQUINOX_RL_TEST_EXAMPLES": "0",
         "EQUINOX_RL_TARGET_SECONDS": "2400",
         "EQUINOX_RL_MAX_FINAL_EVALUATION_RESERVE_SECONDS": "1200",
         "EQUINOX_RL_SEED": "137",
         "EQUINOX_WORKLOAD_ATTEMPT": "1",
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("EQUINOX_ADAPTER_PATH", raising=False)
@@ -1048,6 +1525,61 @@ def test_progress_reports_the_current_test_isolation_state(
     )
 
     assert emitted["test_split_accessed"] is True
+
+
+def test_model_loading_progress_proves_the_exact_deterministic_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        eligibility.frozen,
+        "emit_progress",
+        lambda *_args, **_kwargs: None,
+    )
+    manifest = gate.load_manifest()
+    evidence = eligibility.ScreenEvidence()
+    eligibility.install_progress_hook(evidence, manifest)
+
+    eligibility.frozen.emit_progress(
+        "model_loading",
+        "loading",
+        SimpleNamespace(),
+        deterministic_runtime=manifest["pilot"]["determinism"],
+    )
+    assert evidence.deterministic_runtime == manifest["pilot"]["determinism"]
+
+    drifted = {**manifest["pilot"]["determinism"], "math_sdp_enabled": False}
+    with pytest.raises(RuntimeError, match="deterministic runtime"):
+        eligibility.frozen.emit_progress(
+            "model_loading",
+            "loading",
+            SimpleNamespace(),
+            deterministic_runtime=drifted,
+        )
+
+
+def test_final_cuda_evidence_failure_remains_operational(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        eligibility.frozen,
+        "emit_progress",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    monkeypatch.setattr(
+        eligibility,
+        "capture_cuda_evidence",
+        lambda _evidence, _torch: (_ for _ in ()).throw(RuntimeError("CUDA synchronize failed")),
+    )
+    evidence = passing_evidence()
+    eligibility.install_progress_hook(evidence, gate.load_manifest())
+
+    with pytest.raises(RuntimeError, match="CUDA synchronize failed"):
+        eligibility.frozen.emit_progress(
+            "training",
+            "screen collection complete",
+            SimpleNamespace(),
+        )
 
 
 def test_pretest_finalization_returns_an_ineligible_screen_result(

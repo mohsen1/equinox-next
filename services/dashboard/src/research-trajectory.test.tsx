@@ -4,6 +4,7 @@ import {
   buildTrajectorySteps,
   resolveBranchSnapshot,
   TrajectoryOutline,
+  TrajectoryRunOutcome,
 } from "./pages/research-trajectory";
 import {
   BranchOutline,
@@ -16,6 +17,7 @@ import {
 import type {
   ResearchBranchSnapshot,
   ResearchBranchStep,
+  ResearchComputeExecution,
   ResearchTrajectory,
 } from "./types";
 
@@ -125,6 +127,31 @@ const trajectory: ResearchTrajectory = {
   informative_group_rate: 0.2,
   total_sampled_completions: 960,
 };
+
+const completedExecution = {
+  execution_id: "run-test",
+  name: "Repository repair",
+  workload_id: "repository-repair",
+  model_id: "Qwen/Qwen2.5-Coder-7B-Instruct",
+  branch_width: 4,
+  complexity_strategy: "adaptive",
+  status: "SUCCEEDED",
+  provider_name: "RunPod",
+  provider_handle: "runpod://pods/test",
+  resource_profile: {},
+  progress: {
+    meaningful_post_training: false,
+    post_training_outcome: "INCONCLUSIVE_EXPERIMENT_COMPLETED",
+    dynamic_complexity_progressed: true,
+  },
+  proof_id: "proof-test",
+  receipt_digest: "sha256:receipt",
+  failure_receipt_digest: null,
+  started_at: "2026-07-27T12:00:00Z",
+  updated_at: "2026-07-27T12:10:00Z",
+  completed_at: "2026-07-27T12:10:00Z",
+  teardown_confirmed: true,
+} satisfies ResearchComputeExecution;
 
 function branchStep(
   index: number,
@@ -278,6 +305,18 @@ const independentPrefixSnapshot: ResearchBranchSnapshot = {
 };
 
 describe("research trajectory", () => {
+  it("keeps the terminal training outcome visible above both trajectory tracks", () => {
+    const html = renderToStaticMarkup(
+      <div>
+        <TrajectoryRunOutcome run={completedExecution} />
+      </div>,
+    );
+
+    expect(html).toContain("Inconclusive");
+    expect(html).toContain("Complexity progressed");
+    expect(html).not.toContain("INCONCLUSIVE_EXPERIMENT_COMPLETED");
+  });
+
   it("builds a real checkpoint sequence with promotions", () => {
     const steps = buildTrajectorySteps(trajectory);
 
@@ -594,7 +633,7 @@ describe("research trajectory", () => {
     expect(html).toContain(
       'aria-label="Matched initial state and 4 independent trajectories"',
     );
-    expect(html).toContain("Trajectory 4 · step 2");
+    expect(html).toContain("Trajectory 4 · step 4");
     expect(html).toContain('class="selected"');
     expect(html).not.toContain("Checkpoint");
   });
@@ -668,6 +707,19 @@ describe("research trajectory", () => {
     );
     expect(creditedEditHtml).toContain("Policy signal</dt><dd>Eligible");
     expect(creditedEditHtml).toContain("Batch weight</dt><dd>+1.000");
+    expect(creditedEditHtml).toContain(
+      '<span class="status positive">Accepted</span>',
+    );
+    expect(creditedEditHtml).not.toContain(
+      '<span class="status positive">Verified</span>',
+    );
+    expect(creditedEditHtml).toContain("<summary>Evidence</summary>");
+    expect(creditedEditHtml).toContain(multiStepSnapshot.snapshot_id);
+    expect(creditedEditHtml).toContain("step-2");
+    expect(creditedEditHtml).toContain("sha256:before-2");
+    expect(creditedEditHtml).toContain("sha256:after-2");
+    expect(creditedEditHtml).toContain("sha256:snapshot");
+    expect(creditedEditHtml).toContain("sha256:sibling-0");
   });
 
   it("distinguishes a restorative anchor-only optimizer step", () => {

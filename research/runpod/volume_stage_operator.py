@@ -235,6 +235,12 @@ def _verify_torch_evidence(
         "effective_policy_update_count_after_resume_step",
         "retained_observation_after_resume_step",
         "optimizer_state_entries_after_resume_step",
+        "optimizer_state_digest_before_persist",
+        "optimizer_state_digest_after_restore",
+        "optimizer_state_digest_after_resume_step",
+        "optimizer_parameter_device",
+        "optimizer_state_devices_before_persist",
+        "optimizer_state_devices_after_restore",
     }
     expected_contract = {
         name: f"sha256:{digest}" for name, digest in manifest["source_contract"]["files"].items()
@@ -243,6 +249,9 @@ def _verify_torch_evidence(
     after = result.get("advanced_weight_after_resume_step")
     checkpoint_size = result.get("checkpoint_size_bytes")
     optimizer_entries = result.get("optimizer_state_entries_after_resume_step")
+    optimizer_before = result.get("optimizer_state_digest_before_persist")
+    optimizer_restored = result.get("optimizer_state_digest_after_restore")
+    optimizer_advanced = result.get("optimizer_state_digest_after_resume_step")
     if (
         set(result) != expected_keys
         or result.get("status") != "passed"
@@ -263,6 +272,19 @@ def _verify_torch_evidence(
         or result.get("source_sha256") != expected_contract
         or not isinstance(result.get("checkpoint_sha256"), str)
         or not _TAGGED_SHA256.fullmatch(result["checkpoint_sha256"])
+        or not isinstance(optimizer_before, str)
+        or not _TAGGED_SHA256.fullmatch(optimizer_before)
+        or not isinstance(optimizer_restored, str)
+        or not _TAGGED_SHA256.fullmatch(optimizer_restored)
+        or not isinstance(optimizer_advanced, str)
+        or not _TAGGED_SHA256.fullmatch(optimizer_advanced)
+        or optimizer_before != optimizer_restored
+        or optimizer_restored == optimizer_advanced
+        or result.get("optimizer_parameter_device") != "cpu"
+        or result.get("optimizer_state_devices_before_persist")
+        != {"exp_avg": ["cpu"], "exp_avg_sq": ["cpu"], "step": ["cpu"]}
+        or result.get("optimizer_state_devices_after_restore")
+        != {"exp_avg": ["cpu"], "exp_avg_sq": ["cpu"], "step": ["cpu"]}
         or type(checkpoint_size) is not int
         or checkpoint_size <= 0
         or not isinstance(before, list)

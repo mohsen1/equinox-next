@@ -13,18 +13,62 @@ from research.runpod import larger_model_gate as gate
 from research.runpod import repository_repair_large_model_pilot as pilot
 
 
-def test_pilot_installs_the_shared_fail_closed_tokenizer_guard() -> None:
+def test_pilot_loads_model_assets_from_the_verified_private_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     raw_tokenizer = object()
+    raw_model = object()
+    calls: list[tuple[str, str, dict[str, object]]] = []
     transformers = SimpleNamespace(
         AutoTokenizer=SimpleNamespace(
-            from_pretrained=lambda *_args, **_kwargs: raw_tokenizer,
-        )
+            from_pretrained=lambda path, **kwargs: (
+                calls.append(("tokenizer", path, kwargs)) or raw_tokenizer
+            ),
+        ),
+        AutoModelForCausalLM=SimpleNamespace(
+            from_pretrained=lambda path, **kwargs: (
+                calls.append(("model", path, kwargs)) or raw_model
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        pilot,
+        "VERIFIED_SNAPSHOT_PATH",
+        Path("/tmp/equinox-verified-snapshot-test"),
     )
 
     pilot.install_fail_closed_tokenizer_loader(transformers)
-    guarded = transformers.AutoTokenizer.from_pretrained("model", revision="revision")
+    guarded = transformers.AutoTokenizer.from_pretrained(
+        gate.MODEL_ID,
+        revision=gate.MODEL_REVISION,
+        cache_dir="/workspace/network-cache",
+    )
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        gate.MODEL_ID,
+        revision=gate.MODEL_REVISION,
+        attn_implementation="eager",
+    )
 
     assert isinstance(guarded, pilot.eligibility.FailClosedPromptTokenizer)
+    assert model is raw_model
+    assert calls == [
+        (
+            "tokenizer",
+            "/tmp/equinox-verified-snapshot-test",
+            {"local_files_only": True},
+        ),
+        (
+            "model",
+            "/tmp/equinox-verified-snapshot-test",
+            {"attn_implementation": "eager", "local_files_only": True},
+        ),
+    ]
+    with pytest.raises(RuntimeError, match="attention implementation"):
+        transformers.AutoModelForCausalLM.from_pretrained(
+            gate.MODEL_ID,
+            revision=gate.MODEL_REVISION,
+            attn_implementation="sdpa",
+        )
 
 
 def test_authorization_digest_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,6 +81,24 @@ def test_authorization_digest_is_required(monkeypatch: pytest.MonkeyPatch) -> No
     assert pilot.require_authorization_digest() == digest
 
 
+def test_paid_runtime_requires_exact_cublas_workspace_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = gate.load_manifest()
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    with pytest.raises(RuntimeError, match="CUBLAS_WORKSPACE_CONFIG"):
+        pilot.require_deterministic_runtime_environment(manifest)
+
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":16:8")
+    with pytest.raises(RuntimeError, match="CUBLAS_WORKSPACE_CONFIG"):
+        pilot.require_deterministic_runtime_environment(manifest)
+
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    assert pilot.require_deterministic_runtime_environment(manifest) == (
+        pilot.deterministic_runtime_contract()
+    )
+
+
 def test_offline_snapshot_requires_exact_shards(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -46,6 +108,15 @@ def test_offline_snapshot_requires_exact_shards(
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    monkeypatch.setenv(
+        "EQUINOX_LARGER_MODEL_EXPECTED_SNAPSHOT_DIGEST",
+        gate.expected_snapshot_digest(manifest),
+    )
+    monkeypatch.setattr(
+        pilot.os,
+        "statvfs",
+        lambda _path: SimpleNamespace(f_bavail=30_000_000_000, f_frsize=1),
+    )
 
     with pytest.raises(RuntimeError, match="complete pinned 7B snapshot"):
         pilot.require_offline_snapshot(manifest)
@@ -87,8 +158,8 @@ def test_actual_cuda_profile_is_rejected_before_snapshot_hash() -> None:
 
 def test_v33_pilot_constants_do_not_modify_frozen_sources() -> None:
     assert pilot.MODEL_REVISION == gate.MODEL_REVISION
-    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@6"
-    assert pilot.OBJECTIVE_ID == "verified-repair-chain-transactional-retention-policy-gradient@18"
+    assert pilot.WORKLOAD_REVISION == "runpod-repository-repair-large-model-pilot@7"
+    assert pilot.OBJECTIVE_ID == "verified-repair-chain-transactional-retention-policy-gradient@19"
     assert pilot.REWARD_CONTRACT_REVISION == "correctness-gated-efficiency@1"
     assert pilot.RETENTION_TRANSACTION_REVISION == "adapter-optimizer-policy-lineage@1"
     assert pilot.LEARNING_RATE == 1e-5
@@ -99,6 +170,64 @@ def test_v33_pilot_constants_do_not_modify_frozen_sources() -> None:
     frozen_path = Path(__file__).parents[2] / "research/runpod/repository_repair_rl.py"
     assert hashlib.sha256(frozen_path.read_bytes()).hexdigest() == (
         "449da958b75d41f5a641782980e0f0f8301122a68e011629faa4b7cc90bf7997"
+    )
+
+
+def test_post_training_classification_separates_completion_learning_and_promotion() -> None:
+    assert pilot.frozen.post_training_outcome_classification(
+        hypothesis_passed=True,
+        final_evaluation_complete=True,
+        probative_post_training=True,
+        promotion_count=1,
+    ) == {
+        "meaningful_post_training": True,
+        "post_training_outcome": "MEANINGFUL_POST_TRAINING",
+        "dynamic_complexity_progressed": True,
+    }
+    assert pilot.frozen.post_training_outcome_classification(
+        hypothesis_passed=False,
+        final_evaluation_complete=True,
+        probative_post_training=True,
+        promotion_count=0,
+    ) == {
+        "meaningful_post_training": False,
+        "post_training_outcome": "NEGATIVE_EXPERIMENT_COMPLETED",
+        "dynamic_complexity_progressed": False,
+    }
+    assert pilot.frozen.post_training_outcome_classification(
+        hypothesis_passed=False,
+        final_evaluation_complete=False,
+        probative_post_training=True,
+        promotion_count=2,
+    ) == {
+        "meaningful_post_training": False,
+        "post_training_outcome": "INCONCLUSIVE_EXPERIMENT_COMPLETED",
+        "dynamic_complexity_progressed": True,
+    }
+    with pytest.raises(ValueError, match="complete final evaluation"):
+        pilot.frozen.post_training_outcome_classification(
+            hypothesis_passed=True,
+            final_evaluation_complete=False,
+            probative_post_training=True,
+            promotion_count=1,
+        )
+    assert pilot.frozen.post_training_outcome_classification(
+        hypothesis_passed=False,
+        final_evaluation_complete=True,
+        probative_post_training=False,
+        promotion_count=0,
+    ) == {
+        "meaningful_post_training": False,
+        "post_training_outcome": "INCONCLUSIVE_EXPERIMENT_COMPLETED",
+        "dynamic_complexity_progressed": False,
+    }
+    assert (
+        pilot.frozen.post_training_claim_strength(
+            final_evaluation_complete=True,
+            probative_post_training=True,
+            hypothesis_passed=False,
+        )
+        == "NEGATIVE_RESULT"
     )
 
 
@@ -374,11 +503,27 @@ def test_pilot_result_records_seed_and_source_contract(
             "retention_transaction_revision": pilot.RETENTION_TRANSACTION_REVISION,
             "best_validation": {"update": 3},
             "reward_contract": {"revision": "correctness-gated-efficiency@1"},
+            "determinism": {
+                **pilot.deterministic_runtime_contract(),
+                "cuda_seeded_all_devices": True,
+            },
+            "promotions": [],
+            "updates_completed": 3,
+            "training_level_allocation_contract": (pilot.training_level_allocation_contract()),
+            "training_level_allocation_transition": {
+                "revision": pilot.TRAINING_LEVEL_ALLOCATION_REVISION,
+                "first_retained_promotion_update": None,
+                "first_post_promotion_allocation_update": None,
+                "transition_observed": False,
+            },
             "training_configuration": {
                 "shared_prefix_checkpoint": "stale",
                 "minimum_shared_prefix_actions": 2,
                 "policy_credit_scope": "stale",
                 "learning_signal": "stale",
+                "deterministic_runtime": pilot.deterministic_runtime_contract(),
+                "maximum_consecutive_regression_windows": 4,
+                "training_level_allocation": (pilot.training_level_allocation_contract()),
             },
         },
         manifest=manifest,
@@ -400,6 +545,8 @@ def test_pilot_result_records_seed_and_source_contract(
     assert result["training_configuration"]["learning_signal"] == pilot.LEARNING_SIGNAL
     assert result["training_configuration"]["learning_rate"] == 1e-5
     assert result["training_configuration"]["reference_kl_coefficient"] == 1.0
+    assert result["deterministic_runtime_revision"] == ("eager-math-sdp-deterministic@1")
+    assert result["training_level_allocation_revision"] == ("retained-promotion-3-1-to-2-2@1")
     assert result["retention_transaction_revision"] == pilot.RETENTION_TRANSACTION_REVISION
     assert result["retained_policy_update_count"] == 1
 
@@ -417,6 +564,7 @@ def test_pilot_installs_the_transaction_and_conservative_trust_region(
         "ACTIVE_RETENTION_TRANSACTION_REVISION",
         "LEARNING_RATE",
         "REFERENCE_KL_COEFFICIENT",
+        "MAXIMUM_CONSECUTIVE_REGRESSION_WINDOWS",
     ):
         monkeypatch.setattr(pilot.frozen, name, getattr(pilot.frozen, name))
     monkeypatch.setattr(pilot, "install_bootstrap_checkpoint_contract", lambda _width: None)

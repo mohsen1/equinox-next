@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from research.runpod import repository_repair_large_model_study as study
 from research.runpod import repository_repair_large_model_trainer as trainer
+
+
+def checkpoint_authentication_identity() -> dict[str, str]:
+    return {
+        "run_identity": "runpod-proof-checkpoint-test",
+        "profile_id": "qwen2.5-coder-7b-runpod-h100@10",
+        "authorization_digest": "sha256:" + "1" * 64,
+        "source_head_commit": "2" * 40,
+        "workload_bundle_digest": "sha256:" + "3" * 64,
+        "workload_revision": trainer.WORKLOAD_REVISION,
+        "model_revision": "4" * 40,
+        "objective_id": trainer.OBJECTIVE_ID,
+    }
 
 
 class FakeOptimizer:
@@ -21,12 +37,107 @@ class FakeOptimizer:
 
 
 def test_transactional_trainer_has_its_own_workload_and_objective_identity() -> None:
-    assert trainer.WORKLOAD_REVISION == "runpod-repository-repair-transactional-retention@1"
+    assert trainer.WORKLOAD_REVISION == "runpod-repository-repair-transactional-retention@2"
     assert (
-        trainer.OBJECTIVE_ID == "verified-repair-chain-transactional-retention-policy-gradient@18"
+        trainer.OBJECTIVE_ID == "verified-repair-chain-transactional-retention-policy-gradient@19"
     )
     assert study.BASE_WORKLOAD_REVISION == trainer.WORKLOAD_REVISION
     assert study.BASE_OBJECTIVE_ID == trainer.OBJECTIVE_ID
+
+
+def test_deterministic_torch_runtime_is_fail_closed_and_proven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = {
+        "deterministic": False,
+        "warn_only": True,
+        "flash": True,
+        "memory_efficient": True,
+        "math": False,
+    }
+    cuda_backend = SimpleNamespace(
+        matmul=SimpleNamespace(allow_tf32=True),
+        enable_flash_sdp=lambda enabled: state.update(flash=enabled),
+        enable_mem_efficient_sdp=lambda enabled: state.update(memory_efficient=enabled),
+        enable_math_sdp=lambda enabled: state.update(math=enabled),
+        flash_sdp_enabled=lambda: state["flash"],
+        mem_efficient_sdp_enabled=lambda: state["memory_efficient"],
+        math_sdp_enabled=lambda: state["math"],
+    )
+    cudnn_backend = SimpleNamespace(
+        allow_tf32=True,
+        benchmark=True,
+        deterministic=False,
+    )
+    torch_module = SimpleNamespace(
+        backends=SimpleNamespace(cuda=cuda_backend, cudnn=cudnn_backend),
+        use_deterministic_algorithms=lambda enabled, warn_only: state.update(
+            deterministic=enabled,
+            warn_only=warn_only,
+        ),
+        are_deterministic_algorithms_enabled=lambda: state["deterministic"],
+        is_deterministic_algorithms_warn_only_enabled=lambda: state["warn_only"],
+    )
+
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    with pytest.raises(RuntimeError, match="CUBLAS_WORKSPACE_CONFIG"):
+        trainer.configure_deterministic_torch_runtime(torch_module)
+
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    assert trainer.configure_deterministic_torch_runtime(torch_module) == {
+        "revision": "eager-math-sdp-deterministic@1",
+        "attention_implementation": "eager",
+        "cublas_workspace_config": ":4096:8",
+        "deterministic_algorithms": True,
+        "deterministic_algorithms_warn_only": False,
+        "flash_sdp_enabled": False,
+        "memory_efficient_sdp_enabled": False,
+        "math_sdp_enabled": True,
+        "cudnn_benchmark": False,
+        "cudnn_deterministic": True,
+        "tf32": False,
+    }
+
+
+def test_training_allocation_transitions_only_after_a_retained_promotion() -> None:
+    assert trainer.training_level_allocation(
+        0,
+        4,
+        probe_level=1,
+        retained_promotion_count=0,
+    ) == [0, 0, 0, 1]
+    with pytest.raises(ValueError, match="nearest probe"):
+        trainer.training_level_allocation(
+            0,
+            4,
+            probe_level=2,
+            retained_promotion_count=0,
+        )
+    assert trainer.training_level_allocation(
+        0,
+        4,
+        probe_level=2,
+        retained_promotion_count=1,
+    ) == [0, 0, 2, 2]
+    promotions = [{"update": 5}]
+    assert trainer.training_level_allocation_transition_evidence(
+        promotions,
+        observed_updates=5,
+    ) == {
+        "revision": "retained-promotion-3-1-to-2-2@1",
+        "first_retained_promotion_update": 5,
+        "first_post_promotion_allocation_update": None,
+        "transition_observed": False,
+    }
+    assert trainer.training_level_allocation_transition_evidence(
+        promotions,
+        observed_updates=6,
+    ) == {
+        "revision": "retained-promotion-3-1-to-2-2@1",
+        "first_retained_promotion_update": 5,
+        "first_post_promotion_allocation_update": 6,
+        "transition_observed": True,
+    }
 
 
 def test_transaction_is_disabled_by_default_and_policy_updates_make_validation_due(
@@ -397,7 +508,9 @@ def test_cross_update_reference_anchors_have_exact_optimizer_input_lineage(
     assert len(pending_training_examples) == 2
     assert trainer.pending_optimizer_batch_from_resume(
         {
-            "pending_training_examples": pending_training_examples,
+            "pending_training_examples": trainer.serialize_pending_training_examples(
+                pending_training_examples
+            ),
             "pending_policy_example_count": pending_policy_example_count,
             "pending_informative_group_ids": pending_informative_group_ids,
             "pending_optimizer_input_group_ids": pending_optimizer_input_group_ids,
@@ -914,19 +1027,37 @@ def test_transaction_round_trips_real_optimizer_checkpoint_when_torch_is_availab
         Path(target, "adapter_config.json").write_text("{}", encoding="utf-8")
         Path(target, "adapter_model.safetensors").write_bytes(b"adapter")
 
-    trainer.persist_checkpoint(
+    authentication_key = b"k" * 32
+    authentication_identity = checkpoint_authentication_identity()
+    commit = trainer.persist_checkpoint(
         checkpoints_root=str(checkpoints_root),
         latest_checkpoint_path=str(latest),
         checkpoint_name="update-0002",
-        state={"retained_transaction": transaction},
+        state={
+            "checkpoint_generation": 1,
+            "retained_transaction": transaction,
+        },
         save_adapter=save_adapter,
         save_state=torch.save,
+        generation=1,
+        authentication_key=authentication_key,
+        authentication_identity=authentication_identity,
     )
-    resumed_state = torch.load(
-        checkpoints_root / "update-0002" / "training-state.pt",
-        map_location="cpu",
-        weights_only=False,
+    authenticated = trainer.load_authenticated_checkpoint(
+        checkpoints_root=str(checkpoints_root),
+        authentication_key=authentication_key,
+        authentication_identity=authentication_identity,
+        expected_generation=commit.generation,
+        expected_manifest_digest=commit.manifest_digest,
     )
+    try:
+        resumed_state = torch.load(
+            Path(authenticated.private_directory) / "training-state.pt",
+            map_location="cpu",
+            weights_only=True,
+        )
+    finally:
+        shutil.rmtree(authenticated.private_directory)
     restored = trainer.validate_retained_transaction_state(
         resumed_state["retained_transaction"],
         best_validation_update=2,
@@ -954,6 +1085,232 @@ def test_transaction_round_trips_real_optimizer_checkpoint_when_torch_is_availab
     )
     assert safely_retained["effective_policy_update_count"] == 2
     assert safely_retained["retained_observation"] == {"exact_rate": 0.75}
+
+
+def test_checkpoint_load_rejects_replacement_between_inventory_and_private_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoints_root = tmp_path / "checkpoints"
+    latest = checkpoints_root / "latest.json"
+    authentication_key = b"r" * 32
+    authentication_identity = checkpoint_authentication_identity()
+
+    def save_adapter(target: str) -> None:
+        Path(target, "adapter_config.json").write_text("{}", encoding="utf-8")
+        Path(target, "adapter_model.safetensors").write_bytes(b"adapter")
+
+    commit = trainer.persist_checkpoint(
+        checkpoints_root=str(checkpoints_root),
+        latest_checkpoint_path=str(latest),
+        checkpoint_name="update-0001",
+        state={"checkpoint_generation": 1},
+        save_adapter=save_adapter,
+        save_state=lambda _state, path: Path(path).write_bytes(b"training-state-one"),
+        generation=1,
+        authentication_key=authentication_key,
+        authentication_identity=authentication_identity,
+    )
+    original_read = trainer._read_regular_at_with_metadata
+    training_state_reads = 0
+
+    def replace_before_private_copy(
+        directory_descriptor: int,
+        name: str,
+        *,
+        maximum_bytes: int,
+    ) -> tuple[bytes, os.stat_result]:
+        nonlocal training_state_reads
+        if name == "training-state.pt":
+            training_state_reads += 1
+            if training_state_reads == 2:
+                replacement = checkpoints_root / "update-0001" / "replacement"
+                replacement.write_bytes(b"training-state-two")
+                os.replace(
+                    replacement,
+                    checkpoints_root / "update-0001" / "training-state.pt",
+                )
+        return original_read(
+            directory_descriptor,
+            name,
+            maximum_bytes=maximum_bytes,
+        )
+
+    monkeypatch.setattr(
+        trainer,
+        "_read_regular_at_with_metadata",
+        replace_before_private_copy,
+    )
+    with pytest.raises(RuntimeError, match="changed before private materialization"):
+        trainer.load_authenticated_checkpoint(
+            checkpoints_root=str(checkpoints_root),
+            authentication_key=authentication_key,
+            authentication_identity=authentication_identity,
+            expected_generation=commit.generation,
+            expected_manifest_digest=commit.manifest_digest,
+        )
+
+
+def test_checkpoint_load_rejects_wrong_key_identity_and_replay_counter(
+    tmp_path: Path,
+) -> None:
+    checkpoints_root = tmp_path / "checkpoints"
+    identity = checkpoint_authentication_identity()
+    key = b"a" * 32
+
+    def save_adapter(target: str) -> None:
+        Path(target, "adapter_config.json").write_text("{}", encoding="utf-8")
+        Path(target, "adapter_model.safetensors").write_bytes(b"adapter")
+
+    commit = trainer.persist_checkpoint(
+        checkpoints_root=str(checkpoints_root),
+        latest_checkpoint_path=str(checkpoints_root / "latest.json"),
+        checkpoint_name="update-0001",
+        state={"checkpoint_generation": 1},
+        save_adapter=save_adapter,
+        save_state=lambda _state, path: Path(path).write_bytes(b"training-state"),
+        generation=1,
+        authentication_key=key,
+        authentication_identity=identity,
+    )
+    for authentication_key, authentication_identity, generation, digest in (
+        (b"b" * 32, identity, 1, commit.manifest_digest),
+        (
+            key,
+            {**identity, "run_identity": "runpod-proof-different-test"},
+            1,
+            commit.manifest_digest,
+        ),
+        (key, identity, 2, commit.manifest_digest),
+        (key, identity, 1, "sha256:" + "9" * 64),
+    ):
+        with pytest.raises(RuntimeError):
+            trainer.load_authenticated_checkpoint(
+                checkpoints_root=str(checkpoints_root),
+                authentication_key=authentication_key,
+                authentication_identity=authentication_identity,
+                expected_generation=generation,
+                expected_manifest_digest=digest,
+            )
+
+
+@pytest.mark.parametrize("replacement_kind", ("symlink", "hardlink"))
+def test_checkpoint_load_rejects_linked_training_state(
+    tmp_path: Path,
+    replacement_kind: str,
+) -> None:
+    checkpoints_root = tmp_path / "checkpoints"
+    identity = checkpoint_authentication_identity()
+    key = b"l" * 32
+
+    def save_adapter(target: str) -> None:
+        Path(target, "adapter_config.json").write_text("{}", encoding="utf-8")
+        Path(target, "adapter_model.safetensors").write_bytes(b"adapter")
+
+    commit = trainer.persist_checkpoint(
+        checkpoints_root=str(checkpoints_root),
+        latest_checkpoint_path=str(checkpoints_root / "latest.json"),
+        checkpoint_name="update-0001",
+        state={"checkpoint_generation": 1},
+        save_adapter=save_adapter,
+        save_state=lambda _state, path: Path(path).write_bytes(b"training-state"),
+        generation=1,
+        authentication_key=key,
+        authentication_identity=identity,
+    )
+    training_state = checkpoints_root / "update-0001" / "training-state.pt"
+    outside = tmp_path / "outside-state"
+    outside.write_bytes(training_state.read_bytes())
+    training_state.unlink()
+    if replacement_kind == "symlink":
+        training_state.symlink_to(outside)
+    else:
+        os.link(outside, training_state)
+
+    with pytest.raises(RuntimeError, match=r"non-regular|single-link"):
+        trainer.load_authenticated_checkpoint(
+            checkpoints_root=str(checkpoints_root),
+            authentication_key=key,
+            authentication_identity=identity,
+            expected_generation=commit.generation,
+            expected_manifest_digest=commit.manifest_digest,
+        )
+
+
+def test_checkpoint_load_rejects_legacy_unbound_pointer(tmp_path: Path) -> None:
+    checkpoints_root = tmp_path / "checkpoints"
+    checkpoints_root.mkdir()
+    (checkpoints_root / "latest.json").write_text(
+        '{"checkpoint":"update-0001"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="field set"):
+        trainer.load_authenticated_checkpoint(
+            checkpoints_root=str(checkpoints_root),
+            authentication_key=b"u" * 32,
+            authentication_identity=checkpoint_authentication_identity(),
+            expected_generation=1,
+            expected_manifest_digest="sha256:" + "1" * 64,
+        )
+
+
+def test_pending_optimizer_examples_use_a_weights_only_safe_primitive_codec() -> None:
+    example = trainer.WeightedAction(
+        generated=trainer.GeneratedAction(
+            response='{"tool":"read","path":"example.py"}',
+            input_ids=(1, 2, 3),
+            attention_mask=(1, 1, 1),
+            completion_mask=(0, 1, 1),
+        ),
+        weight=0.5,
+        optimizer_input_group_id="task-group-1",
+    )
+    encoded = trainer.serialize_pending_training_examples([example])
+
+    assert encoded == [
+        {
+            "response": example.generated.response,
+            "input_ids": [1, 2, 3],
+            "attention_mask": [1, 1, 1],
+            "completion_mask": [0, 1, 1],
+            "weight": 0.5,
+            "optimizer_input_group_id": "task-group-1",
+        }
+    ]
+    assert trainer.deserialize_pending_training_examples(encoded) == [example]
+    with pytest.raises(ValueError, match="field set"):
+        trainer.deserialize_pending_training_examples([example])
+    with pytest.raises(ValueError, match="input_ids"):
+        trainer.deserialize_pending_training_examples(
+            [{**encoded[0], "input_ids": [-1, 2, 3]}]
+        )
+
+
+def test_adapter_root_accepts_the_exact_inherited_proc_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    descriptor = os.open(
+        adapter,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    proc_path = f"/proc/self/fd/{descriptor}"
+    if not os.path.exists(proc_path):
+        os.close(descriptor)
+        pytest.skip("the actual /proc descriptor path is Linux-specific")
+    try:
+        monkeypatch.setenv(trainer.ADAPTER_ROOT_DESCRIPTOR_ENVIRONMENT, str(descriptor))
+        assert trainer.authenticated_adapter_root_from_environment(proc_path) == (
+            proc_path,
+            descriptor,
+        )
+        with pytest.raises(RuntimeError, match="authenticated descriptor path"):
+            trainer.authenticated_adapter_root_from_environment(str(adapter))
+    finally:
+        os.close(descriptor)
 
 
 def test_terminal_progress_preserves_rich_training_context(

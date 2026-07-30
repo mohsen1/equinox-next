@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+# ruff: noqa: SIM105, UP017, UP038
+"""Fail-closed host guard for one exact RunPod network volume."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import re
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+CONTRACT_FIELDS = {
+    "schema_version",
+    "revision",
+    "guard_id",
+    "screen_proof_id",
+    "volume_id",
+    "data_center_id",
+    "size_gb",
+    "storage_hourly_cap_usd",
+    "storage_reserve_usd",
+    "created_at",
+    "expires_at",
+    "expires_at_epoch",
+    "runpodctl_path",
+    "guard_program_path",
+    "guard_program_digest",
+}
+STATE_FIELDS = {
+    "schema_version",
+    "revision",
+    "guard_id",
+    "phase",
+    "owner_pid",
+    "proof_id",
+    "pod_id",
+    "heartbeat_epoch",
+    "updated_at",
+}
+DIGEST = re.compile(r"^[0-9a-f]{64}$")
+IDENTIFIER = re.compile(r"^[A-Za-z0-9._-]+$")
+PHASES = {
+    "screen-running",
+    "screen-failed",
+    "awaiting-pilot",
+    "pilot-running",
+    "volume-deletion-confirmed",
+}
+
+
+def canonical_bytes(value: Any) -> bytes:
+    return (
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        + b"\n"
+    )
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def read_regular_json(path: pathlib.Path, expected_fields: set[str]) -> dict[str, Any]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= 64 * 1024:
+            raise ValueError(f"{path.name} is not a bounded regular file")
+        payload = b""
+        while len(payload) < metadata.st_size:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, metadata.st_size - len(payload)),
+            )
+            if not chunk:
+                raise ValueError(f"{path.name} was truncated")
+            payload += chunk
+    finally:
+        os.close(descriptor)
+    value = json.loads(payload)
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_fields
+        or payload != canonical_bytes(value)
+    ):
+        raise ValueError(f"{path.name} contract mismatch")
+    return value
+
+
+def durable_write(path: pathlib.Path, value: dict[str, Any]) -> None:
+    descriptor, pending_name = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
+    pending = pathlib.Path(pending_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(canonical_bytes(value))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(pending, path)
+        directory = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            pending.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def command(contract: dict[str, Any], *arguments: str) -> Any:
+    result = subprocess.run(
+        [str(contract["runpodctl_path"]), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    return json.loads(result.stdout)
+
+
+def exact_target(
+    contract: dict[str, Any],
+    value: dict[str, Any],
+) -> bool:
+    volume = value.get("networkVolume", value)
+    if not isinstance(volume, dict):
+        return False
+    return (
+        (volume.get("id") or volume.get("networkVolumeId")) == contract["volume_id"]
+        and volume.get("dataCenterId") == contract["data_center_id"]
+        and volume.get("size") == contract["size_gb"]
+    )
+
+
+def inventory(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    value = command(contract, "network-volume", "list")
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError("provider volume inventory is malformed")
+    return value
+
+
+def target_absent(contract: dict[str, Any]) -> bool:
+    return all(
+        (item.get("id") or item.get("networkVolumeId")) != contract["volume_id"]
+        for item in inventory(contract)
+    )
+
+
+def provider_has_no_pods(contract: dict[str, Any]) -> bool:
+    value = command(contract, "pod", "list", "--all")
+    return isinstance(value, list) and not value
+
+
+def provider_has_zero_spend(contract: dict[str, Any]) -> bool:
+    value = command(contract, "user")
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("currentSpendPerHr"), (int, float))
+        and not isinstance(value.get("currentSpendPerHr"), bool)
+        and value["currentSpendPerHr"] == 0
+    )
+
+
+def owner_is_live(state: dict[str, Any]) -> bool:
+    owner_pid = state["owner_pid"]
+    # The launcher has bounded provider calls up to 120 seconds. Keep the
+    # heartbeat window above every blocking call so a slow create cannot make
+    # the guard delete an about-to-be-attached volume. The heartbeat remains a
+    # PID-reuse defense; the immutable expiry still wins even for a live PID.
+    if owner_pid <= 1 or int(time.time()) - state["heartbeat_epoch"] > 300:
+        return False
+    try:
+        os.kill(owner_pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
+def write_evidence(
+    root: pathlib.Path,
+    contract: dict[str, Any],
+    *,
+    status: str,
+    reason: str,
+    deletion_attempts: int,
+) -> None:
+    durable_write(
+        root / "guard-evidence.json",
+        {
+            "schema_version": 1,
+            "revision": "runpod-network-volume-expiry-evidence@1",
+            "guard_id": contract["guard_id"],
+            "screen_proof_id": contract["screen_proof_id"],
+            "volume_id": contract["volume_id"],
+            "data_center_id": contract["data_center_id"],
+            "size_gb": contract["size_gb"],
+            "expires_at": contract["expires_at"],
+            "status": status,
+            "reason": reason,
+            "deletion_attempts": deletion_attempts,
+            "observed_at": utc_now(),
+        },
+    )
+
+
+def validate_contract(contract: dict[str, Any], root: pathlib.Path) -> None:
+    program_path = pathlib.Path(str(contract["guard_program_path"]))
+    try:
+        program_metadata = program_path.lstat()
+        program_digest = hashlib.sha256(program_path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise ValueError("guard program could not be verified") from error
+    if (
+        contract["schema_version"] != 1
+        or contract["revision"] != "runpod-network-volume-expiry@1"
+        or DIGEST.fullmatch(str(contract["guard_id"])) is None
+        or IDENTIFIER.fullmatch(str(contract["screen_proof_id"])) is None
+        or IDENTIFIER.fullmatch(str(contract["volume_id"])) is None
+        or IDENTIFIER.fullmatch(str(contract["data_center_id"])) is None
+        or not isinstance(contract["size_gb"], int)
+        or isinstance(contract["size_gb"], bool)
+        or contract["size_gb"] <= 0
+        or not isinstance(contract["expires_at_epoch"], int)
+        or isinstance(contract["expires_at_epoch"], bool)
+        or contract["expires_at_epoch"] <= 0
+        or not isinstance(contract["storage_hourly_cap_usd"], (int, float))
+        or contract["storage_hourly_cap_usd"] <= 0
+        or not isinstance(contract["storage_reserve_usd"], (int, float))
+        or contract["storage_reserve_usd"] <= 0
+        or not pathlib.Path(contract["runpodctl_path"]).is_absolute()
+        or program_path != root / "guard-program.py"
+        or not stat.S_ISREG(program_metadata.st_mode)
+        or program_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(program_metadata.st_mode) & 0o077
+        or not isinstance(contract["guard_program_digest"], str)
+        or DIGEST.fullmatch(contract["guard_program_digest"]) is None
+        or program_digest != contract["guard_program_digest"]
+        or pathlib.Path(__file__) != program_path
+    ):
+        raise ValueError("volume guard contract is invalid")
+
+
+def validate_state(contract: dict[str, Any], state: dict[str, Any]) -> None:
+    if (
+        state["schema_version"] != 1
+        or state["revision"] != "runpod-network-volume-expiry-state@1"
+        or state["guard_id"] != contract["guard_id"]
+        or state["phase"] not in PHASES
+        or not isinstance(state["owner_pid"], int)
+        or isinstance(state["owner_pid"], bool)
+        or state["owner_pid"] < 0
+        or IDENTIFIER.fullmatch(str(state["proof_id"])) is None
+        or (state["pod_id"] is not None and IDENTIFIER.fullmatch(str(state["pod_id"])) is None)
+        or not isinstance(state["heartbeat_epoch"], int)
+        or isinstance(state["heartbeat_epoch"], bool)
+        or state["heartbeat_epoch"] <= 0
+    ):
+        raise ValueError("volume guard state is invalid")
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: runpod-volume-expiry-guard GUARD_DIRECTORY")
+    root = pathlib.Path(sys.argv[1])
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+        raise SystemExit("guard directory must be an existing private directory")
+    if stat.S_IMODE(root.stat().st_mode) & 0o077:
+        raise SystemExit("guard directory permissions are not private")
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    contract = read_regular_json(root / "contract.json", CONTRACT_FIELDS)
+    validate_contract(contract, root)
+    state = read_regular_json(root / "state.json", STATE_FIELDS)
+    validate_state(contract, state)
+    observed = command(contract, "network-volume", "get", contract["volume_id"])
+    matching = [
+        item
+        for item in inventory(contract)
+        if (item.get("id") or item.get("networkVolumeId")) == contract["volume_id"]
+    ]
+    account = command(contract, "user")
+    spend = account.get("currentSpendPerHr") if isinstance(account, dict) else None
+    if (
+        not exact_target(contract, observed)
+        or len(matching) != 1
+        or not exact_target(contract, matching[0])
+        or isinstance(spend, bool)
+        or not isinstance(spend, (int, float))
+        or not 0 <= spend <= contract["storage_hourly_cap_usd"]
+    ):
+        raise SystemExit("guard provider readiness attestation failed")
+    durable_write(
+        root / "guard-ready.json",
+        {
+            "schema_version": 1,
+            "revision": "runpod-network-volume-expiry-ready@1",
+            "guard_id": contract["guard_id"],
+            "ready": True,
+            "pid": os.getpid(),
+            "started_at": utc_now(),
+        },
+    )
+    deletion_attempts = 0
+    consecutive_confirmations = 0
+    while True:
+        try:
+            state = read_regular_json(root / "state.json", STATE_FIELDS)
+            validate_state(contract, state)
+            now = int(time.time())
+            if state["phase"] == "volume-deletion-confirmed":
+                should_delete = True
+                reason = "launcher-confirmed-deletion"
+            elif state["phase"] == "awaiting-pilot":
+                should_delete = now >= contract["expires_at_epoch"]
+                reason = "pilot-handoff-deadline-expired"
+            elif state["phase"] in {"screen-failed", "screen-running", "pilot-running"}:
+                should_delete = (
+                    state["phase"] == "screen-failed"
+                    or now >= contract["expires_at_epoch"]
+                    or not owner_is_live(state)
+                )
+                reason = (
+                    "launcher-failed"
+                    if state["phase"] == "screen-failed"
+                    else "owner-liveness-lost"
+                )
+            else:
+                should_delete = False
+                reason = "guard-active"
+            if not should_delete:
+                time.sleep(5)
+                continue
+            if target_absent(contract):
+                if provider_has_no_pods(contract) and provider_has_zero_spend(contract):
+                    consecutive_confirmations += 1
+                    if consecutive_confirmations >= 3:
+                        write_evidence(
+                            root,
+                            contract,
+                            status="deletion-confirmed",
+                            reason=reason,
+                            deletion_attempts=deletion_attempts,
+                        )
+                        return 0
+                else:
+                    consecutive_confirmations = 0
+                time.sleep(5)
+                continue
+            consecutive_confirmations = 0
+            if not provider_has_no_pods(contract):
+                time.sleep(5)
+                continue
+            observed = command(contract, "network-volume", "get", contract["volume_id"])
+            matching = [
+                item
+                for item in inventory(contract)
+                if (item.get("id") or item.get("networkVolumeId")) == contract["volume_id"]
+            ]
+            if (
+                not exact_target(contract, observed)
+                or len(matching) != 1
+                or not exact_target(contract, matching[0])
+            ):
+                write_evidence(
+                    root,
+                    contract,
+                    status="blocked",
+                    reason="provider-volume-identity-mismatch",
+                    deletion_attempts=deletion_attempts,
+                )
+                time.sleep(5)
+                continue
+            deletion_attempts += 1
+            subprocess.run(
+                [
+                    str(contract["runpodctl_path"]),
+                    "network-volume",
+                    "delete",
+                    str(contract["volume_id"]),
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+            )
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+            write_evidence(
+                root,
+                contract,
+                status="retrying",
+                reason="provider-or-state-check-failed",
+                deletion_attempts=deletion_attempts,
+            )
+        time.sleep(5)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

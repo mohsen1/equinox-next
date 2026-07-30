@@ -10,13 +10,13 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from equinox_core import canonical_digest, make_id, utc_now
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from .database import connection, migrate
 from .environments import (
@@ -118,6 +118,95 @@ class ComplexityObservationRequest(StrictModel):
     ordered_outcomes: list[bool] = Field(min_length=1, max_length=1024)
 
 
+Sha256Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
+PublicationId = Annotated[
+    str,
+    Field(pattern=r"^runpod-proof-[a-zA-Z0-9_-]+$", min_length=3, max_length=160),
+]
+
+
+class ArtifactPublicationEnvelopeBase(StrictModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal[2]
+    publication_id: PublicationId
+    profile_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
+    artifact_set_manifest_digest: Sha256Digest
+    set_digest: Sha256Digest
+    run_result_canonical_json_sha256: Sha256Digest
+    provider_receipt_canonical_json_sha256: Sha256Digest
+
+
+class ScreenArtifactPublicationEnvelope(ArtifactPublicationEnvelopeBase):
+    publication_type: Literal["screen"]
+
+
+class PilotArtifactPublicationEnvelope(ArtifactPublicationEnvelopeBase):
+    publication_type: Literal["pilot"]
+    source_screen_publication_id: PublicationId
+    source_screen_manifest_digest: Sha256Digest
+    model_artifact_sha256: Sha256Digest
+    model_artifact_size_bytes: int = Field(ge=1, le=512 * 1024 * 1024)
+
+    @model_validator(mode="after")
+    def validate_distinct_source(self) -> PilotArtifactPublicationEnvelope:
+        if self.source_screen_publication_id == self.publication_id:
+            raise ValueError("pilot publication must reference a distinct screen publication")
+        return self
+
+
+ArtifactPublicationEnvelope = Annotated[
+    ScreenArtifactPublicationEnvelope | PilotArtifactPublicationEnvelope,
+    Field(discriminator="publication_type"),
+]
+ARTIFACT_PUBLICATION_ADAPTER = TypeAdapter(ArtifactPublicationEnvelope)
+ATOMIC_ARTIFACT_PUBLICATION_PROFILE_ID = "qwen2.5-coder-7b-runpod-h100@10"
+RECOVERABLE_SCREEN_PUBLICATION_FAILURE = (
+    "The completed larger-model eligibility screen could not be published."
+)
+
+
+def _validate_research_interval(
+    started_at: datetime,
+    completed_at: datetime | None,
+) -> None:
+    if started_at.utcoffset() is None:
+        raise ValueError("started_at must include a timezone")
+    if completed_at is None:
+        return
+    if completed_at.utcoffset() is None:
+        raise ValueError("completed_at must include a timezone")
+    if completed_at < started_at:
+        raise ValueError("completed_at must not precede started_at")
+
+
+def _reserved_artifact_set_key(value: Any, *, path: str) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_path = f"{path}.{key}"
+            if key.startswith("artifact_set_") or key in {
+                "artifact_publication",
+                "artifact_publication_required",
+            }:
+                return child_path
+            nested = _reserved_artifact_set_key(item, path=child_path)
+            if nested is not None:
+                return nested
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            nested = _reserved_artifact_set_key(item, path=f"{path}[{index}]")
+            if nested is not None:
+                return nested
+    return None
+
+
+def _validate_untrusted_research_dicts(**values: dict[str, Any]) -> None:
+    for name, value in values.items():
+        reserved = _reserved_artifact_set_key(value, path=name)
+        if reserved is not None:
+            raise ValueError(f"{reserved} is reserved for the typed artifact_publication envelope")
+
+
 class ResearchComputeProofRequest(StrictModel):
     provider_name: Literal["RunPod"]
     provider_handle: str = Field(pattern=r"^runpod://pods/[a-zA-Z0-9_-]+$")
@@ -125,9 +214,54 @@ class ResearchComputeProofRequest(StrictModel):
     resource_profile: dict[str, Any]
     workload: dict[str, Any]
     result: dict[str, Any]
+    artifact_publication: ArtifactPublicationEnvelope | None = None
     started_at: datetime
     completed_at: datetime
     teardown_confirmed: Literal[True]
+
+    @model_validator(mode="after")
+    def validate_artifact_publication_binding(self) -> ResearchComputeProofRequest:
+        _validate_research_interval(self.started_at, self.completed_at)
+        _validate_untrusted_research_dicts(
+            resource_profile=self.resource_profile,
+            workload=self.workload,
+            result=self.result,
+        )
+        if (
+            self.resource_profile.get("profile_id") == ATOMIC_ARTIFACT_PUBLICATION_PROFILE_ID
+            and self.artifact_publication is None
+        ):
+            raise ValueError("the @10 research profile requires artifact publication")
+        if self.artifact_publication is None:
+            return self
+        if self.artifact_publication.profile_id == ATOMIC_ARTIFACT_PUBLICATION_PROFILE_ID:
+            expected_bindings = (
+                ("id", "workload"),
+                ("model_id", "model_id"),
+                ("static_branch_width", "branch_width"),
+                ("complexity_strategy", "complexity_strategy"),
+            )
+            if (
+                any(
+                    self.workload.get(workload_field) != self.result.get(result_field)
+                    for workload_field, result_field in expected_bindings
+                )
+                or self.workload.get("complexity_strategy") != "adaptive"
+            ):
+                raise ValueError("the @10 proof workload does not match its exact run result")
+        if self.artifact_publication.run_result_canonical_json_sha256 != canonical_digest(
+            self.result
+        ):
+            raise ValueError("artifact publication does not match the canonical run result")
+        provider_receipt = self.model_dump(
+            mode="json",
+            exclude={"artifact_publication"},
+        )
+        if self.artifact_publication.provider_receipt_canonical_json_sha256 != canonical_digest(
+            provider_receipt
+        ):
+            raise ValueError("artifact publication does not match the canonical provider receipt")
+        return self
 
 
 class ResearchComputeExecutionRequest(StrictModel):
@@ -144,6 +278,8 @@ class ResearchComputeExecutionRequest(StrictModel):
     )
     resource_profile: dict[str, Any] = Field(default_factory=dict)
     progress: dict[str, Any] = Field(default_factory=dict)
+    artifact_publication_required: bool = Field(default=False, strict=True)
+    artifact_publication: ArtifactPublicationEnvelope | None = None
     failure_receipt_digest: str | None = Field(
         default=None,
         pattern=r"^sha256:[0-9a-f]{64}$",
@@ -154,6 +290,34 @@ class ResearchComputeExecutionRequest(StrictModel):
 
     @model_validator(mode="after")
     def validate_operational_failure_receipt(self) -> ResearchComputeExecutionRequest:
+        _validate_research_interval(self.started_at, self.completed_at)
+        _validate_untrusted_research_dicts(
+            resource_profile=self.resource_profile,
+            progress=self.progress,
+        )
+        declared_profile_ids = {
+            value
+            for value in (
+                self.resource_profile.get("profile_id"),
+                self.progress.get("profile_id"),
+            )
+            if isinstance(value, str)
+        }
+        if len(declared_profile_ids) > 1:
+            raise ValueError("execution progress and resource profile disagree on profile_id")
+        if (
+            ATOMIC_ARTIFACT_PUBLICATION_PROFILE_ID in declared_profile_ids
+            and not self.artifact_publication_required
+        ):
+            raise ValueError(
+                "the @10 research profile requires artifact publication from provisioning"
+            )
+        if (
+            self.artifact_publication is not None
+            and declared_profile_ids
+            and declared_profile_ids != {self.artifact_publication.profile_id}
+        ):
+            raise ValueError("artifact publication does not match the execution resource profile")
         if self.failure_receipt_digest is not None and self.status != "FAILED":
             raise ValueError("Operational failure receipts may attach only to failed executions")
         return self
@@ -161,6 +325,198 @@ class ResearchComputeExecutionRequest(StrictModel):
 
 RECOVERABLE_PROOF_CONTRACT_ERROR = "The remote result did not satisfy the declared proof contract."
 RECOVERABLE_PROOF_INGESTION_ERROR = "A verified local proof receipt is pending ingestion."
+
+RESEARCH_OBSERVER_EVIDENCE_KEYS = (
+    "phase",
+    "message",
+    "profile_id",
+    "head_commit",
+    "source_contract_digest",
+    "bootstrap_source_digest",
+    "workload_bundle_digest",
+    "workload_bundle_size_bytes",
+    "workload_bundle_path",
+    "bundle_stage_receipt_digest",
+    "volume_readiness_receipt_digest",
+    "torch_retention_evidence_digest",
+    "bundle_activation_digest",
+    "network_volume_id",
+    "network_volume_data_center_id",
+    "network_volume_size_gb",
+    "model_snapshot_digest",
+    "pinned_snapshot_digest",
+    "model_revision",
+    "gate_results",
+    "screen_completed",
+    "eligible",
+    "larger_model_eligible",
+    "evaluation_completed",
+    "evaluation_total",
+    "branch_groups_completed",
+    "branch_groups_total",
+    "update",
+    "maximum_updates",
+    "current_level",
+    "maximum_level",
+)
+
+
+def validated_artifact_publication(
+    source: Any,
+) -> ScreenArtifactPublicationEnvelope | PilotArtifactPublicationEnvelope | None:
+    if isinstance(source, BaseModel):
+        source = source.model_dump(mode="json")
+    try:
+        return ARTIFACT_PUBLICATION_ADAPTER.validate_python(source)
+    except (TypeError, ValueError):
+        return None
+
+
+def artifact_set_publication_evidence(
+    source: Any,
+) -> tuple[bool, str | None]:
+    publication = validated_artifact_publication(source)
+    if publication is None:
+        return False, None
+    return True, publication.artifact_set_manifest_digest
+
+
+def artifact_publication_payload(
+    publication: ArtifactPublicationEnvelope | None,
+) -> dict[str, Any] | None:
+    return publication.model_dump(mode="json") if publication is not None else None
+
+
+def research_execution_profile_ids(execution: dict[str, Any]) -> set[str]:
+    profile_ids: set[str] = set()
+    for field in ("resource_profile", "progress"):
+        value = execution.get(field)
+        profile_id = value.get("profile_id") if isinstance(value, dict) else None
+        if isinstance(profile_id, str):
+            profile_ids.add(profile_id)
+    return profile_ids
+
+
+def research_execution_failure_message(execution: dict[str, Any]) -> str | None:
+    progress = execution.get("progress")
+    if not isinstance(progress, dict):
+        return None
+    operator_error = progress.get("operator_error")
+    if isinstance(operator_error, dict) and isinstance(operator_error.get("message"), str):
+        return operator_error["message"]
+    error = progress.get("error")
+    return error if isinstance(error, str) else None
+
+
+def research_screen_finalization_can_recover(
+    execution_id: str,
+    existing: dict[str, Any],
+    request: ResearchComputeExecutionRequest,
+    publication_payload: dict[str, Any] | None,
+) -> bool:
+    publication = request.artifact_publication
+    if (
+        request.status != "SUCCEEDED"
+        or request.teardown_confirmed is not True
+        or request.artifact_publication_required is not True
+        or not isinstance(publication, ScreenArtifactPublicationEnvelope)
+        or publication.profile_id != ATOMIC_ARTIFACT_PUBLICATION_PROFILE_ID
+        or publication.publication_id != execution_id
+        or publication_payload is None
+        or existing.get("artifact_publication_required") is not True
+        or existing.get("artifact_publication") not in (None, publication_payload)
+        or research_execution_profile_ids(existing) != {ATOMIC_ARTIFACT_PUBLICATION_PROFILE_ID}
+        or research_execution_profile_ids(request.model_dump(mode="python"))
+        != {ATOMIC_ARTIFACT_PUBLICATION_PROFILE_ID}
+        or existing.get("resource_profile") != request.resource_profile
+        or existing.get("name") != request.name
+        or existing.get("workload_id") != request.workload_id
+        or existing.get("model_id") != request.model_id
+        or existing.get("branch_width") != request.branch_width
+        or existing.get("complexity_strategy") != request.complexity_strategy
+        or existing.get("provider_name") != request.provider_name
+        or existing.get("provider_handle") != request.provider_handle
+        or existing.get("started_at") != request.started_at
+    ):
+        return False
+    if existing.get("status") == "FINALIZING":
+        return True
+    if existing.get("status") == "SUCCEEDED":
+        return (
+            existing.get("teardown_confirmed") is True
+            and existing.get("artifact_publication") == publication_payload
+            and existing.get("completed_at") == request.completed_at
+        )
+    return (
+        existing.get("status") == "FAILED"
+        and existing.get("teardown_confirmed") is True
+        and research_execution_failure_message(existing) == RECOVERABLE_SCREEN_PUBLICATION_FAILURE
+    )
+
+
+def research_proof_execution_lineage_matches(
+    execution: dict[str, Any],
+    request: ResearchComputeProofRequest,
+) -> bool:
+    workload_id = request.workload.get("id")
+    result_workload_id = request.result.get("workload")
+    workload_model_id = request.workload.get("model_id")
+    result_model_id = request.result.get("model_id")
+    if (
+        workload_model_id is not None
+        and result_model_id is not None
+        and workload_model_id != result_model_id
+    ):
+        return False
+    receipt_model_id = workload_model_id if workload_model_id is not None else result_model_id
+    return (
+        isinstance(workload_id, str)
+        and workload_id == result_workload_id
+        and execution.get("provider_name") in {None, request.provider_name}
+        and execution.get("provider_handle") == request.provider_handle
+        and execution.get("workload_id") == workload_id
+        and execution.get("model_id") == receipt_model_id
+        and execution.get("started_at") == request.started_at
+    )
+
+
+def require_pilot_source_screen(
+    conn: Any,
+    publication: ScreenArtifactPublicationEnvelope | PilotArtifactPublicationEnvelope,
+) -> None:
+    if not isinstance(publication, PilotArtifactPublicationEnvelope):
+        return
+    source_screen = conn.execute(
+        """
+        SELECT execution_id, status, teardown_confirmed,
+               artifact_publication_required, artifact_publication
+        FROM research_compute_executions
+        WHERE execution_id = %s
+        """,
+        (publication.source_screen_publication_id,),
+    ).fetchone()
+    source_publication = validated_artifact_publication(
+        source_screen.get("artifact_publication") if source_screen else None
+    )
+    if (
+        source_screen is None
+        or source_screen["execution_id"] != publication.source_screen_publication_id
+        or source_screen["status"] != "SUCCEEDED"
+        or source_screen["teardown_confirmed"] is not True
+        or source_screen["artifact_publication_required"] is not True
+        or not isinstance(
+            source_publication,
+            ScreenArtifactPublicationEnvelope,
+        )
+        or source_publication.publication_id != source_screen["execution_id"]
+        or source_publication.profile_id != publication.profile_id
+        or source_publication.artifact_set_manifest_digest
+        != publication.source_screen_manifest_digest
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RESEARCH_ARTIFACT_PUBLICATION_SOURCE_SCREEN_INVALID"},
+        )
 
 
 def research_proof_can_recover_execution(
@@ -176,9 +532,6 @@ def research_proof_can_recover_execution(
         if isinstance(progress, dict)
         else None
     )
-    workload_id = request.workload.get("id")
-    result_workload_id = request.result.get("workload")
-    receipt_model_id = request.workload.get("model_id") or request.result.get("model_id")
     return (
         execution.get("status") == "FAILED"
         and execution.get("teardown_confirmed") is True
@@ -188,11 +541,7 @@ def research_proof_can_recover_execution(
             RECOVERABLE_PROOF_CONTRACT_ERROR,
             RECOVERABLE_PROOF_INGESTION_ERROR,
         }
-        and execution.get("provider_handle") == request.provider_handle
-        and execution.get("workload_id") == workload_id
-        and workload_id == result_workload_id
-        and execution.get("model_id") == receipt_model_id
-        and execution.get("started_at") == request.started_at
+        and research_proof_execution_lineage_matches(execution, request)
         and request.teardown_confirmed is True
     )
 
@@ -354,6 +703,9 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "elapsed_seconds": result.get("elapsed_seconds"),
         "stop_reason": result.get("stop_reason"),
         "hypothesis_passed": result.get("hypothesis_passed"),
+        "meaningful_post_training": result.get("meaningful_post_training"),
+        "post_training_outcome": result.get("post_training_outcome"),
+        "dynamic_complexity_progressed": result.get("dynamic_complexity_progressed"),
         "adapter_persisted": result.get("adapter_persisted"),
         "post_training_completed": result.get("post_training_completed"),
         "informative_group_rate": result.get("informative_group_rate"),
@@ -443,6 +795,13 @@ def research_result_progress(result: dict[str, Any]) -> dict[str, Any]:
         "multi_step": result.get("multi_step"),
         "restored_continuations": result.get("restored_continuations"),
         "restored_branching_observed": result.get("restored_branching_observed"),
+        "profile_id": result.get("profile_id"),
+        "head_commit": result.get("head_commit"),
+        "source_contract_digest": result.get("source_contract_digest"),
+        "model_snapshot_digest": result.get("model_snapshot_digest"),
+        "pinned_snapshot_digest": result.get("pinned_snapshot_digest"),
+        "model_revision": result.get("model_revision"),
+        "gate_results": result.get("gate_results"),
     }
     return {key: value for key, value in values.items() if value is not None}
 
@@ -463,6 +822,8 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
         persisted_branch_snapshots = [latest_branch_snapshot]
     return {
         "schema_version": 2 if result.get("multi_step") else 1,
+        "phase": result.get("phase"),
+        "message": result.get("message"),
         "branch_width": result.get("branch_width"),
         "complexity_strategy": result.get("complexity_strategy"),
         "multi_step": result.get("multi_step", False),
@@ -503,6 +864,10 @@ def research_trajectory(result: dict[str, Any]) -> dict[str, Any]:
             else []
         ),
         "branch_snapshots": persisted_branch_snapshots,
+        "evaluation_completed": result.get("evaluation_completed"),
+        "evaluation_total": result.get("evaluation_total"),
+        "branch_groups_completed": result.get("branch_groups_completed"),
+        "branch_groups_total": result.get("branch_groups_total"),
         "branch_evidence_complete": result.get("branch_evidence_complete"),
         "branch_evidence_group_count": result.get("branch_evidence_group_count"),
         "branch_evidence_limit": result.get("branch_evidence_limit"),
@@ -596,6 +961,34 @@ def research_execution_response(item: dict[str, Any]) -> dict[str, Any]:
         resource_profile.get("hourly_cost_usd"),
         progress.get("elapsed_seconds"),
     )
+    response["observer_evidence"] = {
+        key: (
+            progress[key]
+            if key in progress and progress[key] is not None
+            else resource_profile[key]
+        )
+        for key in RESEARCH_OBSERVER_EVIDENCE_KEYS
+        if (key in progress and progress[key] is not None)
+        or (key in resource_profile and resource_profile[key] is not None)
+    }
+    durably_published, manifest_digest = artifact_set_publication_evidence(
+        item.get("artifact_publication")
+    )
+    if durably_published:
+        response["observer_evidence"].update(
+            {
+                "artifact_set_committed": True,
+                "artifact_set_manifest_digest": manifest_digest,
+            }
+        )
+    if (
+        response.get("status") == "SUCCEEDED"
+        and item.get("artifact_publication_required") is True
+        and not durably_published
+    ):
+        response["status"] = "FINALIZING"
+        response["proof_id"] = None
+        response["receipt_digest"] = None
     return response
 
 
@@ -609,6 +1002,9 @@ def research_proof_response(
     )
     workload = item["workload"] if isinstance(item.get("workload"), dict) else {}
     result = item["result"] if isinstance(item.get("result"), dict) else {}
+    artifact_set_committed, artifact_set_manifest_digest = artifact_set_publication_evidence(
+        item.get("artifact_publication")
+    )
     final_evaluation_partial = result.get("final_evaluation_partial") is True
     elapsed = result.get("elapsed_seconds")
     gpu = result.get("gpu_name") or resource_profile.get("gpu_id")
@@ -623,6 +1019,8 @@ def research_proof_response(
             "final_reward": (None if final_evaluation_partial else result.get("final_reward")),
             "reward_gain": (None if final_evaluation_partial else result.get("reward_gain")),
             "hypothesis_passed": result.get("hypothesis_passed"),
+            "meaningful_post_training": result.get("meaningful_post_training"),
+            "post_training_outcome": result.get("post_training_outcome"),
             "claim_strength": result.get("claim_strength"),
             "seed_count": result.get("seed_count", result.get("optimization_seed_count")),
         },
@@ -671,6 +1069,7 @@ def research_proof_response(
             },
             "curriculum": {
                 "promotion_count": result.get("promotion_count"),
+                "dynamic_complexity_progressed": result.get("dynamic_complexity_progressed"),
                 "promotions": result.get("promotions"),
                 "reached_level": result.get(
                     "reached_complexity_level",
@@ -688,6 +1087,11 @@ def research_proof_response(
                 "receipt_digest": item["receipt_digest"],
                 "failure_receipt_digest": item.get("failure_receipt_digest"),
                 "teardown_confirmed": item["teardown_confirmed"],
+                "artifact_set_manifest_digest": artifact_set_manifest_digest,
+                "artifact_set_committed": artifact_set_committed,
+                "artifact_publication_status": (
+                    "committed" if artifact_set_committed else "legacy_non_atomic"
+                ),
             },
         }
     )
@@ -2291,7 +2695,7 @@ def list_research_compute_executions() -> dict[str, Any]:
                 """
             )
         )
-    return {"items": items}
+    return {"items": [research_execution_response(item) for item in items]}
 
 
 @app.get("/v1/studies")
@@ -2350,7 +2754,7 @@ def get_research_compute_trajectory(execution_id: str) -> dict[str, Any]:
     proof_result = execution.pop("proof_result")
     trajectory_source = research_trajectory_source(execution, proof_result)
     return {
-        "execution": execution,
+        "execution": research_execution_response(execution),
         "trajectory": (
             research_trajectory(trajectory_source) if isinstance(trajectory_source, dict) else None
         ),
@@ -2367,6 +2771,20 @@ def update_research_compute_execution(
             status_code=422,
             detail={"code": "INVALID_RESEARCH_EXECUTION_ID"},
         )
+    publication_payload = artifact_publication_payload(request.artifact_publication)
+    if (
+        request.artifact_publication is not None
+        and request.artifact_publication.publication_id != execution_id
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_MISMATCH"},
+        )
+    if not request.artifact_publication_required and request.artifact_publication is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RESEARCH_EXECUTION_LEGACY_PUBLICATION_FORBIDDEN"},
+        )
     terminal = request.status in {"SUCCEEDED", "FAILED"}
     if terminal != (request.completed_at is not None):
         raise HTTPException(
@@ -2377,6 +2795,15 @@ def update_research_compute_execution(
         raise HTTPException(
             status_code=422,
             detail={"code": "RESEARCH_EXECUTION_TEARDOWN_UNCONFIRMED"},
+        )
+    if (
+        request.status == "SUCCEEDED"
+        and request.artifact_publication_required
+        and request.artifact_publication is None
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RESEARCH_EXECUTION_ARTIFACT_SET_UNCOMMITTED"},
         )
     if request.status in {"RUNNING", "FINALIZING", "SUCCEEDED"} and not request.provider_handle:
         raise HTTPException(
@@ -2392,6 +2819,7 @@ def update_research_compute_execution(
         "FAILED": 3,
     }
     with connection() as conn:
+        screen_finalization_recovery = False
         existing = conn.execute(
             """
             SELECT *
@@ -2401,6 +2829,15 @@ def update_research_compute_execution(
             """,
             (execution_id,),
         ).fetchone()
+        if (
+            existing is None
+            and request.artifact_publication_required
+            and request.status != "PROVISIONING"
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "RESEARCH_EXECUTION_PUBLICATION_REQUIRES_INITIAL_PROVISIONING"},
+            )
         if existing is None and request.failure_receipt_digest is not None:
             raise HTTPException(
                 status_code=409,
@@ -2411,6 +2848,9 @@ def update_research_compute_execution(
                 existing["name"] != request.name
                 or existing["workload_id"] != request.workload_id
                 or existing["model_id"] != request.model_id
+                or existing["branch_width"] != request.branch_width
+                or existing["complexity_strategy"] != request.complexity_strategy
+                or existing["provider_name"] != request.provider_name
                 or existing["started_at"] != request.started_at
             )
             if immutable_conflict:
@@ -2418,21 +2858,95 @@ def update_research_compute_execution(
                     status_code=409,
                     detail={"code": "RESEARCH_EXECUTION_CONFLICT"},
                 )
-            if existing["status"] in {"SUCCEEDED", "FAILED"} and (
-                existing["status"] != request.status
-                or existing["teardown_confirmed"] != request.teardown_confirmed
+            if (
+                existing.get("artifact_publication_required", False)
+                != request.artifact_publication_required
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_REQUIREMENT_CONFLICT"},
+                )
+            if (
+                existing.get("provider_handle") is not None
+                and request.provider_handle != existing["provider_handle"]
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_AUTHORIZATION_CONFLICT"},
+                )
+            if request.artifact_publication_required:
+                existing_resource_profile = (
+                    existing["resource_profile"]
+                    if isinstance(existing.get("resource_profile"), dict)
+                    else {}
+                )
+                resource_profile_overwrite = any(
+                    key in existing_resource_profile
+                    and existing_resource_profile[key] is not None
+                    and existing_resource_profile[key] != value
+                    for key, value in request.resource_profile.items()
+                )
+                existing_progress = (
+                    existing["progress"] if isinstance(existing.get("progress"), dict) else {}
+                )
+                progress_profile_overwrite = (
+                    isinstance(existing_progress.get("profile_id"), str)
+                    and isinstance(request.progress.get("profile_id"), str)
+                    and existing_progress["profile_id"] != request.progress["profile_id"]
+                )
+                if resource_profile_overwrite or progress_profile_overwrite:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "RESEARCH_EXECUTION_AUTHORIZATION_CONFLICT"},
+                    )
+            existing_publication = existing.get("artifact_publication")
+            if existing_publication is not None and existing_publication != publication_payload:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_CONFLICT"},
+                )
+            screen_finalization_recovery = research_screen_finalization_can_recover(
+                execution_id,
+                dict(existing),
+                request,
+                publication_payload,
+            )
+            if (
+                request.status == "SUCCEEDED"
+                and request.artifact_publication_required is True
+                and isinstance(
+                    request.artifact_publication,
+                    ScreenArtifactPublicationEnvelope,
+                )
+                and request.artifact_publication.profile_id
+                == ATOMIC_ARTIFACT_PUBLICATION_PROFILE_ID
+                and existing["status"] != "SUCCEEDED"
+                and not screen_finalization_recovery
             ):
                 raise HTTPException(
                     status_code=409,
                     detail={"code": "RESEARCH_EXECUTION_TERMINAL"},
                 )
-            if existing["failure_receipt_digest"] is not None:
+            if (
+                existing["status"] in {"SUCCEEDED", "FAILED"}
+                and (
+                    existing["status"] != request.status
+                    or existing["teardown_confirmed"] != request.teardown_confirmed
+                )
+                and not screen_finalization_recovery
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_EXECUTION_TERMINAL"},
+                )
+            if existing["failure_receipt_digest"] is not None and not screen_finalization_recovery:
                 if request.failure_receipt_digest != existing["failure_receipt_digest"]:
                     raise HTTPException(
                         status_code=409,
                         detail={"code": "RESEARCH_EXECUTION_RECEIPT_CONFLICT"},
                     )
-                return existing
+                if publication_payload is None or existing_publication is not None:
+                    return existing
             if request.failure_receipt_digest is not None and existing[
                 "failure_receipt_digest"
             ] not in {None, request.failure_receipt_digest}:
@@ -2450,16 +2964,19 @@ def update_research_compute_execution(
                     status_code=409,
                     detail={"code": "RESEARCH_EXECUTION_STATUS_REGRESSION"},
                 )
+        if request.artifact_publication is not None:
+            require_pilot_source_screen(conn, request.artifact_publication)
 
         row = conn.execute(
             """
             INSERT INTO research_compute_executions(
               execution_id, name, workload_id, model_id, branch_width,
               complexity_strategy, status, provider_name, provider_handle,
-              resource_profile, progress, started_at, completed_at,
+              resource_profile, progress, artifact_publication_required,
+              artifact_publication, started_at, completed_at,
               teardown_confirmed, failure_receipt_digest
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (execution_id) DO UPDATE SET
               status = EXCLUDED.status,
@@ -2472,8 +2989,20 @@ def update_research_compute_execution(
                 || EXCLUDED.resource_profile
               ),
               progress = (
-                research_compute_executions.progress
-                || EXCLUDED.progress
+                (
+                  CASE
+                    WHEN EXCLUDED.status = 'SUCCEEDED'
+                    THEN research_compute_executions.progress
+                      - 'error'
+                      - 'remote_error'
+                      - 'operator_error'
+                    ELSE research_compute_executions.progress
+                  END
+                ) || EXCLUDED.progress
+              ),
+              artifact_publication = COALESCE(
+                research_compute_executions.artifact_publication,
+                EXCLUDED.artifact_publication
               ),
               completed_at = EXCLUDED.completed_at,
               teardown_confirmed = EXCLUDED.teardown_confirmed,
@@ -2496,6 +3025,8 @@ def update_research_compute_execution(
                 request.provider_handle,
                 Jsonb(request.resource_profile),
                 Jsonb(request.progress),
+                request.artifact_publication_required,
+                Jsonb(publication_payload) if publication_payload is not None else None,
                 request.started_at,
                 request.completed_at,
                 request.teardown_confirmed,
@@ -2505,6 +3036,29 @@ def update_research_compute_execution(
         if (
             request.failure_receipt_digest is not None
             and row["failure_receipt_digest"] != request.failure_receipt_digest
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RESEARCH_EXECUTION_RECEIPT_CONFLICT"},
+            )
+        if (
+            publication_payload is not None
+            and row.get("artifact_publication") != publication_payload
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_CONFLICT"},
+            )
+        if row.get("artifact_publication_required", False) != request.artifact_publication_required:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_REQUIREMENT_CONFLICT"},
+            )
+        if (
+            screen_finalization_recovery
+            and existing is not None
+            and existing.get("failure_receipt_digest") is not None
+            and row.get("failure_receipt_digest") != existing["failure_receipt_digest"]
         ):
             raise HTTPException(
                 status_code=409,
@@ -2551,7 +3105,9 @@ def resources() -> dict[str, Any]:
         "allocations": allocations,
         "counts": counts,
         "research_compute_proofs": research_compute_proofs,
-        "research_compute_executions": research_compute_executions,
+        "research_compute_executions": [
+            research_execution_response(item) for item in research_compute_executions
+        ],
         "provider_boundaries": {
             "policy_compute": ["LocalFixtureComputeProvider"],
             "judge": ["DeterministicJudgeFixture"],
@@ -2606,7 +3162,19 @@ def get_research_compute_proof(proof_id: str) -> dict[str, Any]:
 def ingest_research_compute_proof(
     request: ResearchComputeProofRequest,
 ) -> dict[str, Any]:
-    receipt = request.model_dump(mode="json")
+    publication_payload = artifact_publication_payload(request.artifact_publication)
+    if (
+        request.artifact_publication is not None
+        and request.resource_profile.get("profile_id") != request.artifact_publication.profile_id
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RESEARCH_PROOF_ARTIFACT_PUBLICATION_PROFILE_MISMATCH"},
+        )
+    receipt = request.model_dump(
+        mode="json",
+        exclude=({"artifact_publication"} if request.artifact_publication is None else None),
+    )
     receipt_digest = canonical_digest(receipt)
     result_progress = research_result_progress(request.result)
     with connection() as conn:
@@ -2619,6 +3187,50 @@ def ingest_research_compute_proof(
             """,
             (request.provider_handle,),
         ).fetchone()
+        if execution is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "RESEARCH_PROOF_EXECUTION_REQUIRED"},
+            )
+        publication_required = execution.get("artifact_publication_required", False)
+        if publication_required and request.artifact_publication is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "RESEARCH_PROOF_ARTIFACT_SET_UNCOMMITTED"},
+            )
+        if not publication_required and request.artifact_publication is not None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "RESEARCH_PROOF_LEGACY_PUBLICATION_FORBIDDEN"},
+            )
+        if (
+            request.artifact_publication is not None
+            and execution["execution_id"] != request.artifact_publication.publication_id
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "RESEARCH_PROOF_ARTIFACT_PUBLICATION_MISMATCH"},
+            )
+        if not research_proof_execution_lineage_matches(dict(execution), request):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "RESEARCH_PROOF_EXECUTION_LINEAGE_MISMATCH"},
+            )
+        if request.artifact_publication is not None and research_execution_profile_ids(
+            dict(execution)
+        ) != {request.artifact_publication.profile_id}:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "RESEARCH_PROOF_EXECUTION_PROFILE_MISMATCH"},
+            )
+        existing_publication = execution.get("artifact_publication")
+        if existing_publication is not None and existing_publication != publication_payload:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RESEARCH_EXECUTION_ARTIFACT_PUBLICATION_CONFLICT"},
+            )
+        if request.artifact_publication is not None:
+            require_pilot_source_screen(conn, request.artifact_publication)
         recovery_execution_id = (
             execution["execution_id"]
             if execution and research_proof_can_recover_execution(dict(execution), request)
@@ -2638,7 +3250,28 @@ def ingest_research_compute_proof(
                     status_code=409,
                     detail={"code": "RESEARCH_PROOF_CONFLICT"},
                 )
-            conn.execute(
+            if execution["status"] == "SUCCEEDED":
+                if (
+                    execution.get("proof_id") != existing["proof_id"]
+                    or execution.get("receipt_digest") != receipt_digest
+                    or execution.get("teardown_confirmed") is not True
+                    or execution.get("artifact_publication") != publication_payload
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "RESEARCH_PROOF_EXECUTION_STATE_CONFLICT"},
+                    )
+                return {
+                    "proof_id": existing["proof_id"],
+                    "receipt_digest": receipt_digest,
+                    "already_recorded": True,
+                }
+            if execution["status"] != "FINALIZING" and not recovery_execution_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_PROOF_EXECUTION_NOT_FINALIZABLE"},
+                )
+            updated = conn.execute(
                 """
                 UPDATE research_compute_executions SET
                   status = 'SUCCEEDED',
@@ -2648,37 +3281,56 @@ def ingest_research_compute_proof(
                     - 'remote_error'
                     - 'operator_error'
                   ) || %s,
+                  artifact_publication = COALESCE(artifact_publication, %s),
                   proof_id = %s,
                   receipt_digest = %s,
                   completed_at = %s,
                   teardown_confirmed = true,
                   updated_at = now()
-                WHERE provider_handle = %s
-                  AND (status != 'FAILED' OR execution_id = %s)
+                WHERE execution_id = %s
+                  AND provider_handle = %s
+                  AND (
+                    status = 'FINALIZING'
+                    OR (status = 'FAILED' AND execution_id = %s)
+                  )
+                RETURNING execution_id
                 """,
                 (
                     Jsonb(result_progress),
+                    (Jsonb(publication_payload) if publication_payload is not None else None),
                     existing["proof_id"],
                     receipt_digest,
                     request.completed_at,
+                    execution["execution_id"],
                     request.provider_handle,
                     recovery_execution_id,
                 ),
-            )
+            ).fetchone()
+            if updated is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "RESEARCH_PROOF_EXECUTION_UPDATE_CONFLICT"},
+                )
             return {
                 "proof_id": existing["proof_id"],
                 "receipt_digest": receipt_digest,
                 "already_recorded": True,
             }
 
+        if execution["status"] != "FINALIZING" and not recovery_execution_id:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RESEARCH_PROOF_EXECUTION_NOT_FINALIZABLE"},
+            )
         proof_id = make_id("research_proof")
         conn.execute(
             """
             INSERT INTO research_compute_proofs(
               proof_id, provider_name, provider_handle, provider_cli_version,
-              resource_profile, workload, result, receipt_digest, started_at,
+              resource_profile, workload, result, artifact_publication,
+              receipt_digest, started_at,
               completed_at, teardown_confirmed
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 proof_id,
@@ -2688,13 +3340,14 @@ def ingest_research_compute_proof(
                 Jsonb(request.resource_profile),
                 Jsonb(request.workload),
                 Jsonb(request.result),
+                Jsonb(publication_payload) if publication_payload is not None else None,
                 receipt_digest,
                 request.started_at,
                 request.completed_at,
                 request.teardown_confirmed,
             ),
         )
-        conn.execute(
+        updated = conn.execute(
             """
             UPDATE research_compute_executions SET
               status = 'SUCCEEDED',
@@ -2704,23 +3357,36 @@ def ingest_research_compute_proof(
                 - 'remote_error'
                 - 'operator_error'
               ) || %s,
+              artifact_publication = COALESCE(artifact_publication, %s),
               proof_id = %s,
               receipt_digest = %s,
               completed_at = %s,
               teardown_confirmed = true,
               updated_at = now()
-            WHERE provider_handle = %s
-              AND (status != 'FAILED' OR execution_id = %s)
+            WHERE execution_id = %s
+              AND provider_handle = %s
+              AND (
+                status = 'FINALIZING'
+                OR (status = 'FAILED' AND execution_id = %s)
+              )
+            RETURNING execution_id
             """,
             (
                 Jsonb(result_progress),
+                Jsonb(publication_payload) if publication_payload is not None else None,
                 proof_id,
                 receipt_digest,
                 request.completed_at,
+                execution["execution_id"],
                 request.provider_handle,
                 recovery_execution_id,
             ),
-        )
+        ).fetchone()
+        if updated is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RESEARCH_PROOF_EXECUTION_UPDATE_CONFLICT"},
+            )
     return {
         "proof_id": proof_id,
         "receipt_digest": receipt_digest,

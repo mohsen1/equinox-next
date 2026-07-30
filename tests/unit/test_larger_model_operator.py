@@ -146,6 +146,12 @@ def test_pilot_requires_exact_screen_authorization_before_launcher() -> None:
     assert "authorize" in source
     assert "EQUINOX_LARGER_MODEL_SCREEN_RESULT" in source
     assert "EQUINOX_LARGER_MODEL_SCREEN_RECEIPT" in source
+    assert "--expected-publication-type screen" in source
+    assert '.publication_type == "screen"' in source
+    assert ".artifacts.run_result" in source
+    assert ".artifacts.screen_result" not in source
+    assert "EQUINOX_LARGER_MODEL_ARTIFACT_SET_ID" in source
+    assert "EQUINOX_LARGER_MODEL_ARTIFACT_SET_MANIFEST_DIGEST" in source
     assert "EQUINOX_LARGER_MODEL_AUTHORIZATION_DIGEST" in source
     launcher_source = LAUNCHER.read_text(encoding="utf-8")
     assert ".retained_checkpoint_update == .best_validation.update" in launcher_source
@@ -165,12 +171,18 @@ def test_paid_larger_model_worker_is_offline_and_cannot_invoke_pip() -> None:
     assert "EQUINOX_BUNDLE_STAGE_RECEIPT_SHA256" in source
     assert "EQUINOX_BOOTSTRAP_SOURCE_SHA256" in source
     assert 'bundle_handoff_revision="runpod-volume-bundle-handoff@1"' in source
-    assert "sha256sum -c -" in source
+    assert "python3 -I -S -c" in source
+    assert 'getattr(os,"O_NOFOLLOW",0)' in source
+    assert 'f"/proc/self/fd/{descriptor}"' in source
     assert "EQUINOX_BUNDLE_B64" in source
     assert "HF_HUB_OFFLINE=1" in source
     assert "TRANSFORMERS_OFFLINE=1" in source
-    assert "PIP_NO_INDEX=1" in source
-    assert "PYTHONPATH=/workspace/equinox-state/python" in source
+    assert '"isolated-pip-binary-hash-lock@1"' in source
+    assert (
+        '"hash-locked-binary-wheels-during-authenticated-preparation-only"'
+        in source
+    )
+    assert "PYTHONPATH=/workspace/equinox-state/python" not in source
     assert "EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS" in source
     assert "EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS" in source
 
@@ -198,12 +210,12 @@ def test_paid_provider_commands_and_cleanup_are_hard_bounded() -> None:
     source = LAUNCHER.read_text(encoding="utf-8")
 
     assert 'timeout --kill-after=5 "$duration"' in source
-    assert 'create_response="$(run_provider_command 90 runpodctl' in source
-    assert 'pod_response="$(run_provider_command 30 runpodctl pod get' in source
+    assert 'create_response="$(run_provider_command "$create_timeout" runpodctl' in source
+    assert 'pod_response="$(run_provider_command "$attestation_timeout" runpodctl pod get' in source
     assert "trap '' INT TERM HUP" in source
     assert "cleanup_reserve_seconds=120" in source
-    assert "ambiguous_create_visibility_seconds=300" in source
-    assert "ambiguous_create_reconciliation_seconds=330" in source
+    assert "ambiguous_create_termination_grace_seconds=60" in source
+    assert "ambiguous_create_reconciliation_seconds=0" in source
     assert "artifact_retrieval_reserve_seconds=180" in source
     assert (
         "result_deadline_epoch=$((provider_deadline_epoch - cleanup_reserve_seconds "
@@ -295,12 +307,12 @@ def test_larger_model_launcher_binds_profile_eight_interface_and_transport_chain
         )
     ]
 
-    assert manifest["profile_id"] == "qwen2.5-coder-7b-runpod-h100@8"
-    assert manifest["screen"]["workload_revision"] == "larger-model-eligibility-screen@8"
-    assert manifest["pilot"]["workload_revision"] == "runpod-repository-repair-large-model-pilot@6"
+    assert manifest["profile_id"] == "qwen2.5-coder-7b-runpod-h100@10"
+    assert manifest["screen"]["workload_revision"] == "larger-model-eligibility-screen@10"
+    assert manifest["pilot"]["workload_revision"] == "runpod-repository-repair-large-model-pilot@7"
     assert (
         manifest["pilot"]["objective_id"]
-        == "verified-repair-chain-transactional-retention-policy-gradient@18"
+        == "verified-repair-chain-transactional-retention-policy-gradient@19"
     )
     assert (
         manifest["pilot"]["policy_credit_scope"]
