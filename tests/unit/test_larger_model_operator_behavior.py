@@ -45,13 +45,27 @@ VOLUME_ID = "network-volume-123"
 DATA_CENTER_ID = "EU-RO-1"
 IMAGE_TAG = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
 IMAGE_DIGEST = "sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851"
-HEAD_COMMIT = subprocess.run(
-    ["git", "rev-parse", "HEAD"],
-    cwd=REPOSITORY_ROOT,
-    check=True,
-    text=True,
-    capture_output=True,
-).stdout.strip()
+
+
+def _repository_head_commit() -> str:
+    override = os.environ.get("EQUINOX_TEST_HEAD_COMMIT")
+    if override:
+        return override
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPOSITORY_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+    except FileNotFoundError:
+        # The containerized test image intentionally excludes Git and `.git`.
+        # Its fake Git binary returns this same valid sentinel during launcher tests.
+        return "0" * 40
+
+
+HEAD_COMMIT = _repository_head_commit()
 SCREEN_FAIL_FAST_REASONS = [
     "BRANCH_CHECKPOINT_GATE_MATHEMATICALLY_IMPOSSIBLE",
     "INFORMATIVE_GROUP_GATE_MATHEMATICALLY_IMPOSSIBLE",
