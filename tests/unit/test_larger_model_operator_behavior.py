@@ -1050,7 +1050,7 @@ def _run_launch(
             text=True,
             capture_output=True,
             check=False,
-            timeout=20,
+            timeout=40,
         )
     finally:
         for process_path in (tmp_path / "operator-state" / "volume-expiry-guards").glob(

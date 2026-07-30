@@ -2752,8 +2752,10 @@ if [[ -n "$larger_model_mode" ]]; then
   fi
   head_bound_paths=(
     "packages/equinox_core/canonical.py"
+    "research/runpod/artifact_republisher.py"
     "research/runpod/bootstrap_server.py"
     "research/runpod/artifact_publication.py"
+    "scripts/republish-runpod-proof"
     "scripts/runpod-rl-proof"
     "scripts/screen-larger-model"
     "scripts/run-larger-model-pilot"
