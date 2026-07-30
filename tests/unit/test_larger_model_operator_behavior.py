@@ -1050,7 +1050,7 @@ def _run_launch(
             text=True,
             capture_output=True,
             check=False,
-            timeout=40,
+            timeout=20,
         )
     finally:
         for process_path in (tmp_path / "operator-state" / "volume-expiry-guards").glob(
@@ -1727,7 +1727,7 @@ def test_digest_pinned_create_needs_no_mutable_tag_check_after_allocation(
         scenario={
             "spend": 0.005,
             "pod_create_succeeds": True,
-            "transport": "accept",
+            "pod_image": IMAGE_TAG,
             "image_indexes": [_image_index(IMAGE_DIGEST), _image_index(IMAGE_DIGEST)],
         },
     )
