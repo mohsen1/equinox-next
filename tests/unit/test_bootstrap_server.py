@@ -140,13 +140,9 @@ def populate_locked_dependency_tree(
         module_payload = f'VERSION = "{version}"\n'.encode()
         distribution_directory = f"{name.replace('-', '_')}-{version}.dist-info"
         metadata_path = f"{distribution_directory}/METADATA"
-        metadata_payload = (
-            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\n"
-        ).encode()
+        metadata_payload = (f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\n").encode()
         record_path = f"{distribution_directory}/RECORD"
-        module_digest = (
-            "A" * 43 if corrupt_record and index == 0 else record_hash(module_payload)
-        )
+        module_digest = "A" * 43 if corrupt_record and index == 0 else record_hash(module_payload)
         record_payload = (
             f"{module_path},sha256={module_digest},{len(module_payload)}\n"
             f"{metadata_path},sha256={record_hash(metadata_payload)},{len(metadata_payload)}\n"
@@ -593,9 +589,7 @@ def test_hash_locked_dependencies_are_record_closed_and_privately_hardened(
     code_root = tmp_path / "code"
     code_root.mkdir()
     lock_payload = (
-        Path(__file__).resolve().parents[2]
-        / "research/runpod"
-        / DEPENDENCY_LOCK_FILENAME
+        Path(__file__).resolve().parents[2] / "research/runpod" / DEPENDENCY_LOCK_FILENAME
     ).read_bytes()
     (code_root / DEPENDENCY_LOCK_FILENAME).write_bytes(lock_payload)
     code_descriptor = open_directory(code_root)
@@ -635,10 +629,7 @@ def test_hash_locked_dependencies_are_record_closed_and_privately_hardened(
         }
         assert not any(path.startswith("bin/") for path in private_files)
         assert not any("__pycache__" in path for path in private_files)
-        assert all(
-            path.stat().st_mode & 0o222 == 0
-            for path in quarantined.private_root.rglob("*")
-        )
+        assert all(path.stat().st_mode & 0o222 == 0 for path in quarantined.private_root.rglob("*"))
     finally:
         os.close(quarantined.private_root_descriptor)
 
@@ -707,9 +698,7 @@ def test_dependency_quarantine_rejects_changed_lock_before_network(
     code_root.mkdir()
     lock_payload = bytearray(
         (
-            Path(__file__).resolve().parents[2]
-            / "research/runpod"
-            / DEPENDENCY_LOCK_FILENAME
+            Path(__file__).resolve().parents[2] / "research/runpod" / DEPENDENCY_LOCK_FILENAME
         ).read_bytes()
     )
     lock_payload[-1] ^= 1
@@ -758,9 +747,7 @@ def test_hash_locked_dependency_quarantine_rejects_unsafe_install_trees(
     code_root.mkdir()
     (code_root / DEPENDENCY_LOCK_FILENAME).write_bytes(
         (
-            Path(__file__).resolve().parents[2]
-            / "research/runpod"
-            / DEPENDENCY_LOCK_FILENAME
+            Path(__file__).resolve().parents[2] / "research/runpod" / DEPENDENCY_LOCK_FILENAME
         ).read_bytes()
     )
     code_descriptor = open_directory(code_root)
@@ -797,9 +784,7 @@ def test_dependency_quarantine_rejects_private_tree_substitution(
     code_root.mkdir()
     (code_root / DEPENDENCY_LOCK_FILENAME).write_bytes(
         (
-            Path(__file__).resolve().parents[2]
-            / "research/runpod"
-            / DEPENDENCY_LOCK_FILENAME
+            Path(__file__).resolve().parents[2] / "research/runpod" / DEPENDENCY_LOCK_FILENAME
         ).read_bytes()
     )
     code_descriptor = open_directory(code_root)
@@ -858,12 +843,13 @@ def test_code_materialization_isolated_from_shared_source_mutation(
         os.close(source_descriptor)
     try:
         (source_root / "remote_runner.sh").write_bytes(b"attacker replacement\n")
-        assert (
-            materialized.private_root / "remote_runner.sh"
-        ).read_bytes() == contents["remote_runner.sh"]
-        assert materialized.evidence["source_tree_digest"] == materialized.evidence[
-            "private_tree_digest"
+        assert (materialized.private_root / "remote_runner.sh").read_bytes() == contents[
+            "remote_runner.sh"
         ]
+        assert (
+            materialized.evidence["source_tree_digest"]
+            == materialized.evidence["private_tree_digest"]
+        )
         assert materialized.evidence["installed_file_count"] == len(contents)
     finally:
         os.close(materialized.private_root_descriptor)
@@ -951,9 +937,7 @@ def test_dependency_quarantine_rejects_install_mutation_during_copy(
     code_root.mkdir()
     (code_root / DEPENDENCY_LOCK_FILENAME).write_bytes(
         (
-            Path(__file__).resolve().parents[2]
-            / "research/runpod"
-            / DEPENDENCY_LOCK_FILENAME
+            Path(__file__).resolve().parents[2] / "research/runpod" / DEPENDENCY_LOCK_FILENAME
         ).read_bytes()
     )
     code_descriptor = open_directory(code_root)
@@ -1175,24 +1159,14 @@ def test_private_execution_environment_exports_pinned_runtime_root(
             )
         )
         assert stable_work == Path(f"/proc/self/fd/{descriptors['persistent']}")
-        assert stable_dependencies == Path(
-            f"/proc/self/fd/{descriptors['dependencies']}"
-        )
+        assert stable_dependencies == Path(f"/proc/self/fd/{descriptors['dependencies']}")
         assert stable_code == Path(f"/proc/self/fd/{descriptors['code']}")
         assert stable_runtime == Path(f"/proc/self/fd/{descriptors['runtime']}")
         assert stable_anchor == Path(f"/proc/self/fd/{descriptors['anchor']}")
         assert captured_environment["EQUINOX_RUNTIME_ROOT"] == str(stable_runtime)
-        assert (
-            captured_environment["EQUINOX_PRIVATE_RUNTIME_REVISION"]
-            == PRIVATE_RUNTIME_REVISION
-        )
-        assert captured_environment["EQUINOX_RUNTIME_ANCHOR_ROOT"] == str(
-            stable_anchor
-        )
-        assert (
-            captured_environment["EQUINOX_PRIVATE_ANCHOR_REVISION"]
-            == PRIVATE_ANCHOR_REVISION
-        )
+        assert captured_environment["EQUINOX_PRIVATE_RUNTIME_REVISION"] == PRIVATE_RUNTIME_REVISION
+        assert captured_environment["EQUINOX_RUNTIME_ANCHOR_ROOT"] == str(stable_anchor)
+        assert captured_environment["EQUINOX_PRIVATE_ANCHOR_REVISION"] == PRIVATE_ANCHOR_REVISION
         assert all(os.get_inheritable(descriptor) for descriptor in descriptors.values())
     finally:
         for descriptor in descriptors.values():

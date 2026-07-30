@@ -178,10 +178,7 @@ def test_paid_larger_model_worker_is_offline_and_cannot_invoke_pip() -> None:
     assert "HF_HUB_OFFLINE=1" in source
     assert "TRANSFORMERS_OFFLINE=1" in source
     assert '"isolated-pip-binary-hash-lock@1"' in source
-    assert (
-        '"hash-locked-binary-wheels-during-authenticated-preparation-only"'
-        in source
-    )
+    assert '"hash-locked-binary-wheels-during-authenticated-preparation-only"' in source
     assert "PYTHONPATH=/workspace/equinox-state/python" not in source
     assert "EQUINOX_RUNPOD_MODEL_LOAD_TIMEOUT_SECONDS" in source
     assert "EQUINOX_RUNPOD_STALE_PROGRESS_SECONDS" in source

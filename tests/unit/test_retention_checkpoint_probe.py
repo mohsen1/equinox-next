@@ -168,13 +168,8 @@ def test_retention_resume_uses_a_fresh_interpreter_process(
     assert observed_command[0] == probe.sys.executable
     assert "--resume-roundtrip-checkpoint" in observed_command
     assert "--resume-device" in observed_command
-    assert observed_environment["EQUINOX_RETENTION_PROBE_CHECKPOINT_KEY"] == (
-        b"k" * 32
-    ).hex()
-    assert (
-        observed_environment["EQUINOX_RETENTION_PROBE_CHECKPOINT_GENERATION"]
-        == "3"
+    assert observed_environment["EQUINOX_RETENTION_PROBE_CHECKPOINT_KEY"] == (b"k" * 32).hex()
+    assert observed_environment["EQUINOX_RETENTION_PROBE_CHECKPOINT_GENERATION"] == "3"
+    assert observed_environment["EQUINOX_RETENTION_PROBE_CHECKPOINT_MANIFEST_SHA256"] == (
+        "sha256:" + "b" * 64
     )
-    assert observed_environment[
-        "EQUINOX_RETENTION_PROBE_CHECKPOINT_MANIFEST_SHA256"
-    ] == ("sha256:" + "b" * 64)

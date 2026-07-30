@@ -20,9 +20,7 @@ LIVE_STAGE_ACTIVATION_REVISION = "authenticated-proxy-stage-activation@2"
 BUNDLE_HANDOFF_REVISION = "runpod-volume-bundle-handoff@1"
 DEPENDENCY_QUARANTINE_REVISION = "hash-locked-private-dependencies@1"
 CODE_MATERIALIZATION_REVISION = "private-code-materialization@1"
-DEPENDENCY_LOCK_DIGEST = (
-    "sha256:bb143bf631b6509c07881a606dc96cd244099debdca09f8f700abc90dad2e34f"
-)
+DEPENDENCY_LOCK_DIGEST = "sha256:bb143bf631b6509c07881a606dc96cd244099debdca09f8f700abc90dad2e34f"
 
 
 def _canonical_json(value: object) -> bytes:
@@ -79,9 +77,7 @@ def materialization_environment(
         "profile_id": base["EQUINOX_LARGER_MODEL_PROFILE_ID"],
         "bundle_digest": base["EQUINOX_BUNDLE_SHA256"],
         "bundle_size_bytes": int(base["EQUINOX_BUNDLE_SIZE_BYTES"]),
-        "source_contract_digest": base[
-            "EQUINOX_LARGER_MODEL_SOURCE_CONTRACT_SHA256"
-        ],
+        "source_contract_digest": base["EQUINOX_LARGER_MODEL_SOURCE_CONTRACT_SHA256"],
         "source_root": base["EQUINOX_BUNDLE_VOLUME_PATH"],
         "private_root": str(code_root),
         "source_tree_digest": code_tree_digest,
@@ -117,9 +113,7 @@ def materialization_environment(
         ),
         "distributions": distributions,
         "installed_file_count": len(dependency_entries),
-        "installed_bytes": sum(
-            int(entry["size_bytes"]) for entry in dependency_entries
-        ),
+        "installed_bytes": sum(int(entry["size_bytes"]) for entry in dependency_entries),
         "ready": True,
     }
     dependency_evidence["evidence_digest"] = (
@@ -134,13 +128,9 @@ def materialization_environment(
         dependency_root,
         {
             "EQUINOX_CODE_MATERIALIZATION_EVIDENCE_PATH": str(code_evidence_path),
-            "EQUINOX_CODE_MATERIALIZATION_EVIDENCE_SHA256": str(
-                code_evidence["evidence_digest"]
-            ),
+            "EQUINOX_CODE_MATERIALIZATION_EVIDENCE_SHA256": str(code_evidence["evidence_digest"]),
             "EQUINOX_CODE_PRIVATE_TREE_SHA256": code_tree_digest,
-            "EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_PATH": str(
-                dependency_evidence_path
-            ),
+            "EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_PATH": str(dependency_evidence_path),
             "EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_SHA256": str(
                 dependency_evidence["evidence_digest"]
             ),
@@ -207,9 +197,7 @@ def live_stage_environment(
         "EQUINOX_TORCH_RETENTION_EVIDENCE_SHA256": str(
             activation_body["torch_retention_evidence_digest"]
         ),
-        "EQUINOX_DEPENDENCY_LOCK_SHA256": str(
-            activation_body["dependency_lock_digest"]
-        ),
+        "EQUINOX_DEPENDENCY_LOCK_SHA256": str(activation_body["dependency_lock_digest"]),
         "EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_SHA256": str(
             activation_body["dependency_quarantine_evidence_digest"]
         ),
@@ -219,9 +207,7 @@ def live_stage_environment(
         "EQUINOX_CODE_MATERIALIZATION_EVIDENCE_SHA256": str(
             activation_body["code_materialization_evidence_digest"]
         ),
-        "EQUINOX_CODE_PRIVATE_TREE_SHA256": str(
-            activation_body["code_private_tree_digest"]
-        ),
+        "EQUINOX_CODE_PRIVATE_TREE_SHA256": str(activation_body["code_private_tree_digest"]),
         "EQUINOX_RUNPOD_NETWORK_VOLUME_ID": str(activation_body["network_volume_id"]),
         "EQUINOX_RUNPOD_NETWORK_VOLUME_DATA_CENTER_ID": str(
             activation_body["network_volume_data_center_id"]
@@ -235,26 +221,16 @@ def live_stage_environment(
 def live_stage_progress_evidence(tmp_path: Path | None = None) -> dict[str, str | int]:
     activation_overrides: dict[str, str] = {}
     if tmp_path is not None:
-        evidence_root = (
-            tmp_path.parent / f".{tmp_path.name}-runner-assets/persistent"
-        )
+        evidence_root = tmp_path.parent / f".{tmp_path.name}-runner-assets/persistent"
         dependency_evidence = json.loads(
-            (evidence_root / "dependency-quarantine-evidence.json").read_text(
-                encoding="utf-8"
-            )
+            (evidence_root / "dependency-quarantine-evidence.json").read_text(encoding="utf-8")
         )
         code_evidence = json.loads(
-            (evidence_root / "code-materialization-evidence.json").read_text(
-                encoding="utf-8"
-            )
+            (evidence_root / "code-materialization-evidence.json").read_text(encoding="utf-8")
         )
         activation_overrides = {
-            "dependency_quarantine_evidence_digest": dependency_evidence[
-                "evidence_digest"
-            ],
-            "dependency_private_tree_digest": dependency_evidence[
-                "private_tree_digest"
-            ],
+            "dependency_quarantine_evidence_digest": dependency_evidence["evidence_digest"],
+            "dependency_private_tree_digest": dependency_evidence["private_tree_digest"],
             "code_materialization_evidence_digest": code_evidence["evidence_digest"],
             "code_private_tree_digest": code_evidence["private_tree_digest"],
         }
@@ -275,9 +251,7 @@ def live_stage_progress_evidence(tmp_path: Path | None = None) -> dict[str, str 
         "dependency_quarantine_evidence_digest": environment[
             "EQUINOX_DEPENDENCY_QUARANTINE_EVIDENCE_SHA256"
         ],
-        "dependency_private_tree_digest": environment[
-            "EQUINOX_DEPENDENCY_PRIVATE_TREE_SHA256"
-        ],
+        "dependency_private_tree_digest": environment["EQUINOX_DEPENDENCY_PRIVATE_TREE_SHA256"],
         "code_materialization_revision": CODE_MATERIALIZATION_REVISION,
         "code_materialization_evidence_digest": environment[
             "EQUINOX_CODE_MATERIALIZATION_EVIDENCE_SHA256"
@@ -295,9 +269,7 @@ def live_stage_progress_evidence(tmp_path: Path | None = None) -> dict[str, str 
 
 
 def checkpoint_authentication_key(tmp_path: Path) -> str:
-    return hashlib.sha256(
-        ("checkpoint-key:" + str(tmp_path.resolve())).encode()
-    ).hexdigest()
+    return hashlib.sha256(("checkpoint-key:" + str(tmp_path.resolve())).encode()).hexdigest()
 
 
 def rewrite_authenticated_checkpoint_pair(
@@ -373,9 +345,7 @@ def authenticate_runtime_state(
             "",
         ),
     }
-    identity_digest = (
-        "sha256:" + hashlib.sha256(_canonical_json(launch_identity)).hexdigest()
-    )
+    identity_digest = "sha256:" + hashlib.sha256(_canonical_json(launch_identity)).hexdigest()
     baseline_names = {
         "bundle-stage-receipt.json",
         "code-materialization-evidence.json",
@@ -395,9 +365,13 @@ def authenticate_runtime_state(
             return "equinox/result/v1"
         if path == "adapter.tgz" or path.startswith("adapter/"):
             return "equinox/checkpoint/v1"
-        if path == "workload-attempt-count" or path == "attempts" or re.fullmatch(
-            r"error[.]attempt-[12][.]log",
-            path,
+        if (
+            path == "workload-attempt-count"
+            or path == "attempts"
+            or re.fullmatch(
+                r"error[.]attempt-[12][.]log",
+                path,
+            )
         ):
             return "equinox/attempt/v1"
         return "equinox/journal/v1"
@@ -409,10 +383,7 @@ def authenticate_runtime_state(
     ]
     artifacts: list[dict[str, object]] = []
     for path in sorted(tmp_path.rglob("*")):
-        if (
-            not path.is_file()
-            or (path.parent == tmp_path and path.name in baseline_names)
-        ):
+        if not path.is_file() or (path.parent == tmp_path and path.name in baseline_names):
             continue
         relative = str(path.relative_to(tmp_path))
         payload = path.read_bytes()
@@ -463,9 +434,7 @@ def authenticate_runtime_state(
         "proof_id": environment["EQUINOX_PROOF_ID"],
         "launch_identity_digest": identity_digest,
         "generation": 0,
-        "manifest_digest": (
-            "sha256:" + hashlib.sha256(manifest_payload).hexdigest()
-        ),
+        "manifest_digest": ("sha256:" + hashlib.sha256(manifest_payload).hexdigest()),
     }
     anchor = {
         **anchor_material,
@@ -473,8 +442,7 @@ def authenticate_runtime_state(
             "hmac-sha256:"
             + hmac.new(
                 environment["EQUINOX_RESULT_TOKEN"].encode(),
-                b"equinox/runner-private-anchor/v1\0"
-                + _canonical_json(anchor_material),
+                b"equinox/runner-private-anchor/v1\0" + _canonical_json(anchor_material),
                 hashlib.sha256,
             ).hexdigest()
         ),
@@ -963,12 +931,10 @@ print(json.dumps({"screen_completed": True, "protocol_eligible": True}))
         "EQUINOX_FILESYSTEM_PYTHON": sys.executable,
         "EQUINOX_RESULT_TOKEN": "test-token",
         "EQUINOX_PROOF_ID": (
-            "runpod-proof-test-"
-            + hashlib.sha256(str(tmp_path.resolve()).encode()).hexdigest()[:24]
+            "runpod-proof-test-" + hashlib.sha256(str(tmp_path.resolve()).encode()).hexdigest()[:24]
         ),
         "EQUINOX_RUN_IDENTITY": (
-            "run-identity-"
-            + hashlib.sha256(str(tmp_path.resolve()).encode()).hexdigest()[:24]
+            "run-identity-" + hashlib.sha256(str(tmp_path.resolve()).encode()).hexdigest()[:24]
         ),
         "EQUINOX_REMOTE_WORKDIR": str(persistent_root),
         "EQUINOX_RUNTIME_ROOT": str(tmp_path),
@@ -1005,22 +971,16 @@ print(json.dumps({"screen_completed": True, "protocol_eligible": True}))
                 code_materialization_evidence_digest=materialization_env[
                     "EQUINOX_CODE_MATERIALIZATION_EVIDENCE_SHA256"
                 ],
-                code_private_tree_digest=materialization_env[
-                    "EQUINOX_CODE_PRIVATE_TREE_SHA256"
-                ],
+                code_private_tree_digest=materialization_env["EQUINOX_CODE_PRIVATE_TREE_SHA256"],
             )
         )
         environment.update(materialization_env)
     if workload_file == "repository_repair_large_model_pilot.py":
         environment.update(
             {
-                "EQUINOX_CHECKPOINT_AUTHENTICATION_KEY": (
-                    checkpoint_authentication_key(tmp_path)
-                ),
+                "EQUINOX_CHECKPOINT_AUTHENTICATION_KEY": (checkpoint_authentication_key(tmp_path)),
                 "EQUINOX_FAKE_POINTER_CHECKPOINT_GENERATION": "3",
-                "EQUINOX_FAKE_POINTER_CHECKPOINT_MANIFEST_SHA256": (
-                    "sha256:" + "c" * 64
-                ),
+                "EQUINOX_FAKE_POINTER_CHECKPOINT_MANIFEST_SHA256": ("sha256:" + "c" * 64),
             }
         )
     if failure_mode == "archive-fail":
@@ -1127,9 +1087,7 @@ def test_remote_runner_rejects_symlinked_adapter_without_traversal(
 def test_remote_runner_rejects_unexpected_shared_volume_entry(
     tmp_path: Path,
 ) -> None:
-    persistent_root = (
-        tmp_path.parent / f".{tmp_path.name}-runner-assets/persistent"
-    )
+    persistent_root = tmp_path.parent / f".{tmp_path.name}-runner-assets/persistent"
     persistent_root.mkdir(parents=True)
     (persistent_root / "forged-result.json").write_text(
         '{"experiment_completed":true}\n',
@@ -1255,18 +1213,12 @@ def test_remote_runner_commits_only_a_manifest_validated_adapter_archive(
     archive_path = tmp_path / "adapter.tgz"
     assert archive_path.is_file()
     with tarfile.open(archive_path, mode="r:gz") as archive:
-        assert {
-            member.name
-            for member in archive.getmembers()
-            if member.isfile()
-        } == {
+        assert {member.name for member in archive.getmembers() if member.isfile()} == {
             "adapter/adapter-manifest.json",
             "adapter/adapter_config.json",
             "adapter/adapter_model.safetensors",
         }
-    integrity = json.loads(
-        (tmp_path / "runner-resume-state.json").read_text(encoding="utf-8")
-    )
+    integrity = json.loads((tmp_path / "runner-resume-state.json").read_text(encoding="utf-8"))
     artifacts = {
         entry["path"]: entry
         for entry in integrity["artifacts"]
@@ -1320,13 +1272,9 @@ def test_remote_runner_never_hmac_commits_a_replacement_after_pinning(
         time.sleep(0.01)
     assert marker.is_file()
 
-    integrity = json.loads(
-        (tmp_path / "runner-resume-state.json").read_text(encoding="utf-8")
-    )
+    integrity = json.loads((tmp_path / "runner-resume-state.json").read_text(encoding="utf-8"))
     signed = [
-        entry
-        for entry in integrity["artifacts"]
-        if entry["path"] in {target_name, "result.json"}
+        entry for entry in integrity["artifacts"] if entry["path"] in {target_name, "result.json"}
     ]
     forged_digest = "sha256:" + hashlib.sha256(forged_payload).hexdigest()
     assert all(entry["sha256"] != forged_digest for entry in signed)
@@ -2299,9 +2247,7 @@ def test_large_model_retry_uses_exact_private_checkpoint_replay_handoff(
         workload_file="repository_repair_large_model_pilot.py",
         environment_overrides={
             "EQUINOX_EXPECTED_CHECKPOINT_GENERATION": "999",
-            "EQUINOX_EXPECTED_CHECKPOINT_MANIFEST_SHA256": (
-                "sha256:" + "e" * 64
-            ),
+            "EQUINOX_EXPECTED_CHECKPOINT_MANIFEST_SHA256": ("sha256:" + "e" * 64),
             "EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS": "2",
         },
         check=False,
@@ -2351,9 +2297,7 @@ def test_large_model_retry_rejects_pointer_progress_checkpoint_mismatch(
         "assert-authenticated-checkpoint-retry",
         workload_file="repository_repair_large_model_pilot.py",
         environment_overrides={
-            "EQUINOX_FAKE_PROGRESS_CHECKPOINT_MANIFEST_SHA256": (
-                "sha256:" + "d" * 64
-            ),
+            "EQUINOX_FAKE_PROGRESS_CHECKPOINT_MANIFEST_SHA256": ("sha256:" + "d" * 64),
             "EQUINOX_RUNPOD_MAX_WORKLOAD_ATTEMPTS": "2",
         },
         check=False,
@@ -2440,9 +2384,9 @@ def test_large_model_retry_rejects_generation_regression_against_private_anchor(
     assert (tmp_path / "exit_code").read_text(encoding="utf-8").strip() == "74"
     progress = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
     assert progress["error"] == "CHECKPOINT_REPLAY_HANDOFF_INVALID"
-    assert "authenticated retry binding observed" not in (
-        tmp_path / "error.log"
-    ).read_text(encoding="utf-8")
+    assert "authenticated retry binding observed" not in (tmp_path / "error.log").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_remote_runner_rejects_study_without_matched_completion_budget(

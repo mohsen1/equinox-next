@@ -1282,9 +1282,7 @@ def test_pending_optimizer_examples_use_a_weights_only_safe_primitive_codec() ->
     with pytest.raises(ValueError, match="field set"):
         trainer.deserialize_pending_training_examples([example])
     with pytest.raises(ValueError, match="input_ids"):
-        trainer.deserialize_pending_training_examples(
-            [{**encoded[0], "input_ids": [-1, 2, 3]}]
-        )
+        trainer.deserialize_pending_training_examples([{**encoded[0], "input_ids": [-1, 2, 3]}])
 
 
 def test_adapter_root_accepts_the_exact_inherited_proc_descriptor(
