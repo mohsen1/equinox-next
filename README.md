@@ -1,134 +1,117 @@
 # Equinox Next
 
-Equinox Next is a branchable environment and observability platform for long-horizon
-reinforcement learning. The active research profile is multi-step micro-repository repair:
-a policy diagnoses a task, Equinox snapshots the repository and transcript, and four
-isolated continuations compete from the same state.
+Equinox Next is a branch-aware post-training platform for long-horizon, verifiable
+software tasks. It captures a shared trajectory prefix, restores four isolated
+continuations from the same logical checkpoint, assigns sibling-relative credit, and
+preserves the evidence needed to explain every policy update.
 
-The local Compose profile is a single-operator contract fixture. It uses deterministic
-CAD execution and judge fixtures behind an authenticated internal service boundary. Real
-GPU research is an explicit, bounded RunPod operator workflow outside that registry.
+The current research environment targets multi-step micro-repository repair with:
 
-## Start here
+- static branch width (`K=4`);
+- adaptive task complexity and replay of earlier levels;
+- deterministic task verification;
+- LoRA post-training for Qwen2.5-Coder models;
+- live run, branch, action, curriculum, cost, and teardown evidence;
+- bounded RunPod execution with provider-side termination and local recovery guards.
+
+## Run locally
+
+Docker Compose runs the dashboard, orchestrator, execution service, deterministic fixture
+worker, PostgreSQL, and MinIO.
 
 ```bash
 ./scripts/dev
 ./scripts/seed
 ```
 
-Open [http://127.0.0.1:3100](http://127.0.0.1:3100). The first command builds and starts
-PostgreSQL, MinIO, the execution/verifier service, orchestrator, fixture worker, and
-dashboard. The second creates deterministic contract runs used by acceptance tests; the
-dashboard only lists actual research executions and their proofs.
-
-Ports default to `3100` for the dashboard and `8180` for the API. Override them with
-`EQUINOX_DASHBOARD_PORT` and `EQUINOX_API_PORT`. MinIO, PostgreSQL, execution, and the
-worker are not exposed on the host. `scripts/preflight` creates a mode-0600 local service
-token in the ignored `.env` file.
-
-The dashboard exposes `/healthz` for nginx liveness and `/readyz` for API/database
-readiness. Runs and Proofs preserve the last successful response during a transient API
-failure and recover through polling. The exact contracts and failure check are in
-[the Runs and Proofs workspace guide](docs/runs-and-proofs-workspace.md).
-
-## Run bounded RunPod research
-
-`scripts/runpod-rl-proof` is an explicit operator command outside the local provider
-registry. The repository-repair profile creates one A40 worker from RunPod's pinned
-PyTorch 2.8 image, rejects an hourly rate above $0.50, targets 45 minutes of training,
-sets a provider-side 60-minute termination deadline, and deletes the worker after the
-workload finishes. The command refuses to start when the account already has a pod or
-active hourly spend.
+Open [http://127.0.0.1:3100/runs](http://127.0.0.1:3100/runs). If port `3100` is already
+in use, choose another dashboard port:
 
 ```bash
-EQUINOX_RUNPOD_EXPERIMENT=repository-repair ./scripts/runpod-rl-proof
+EQUINOX_DASHBOARD_PORT=33100 ./scripts/dev
 ```
 
-Use the [larger-model RunPod runbook](docs/larger-model-runbook.md) for the guarded 7B
-eligibility screen and receipt-authorized pilot. Preparing that workflow does not launch
-a GPU; each allocation requires an explicit operator command.
+The main views are:
 
-The repository-repair workload fine-tunes Qwen2.5-Coder-1.5B-Instruct with LoRA and a
-leave-one-out group-normalized REINFORCE objective. It
-collects a shared diagnostic prefix without gradient, saves an exact logical checkpoint,
-restores four continuations, and applies sibling-relative credit only after the branch.
-It uses disjoint task-family train, validation, and final-test splits; deterministic
-verification; adaptive levels; replay; exact optimization checkpoints; live progress;
-verified adapter manifests; and confirmed teardown. The dashboard observer is a launch
-prerequisite.
+- `/runs` — training status, progress, GPU allocation, and estimated cost;
+- `/runs/:runId` — run outcome, collection, updates, and curriculum state;
+- `/runs/:runId/trajectory` — the shared prefix, checkpoint, sibling branches, actions,
+  observations, verifier results, returns, and policy signals;
+- `/proofs` — immutable run evidence, learning outcome, hardware, cost, and teardown.
 
-Repository complexity adapts file count, fault count, dependency depth, and horizon.
-Branch width remains static at four. The first proof uses a deterministic in-memory
-repository simulator; arbitrary model-generated code and shell commands are not executed.
-A single run is labelled exploratory. Use `scripts/summarize-runpod-study` on at least
-three distinct-seed receipts before making a replicated learning claim. A conformant
-RunPool sandbox is required before executing real repository code or test commands.
+The local profile is a deterministic contract fixture. It does not contact RunPod or an
+external model provider.
 
-## Inspect trajectories
+## Run guarded GPU research
 
-From `/runs`, open a research execution and select **Trajectory**. The branching view
-shows the shared diagnostic prefix once, the exact logical checkpoint, and four restored
-multi-step continuations. Each action exposes its observation, state digest, verifier
-result, return, sibling advantage, exclusion status, and policy signal. The curriculum
-view separates validation checkpoints from the one-time final test.
+Real GPU work is an explicit operator workflow outside the local provider registry. The
+current larger-model campaign uses one Secure Cloud H100 80 GB worker and
+Qwen2.5-Coder-7B-Instruct. It requires a committed eligibility screen before the pilot,
+checks the exact offer and hourly rate immediately before allocation, enforces lifetime
+and campaign budgets, publishes evidence atomically, and verifies pod and volume teardown.
 
-Completed RunPod evidence appears under `/proofs`. Each proof links back to its originating
-run and trajectory and records learning outcome, hardware, estimated total cost,
-curriculum progression, receipt digest, provider handle, and teardown confirmation.
-
-## Rejudge stored evidence
-
-Use the **Rejudge stored proof** action in a run, or call:
+Read the [larger-model RunPod runbook](docs/larger-model-runbook.md) before allocating a
+GPU. Start with the read-only preflight:
 
 ```bash
-curl -X POST http://127.0.0.1:8180/v1/runs/RUN_ID/rejudge \
-  -H 'Content-Type: application/json' \
-  -d '{"verification_run_id":"VERIFICATION_ID","fixture_scenario":"integrity"}'
+./scripts/screen-larger-model --preflight-only
 ```
 
-Rejudge uses `cad.pointwise.mock@2`, reuses the original proof-bundle digest, runs only
-the judge step, and emits no training reward. Supported contract fixtures are `valid`,
-`low`, `tie`, `abstain`, `malformed`, `retry`, `disagreement`, and `integrity`.
+The paid screen and pilot are separate explicit commands:
 
-## Verify the repository
+```bash
+./scripts/screen-larger-model
+./scripts/run-larger-model-pilot
+```
+
+The pilot command refuses to run without an eligible, committed screen artifact set. Do
+not bypass the wrappers: they bind the source revision, image digest, workload bundle,
+provider offer, budget, progress contract, publication lineage, and teardown controls.
+
+The current environment uses a deterministic in-memory repository simulator. Generated
+model actions do not execute arbitrary code or shell commands. A RunPool-backed sandbox
+is the next trust-boundary integration for real repositories.
+
+## Architecture
+
+The orchestrator owns accepted scientific state and lineage. The execution service owns
+operational sessions, leases, attempts, and fencing. PostgreSQL stores metadata in
+separate schemas; MinIO stores immutable, content-addressed artifacts. Large payloads move
+through object storage, while API records carry typed references and SHA-256 digests.
+
+The dashboard observes persisted facts rather than log text. A branch trajectory links
+the shared prefix, logical checkpoint, four restored continuations, verifier evidence,
+advantages, optimizer update, model artifact, provider receipt, and teardown record.
+
+Key design documents:
+
+- [branch-aware RL improvement plan](docs/branch-aware-rl-improvement-plan.md)
+- [larger-model RunPod runbook](docs/larger-model-runbook.md)
+- [independent-prefix GRPO comparison](docs/independent-prefix-grpo-comparison.md)
+- [execution-boundary ADR](docs/adr/0001-local-docker-execution-boundary.md)
+- [judge-integrity ADR](docs/adr/0002-local-judge-integrity.md)
+
+## Verify
 
 ```bash
 ./scripts/check
 ./scripts/acceptance
 ```
 
-`scripts/check` runs preflight, Compose validation, production builds, Python formatting
-and lint checks, unit tests, TypeScript checks, frontend lint/format checks, and the
-dashboard unit and production builds. `scripts/acceptance` starts with fresh project-scoped named
-volumes, seeds both flows, runs unit and integration tests, verifies restart persistence,
-and proves queued cancellation releases the allocation. It deletes only the
-`equinox-next` Compose project’s local volumes.
+`scripts/check` validates the frozen research contracts, builds the Compose images, runs
+Python formatting and lint checks, executes the unit suites, and verifies the dashboard
+with TypeScript, lint, unit, and production-build checks.
 
-Useful operational commands:
+`scripts/acceptance` exercises the complete local contract with fresh project-scoped
+volumes, restart persistence, idempotent delivery, rejudging, cancellation, and resource
+release. It deletes only the `equinox-next` Compose project's local acceptance volumes.
 
-```bash
-docker compose ps
-docker compose logs -f orchestrator fixture-worker execution
-docker compose restart orchestrator
-docker compose down
-```
+## Current scope
 
-Metadata survives ordinary restarts in PostgreSQL. Artifacts survive in MinIO and are
-content-addressed by SHA-256. Execution sessions are logical database/object-store
-records; no shared session filesystem volume exists.
+Equinox Next is a research platform, not a multi-tenant production service. The local
+stack is intentionally local-only and has no user authentication. Snapshot fidelity is
+logical state restoration, not process-memory or microVM restoration. The CAD path remains
+a deterministic contract fixture; the active learning work is software repair.
 
-## Architecture and limits
-
-The orchestrator owns scientific authority and lineage. The execution service owns
-operational sessions, cursors, jobs, attempts, and fencing. PostgreSQL isolates those
-records in separate schemas and roles; MinIO stores immutable artifact bytes. Operation
-inputs and digests make restart replay and duplicate delivery inspectable. Snapshot
-fidelity is honestly reported as `logical_restore`, not process or kernel restoration.
-
-The CAD slice only proves platform contracts with deterministic fixtures and is not shown
-as a research environment in the dashboard. This build refuses any deployment mode other
-than `local-only`; it has no user authentication, tenancy, real CAD kernel, or production
-code-execution isolation. Boundaries and audit dispositions are recorded in
-[PLAN.md](PLAN.md), [the execution-boundary ADR](docs/adr/0001-local-docker-execution-boundary.md),
-[the judge-integrity ADR](docs/adr/0002-local-judge-integrity.md), and
-[the audit remediation record](docs/audit-remediation-2026-07-27.md).
+The canonical product contract is [equinox-next.md](equinox-next.md), with provenance in
+[docs/equinox-next.provenance.json](docs/equinox-next.provenance.json).
